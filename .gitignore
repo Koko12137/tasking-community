@@ -1,0 +1,115 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# VSCode
+.vscode/
+
+# Log
+*.log
+*logs/
+
+# 项目补充忽略项 ----------------------------------------
+
+# Byte-compiled / optimized / DLL files
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+.eggs/
+*.egg
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+dist/
+build/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+coverage_*/
+
+# Type checkers / linters / caches
+.mypy_cache/
+.dmypy.json
+.pyre/
+.ruff_cache/
+
+# Jupyter notebooks
+.ipynb_checkpoints
+
+# Sphinx documentation
+docs/_build/
+
+# dotenv / secrets
+.env
+.env.*
+secrets.json
+secrets.yaml
+
+# Editor/IDE
+.idea/
+*.sublime-*
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Virtualenvs and environment managers
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+.pyenv/
+
+# Docker
+docker-compose.override.yml
+.docker/
+
+# PyCharm
+# (if using PyCharm, ignore workspace and caches)
+.idea/
+*.iml
+out/
+
+# Lock files sometimes not desirable to ignore; keep if you need them
+# Pipenv
+Pipfile.lock
+
+# Optional: generated coverage / reports / temporary files
+coverage/
+coverage.*
+*.log
+
+# Local runtime files
+celerybeat-schedule
+gunicorn.pid
+*.pid
+
+# Misc
+*.swp
+*~
