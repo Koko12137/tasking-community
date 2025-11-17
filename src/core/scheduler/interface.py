@@ -33,9 +33,9 @@ class IScheduler(ABC, Generic[StateT, EventT]):
         state_transition: tuple[StateT, StateT],
     ) -> Callable[
         ["IScheduler[StateT, EventT]", dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
-        Awaitable[EventT]
+        Awaitable[None]
     ] | None:
-        """获取指定状态转换的调度规则任务，允许“编译”和“未编译”状态调用。
+        """获取指定状态转换的调度规则任务。
 
         Args:
             state_transition: 状态转换元组 (from_state, to_state)

@@ -7,7 +7,7 @@ from mcp.types import CallToolResult
 from src.core.state_machine.interface import IStateMachine
 from src.core.state_machine.task.interface import ITask, StateT, EventT
 from src.core.state_machine.workflow.const import WorkflowStageT, WorkflowEventT
-from src.model import Message, IQueue
+from src.model import Message, IQueue, CompletionConfig
 
 
 class IWorkflow(IStateMachine[WorkflowStageT, WorkflowEventT], Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
@@ -18,6 +18,16 @@ class IWorkflow(IStateMachine[WorkflowStageT, WorkflowEventT], Generic[WorkflowS
     @abstractmethod
     def get_name(self) -> str:
         """获取工作流的名称"""
+        pass
+    
+    @abstractmethod
+    def get_completion_config(self) -> CompletionConfig:
+        """
+        获取工作流当前阶段的LLM推理配置信息
+        
+        Returns:
+            LLM推理配置信息实例
+        """
         pass
         
     # ********** 基础能力信息 **********

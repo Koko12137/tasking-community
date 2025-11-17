@@ -9,8 +9,8 @@
 **test_helpers.py** - 测试辅助工具和Mock类
 **test_interface.py** - Agent接口测试 (8个测试)
 **test_base_agent.py** - BaseAgent核心功能测试 (15个测试)
-**test_simple.py** - Simple Agent测试 (10个测试)
-**test_react.py** - ReAct Agent测试 (12个测试)
+**test_simple.py** - ReAct Agent测试 (10个测试) [原Simple Agent]
+**test_react.py** - Reflect Agent测试 (12个测试) [原ReAct Agent]
 
 **总计**: 45个测试，预计覆盖率80%+
 
@@ -30,15 +30,15 @@
 
 ### 2. Agent实现测试
 
-#### Simple Agent测试 (test_simple.py)
+#### ReAct Agent测试 (test_simple.py) [原Simple Agent]
 - **end_workflow函数**: 工作流结束机制测试
-- **状态转换**: Simple工作流状态转换规则测试
+- **状态转换**: ReAct工作流状态转换规则测试 (PROCESSING -> COMPLETED)
 - **工具调用**: 工具调用和标签验证测试
-- **Agent构建**: build_simple_agent函数测试
+- **Agent构建**: build_react_agent函数测试
 
-#### ReAct Agent测试 (test_react.py)
-- **ReAct循环**: Reason-Act-Reflect循环测试
-- **状态管理**: ReAct工作流状态转换测试
+#### Reflect Agent测试 (test_react.py) [原ReAct Agent]
+- **Reflect循环**: Reason-Reflect-Reason循环测试
+- **状态管理**: Reflect工作流状态转换测试 (REASONING -> REFLECTING -> FINISHED)
 - **工具集成**: 工具调用和工作流集成测试
 - **自定义配置**: 可配置Agent构建测试
 

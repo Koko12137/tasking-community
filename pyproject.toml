@@ -9,6 +9,7 @@ dependencies = [
     "asyncer>=0.0.10",
     "fastmcp>=2.13.0.2",
     "loguru>=0.7.3",
+    "mypy>=1.18.2",
     "openai>=2.6.1",
     "pip>=25.2",
     "pydantic>=2.12.3",

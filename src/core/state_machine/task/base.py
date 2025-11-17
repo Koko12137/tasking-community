@@ -9,7 +9,7 @@ from src.core.state_machine.const import StateT, EventT
 from src.core.state_machine.task.interface import ITask, ITaskView
 from src.core.state_machine.base import BaseStateMachine
 from src.core.context import IContext, BaseContext
-from src.model import Message, CompletionConfig
+from src.model import Message
 
 
 class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
@@ -28,7 +28,6 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
     _input_data: str | dict[str, Any]
     _output_data: str
     _is_completed: bool
-    _completion_config: CompletionConfig
     
     # *** 错误信息 ***
     _is_error: bool
@@ -49,7 +48,6 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
         protocol: str,
         tags: set[str],
         task_type: str,
-        completion_config: CompletionConfig,
         context_cls: type[IContext] = BaseContext,
         **kwargs: Any,
     ) -> None:
@@ -61,7 +59,6 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
         self._tags = tags.copy()        # 标签集合
         self._protocol = protocol       # 协议定义
         self._task_type = task_type     # 任务类型标识字符串
-        self._completion_config = completion_config  # 完成状态配置信息
 
         # 任务输入输出
         self._title = ""                # 任务标题
@@ -174,15 +171,6 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
     def get_output(self) -> str:
         """获取任务的输出数据"""
         return self._output_data
-    
-    def get_completion_config(self) -> CompletionConfig:
-        """
-        获取任务的LLM推理配置信息
-        
-        Returns:
-            LLM推理配置信息实例
-        """
-        return copy.deepcopy(self._completion_config)
 
     def is_completed(self) -> bool:
         """检查任务是否已完成

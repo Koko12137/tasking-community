@@ -106,96 +106,152 @@ src/
 
 ---
 
-## 快速开始
+## 核心流程
 
-### 环境配置
+1. 调度器 schedule 流程
+```mermaid
+graph TB
+    ScheduleStart[调度器入口]
+    ScheduleStart --> ReadState[读取 Task 当前状态]
+    ReadState -->|否| SelectHandler{根据状态选择调度函数}
+    SelectHandler --> CallHandler[调度函数<br/>执行业务逻辑<br/>]
+    HandlerReturn --> TaskHandle[将 Event 发送给 Task 执行处理]
+    TaskHandle --> OnStateChanged[调度器后处理：on_state_changed]
+    %% 后处理完成后回到“根据状态选择调度函数”进行最终判断
+    OnStateChanged --> ReadState{是否为结束状态？}
+    ReadState -->|是| END
 
-```bash
-# 安装 uv（如果未安装）
-pip install uv
+    subgraph "Workflow - 自驱动事件链"
+        W1[Agent 执行任务] --> W2[获取第一个工作流事件<br/>event_chain_0]
+        W2 --> W3[执行工作流动作]
+        W3 --> W4[触发下一个 工作流Event]
+        W4 --> W5[event_chain_1]
+        W5 --> W3
+        W3 -->|到达终态| W6[Workflow 结束]
+    end
 
-# 安装项目依赖
-uv sync
+    CallHandler --> W1
+    W6 --> HandlerReturn[调度函数返回 Event 或 None]
+
+    %% 说明与样式（便于阅读）
+    style ScheduleStart fill:#e1f5fe,stroke:#90caf9
+    style ReadState fill:#fff3e0
+    style SelectHandler fill:#fff9c4
+    style CallHandler fill:#f3e5f5
+    style HandlerReturn fill:#fff8e1
+    style TaskHandle fill:#e8f5e9
+    style OnStateChanged fill:#fce4ec
 ```
 
-### 开发与测试入口命令
+2. 工作流 Action 循环
+```mermaid
+graph TB
+    %% 1. 外层基础节点（流程起点/终点/循环判断）
+    A[Agent 执行任务]
+    B{Observe-Think-Act <br/>工作流动作循环}
+    P[结束]
 
-```bash
-# 运行测试
-uv run pytest tests/ -v --cov=src --cov-report=term-missing
+    %% 2. 核心执行循环
+    subgraph Action 循环
+        C[Pre-Run Hooks<br/>修改运行前上下文]
+        O[Post-Run Hooks<br/>修改运行后上下文]
 
-# 运行特定模块测试
-uv run pytest tests/state_machine/ -v
-uv run pytest tests/scheduler/ -v
+        %% 2.1 Observe 阶段
+        subgraph Observe阶段
+            D[Pre-Observe Hooks<br/>修改观察信息]
+            E[实际观察]
+            F[Post-Observe Hooks<br/>处理观察结果]
+            D --> E
+            E --> F
+        end
 
-# 类型检查
-uv run mypy src/
+        %% 2.2 Think 阶段
+        subgraph Think阶段
+            H[Pre-Think Hooks<br/>修改大模型推理输入]
+            I[实际思考]
+            J[Post-Think Hooks<br/>修改大模型推理输出]
+            H --> I
+            I --> J
+        end
 
-# 运行示例
-uv run python main.py
+        %% 2.3 Act 阶段
+        subgraph Act阶段
+            L[Pre-Act Hooks<br/>处理大模型Act请求]
+            M[实际执行]
+            N[Post-Act Hooks<br/>执行后处理]
+            L --> M
+            M --> N
+        end
+
+        F --> H 
+        J --> L 
+    end
+
+    %% 4. 外层完整流程（全用具体节点连接，无歧义）
+    A --> B
+    B --> C
+    C --> D
+    N --> O
+    O --> B
+    B --> P
+
+    %% 在结束后发送一个工作流事件，并交给工作流处理
+    P --> ReturnEvent[返回工作流事件<br/>Return Workflow Event]
+    ReturnEvent --> WorkflowHandler[Workflow 引擎状态转换处理]
+    WorkflowHandler -.-> Note_Workflow[此事件将交由工作流进行状态转换处理]
+
+    %% 各阶段 hook 着色（按阶段统一）
+    %% Pre-Run Hooks（整体/外层） - 淡蓝
+    style C fill:#e1f5fe
+    %% Post-Run Hooks（整体/外层） - 淡蓝
+    style O fill:#e1f5fe    
+
+    %% Pre-Observe Hooks - 观察阶段（淡橙）
+    style D fill:#fff3e0    
+    %% Post-Observe Hooks - 观察阶段（淡橙）
+    style F fill:#fff3e0    
+
+    %% Pre-Think Hooks - 思考阶段（淡绿）
+    style H fill:#e8f5e9    
+    %% Post-Think Hooks - 思考阶段（淡绿）
+    style J fill:#e8f5e9    
+
+    %% Pre-Act Hooks - 执行阶段（淡粉）
+    style L fill:#fce4ec    
+    %% Post-Act Hooks - 执行阶段（淡粉）
+    style N fill:#fce4ec    
+
+    %% 为每个钩子添加右侧的虚线笔记占位（我来填写内容）
+    C -.-> Note_PreRun[按照任务类型，加载必要的记忆内容，如和任务执行相关的“命令型记忆”]
+    O -.-> Note_PostRun[对上下文进行关键信息提取/压缩/折叠等操作]
+
+    D -.-> Note_PreObserve[按照任务类型，加载必要的依赖信息，如树型任务加载其父类的观察信息]
+    F -.-> Note_PostObserve[根据观察信息检索相应的“事件型记忆”，类似于人类的“看到某些情景就想起某些事”]
+
+    H -.-> Note_PreThink[可以用来将必要信息进行替换，如替换真实邮箱地址为虚拟邮箱地址，也可以在这里将观察阶段的上下文进行处理后输出到输出队列]
+    J -.-> Note_PostThink[可以将之前替换的内容替换回实际内容，也可以在这里将大模型推理内容处理后输出到输出队列]
+
+    L -.-> Note_PreAct[可以检查大模型执行该工具的许可，或者发起工具调用批准请求]
+    N -.-> Note_PostAct[可以通过回调函数向输出队列发送工具调用结果]
+
+    %% 新增工作流事件的笔记样式
+    style Note_Workflow fill:#fffde7,stroke:#f0e68c
+
+    %% 其他笔记样式（统一浅黄背景）
+    style Note_PreRun fill:#fffde7,stroke:#f0e68c
+    style Note_PostRun fill:#fffde7,stroke:#f0e68c
+    style Note_PreObserve fill:#fffde7,stroke:#f0e68c
+    style Note_PostObserve fill:#fffde7,stroke:#f0e68c
+    style Note_PreThink fill:#fffde7,stroke:#f0e68c
+    style Note_PostThink fill:#fffde7,stroke:#f0e68c
+    style Note_PreAct fill:#fffde7,stroke:#f0e68c
+    style Note_PostAct fill:#fffde7,stroke:#f0e68c
+
+    %% 保留其他节点样式
+    style B fill:#e1f5fe
+    style P fill:#f3e5f5
+    style WorkflowHandler fill:#f8bbd9,stroke:#d0a3d0
 ```
-
-项目包含完整的测试套件：
-
-- **状态机测试**: `tests/state_machine/` - 核心状态机功能测试
-- **调度器测试**: `tests/scheduler/` - 任务调度系统测试
-
-#### 运行测试
-
-```bash
-# 运行所有测试
-uv run pytest tests/ -v
-
-# 生成覆盖率报告
-uv run pytest tests/ --cov=src --cov-report=html
-
-# 查看覆盖率报告
-open htmlcov/index.html  # macOS
-# 或用浏览器打开 htmlcov/index.html
-```
-
-### 基础示例
-
-```python
-import asyncio
-from queue import Queue
-
-from src.core.state_machine.task import build_base_tree_node
-from src.core.agent.simple import BaseAgent
-from src.core.scheduler.simple import create_simple_scheduler
-from src.model.llm import CompletionConfig
-
-async def main():
-    # 1. 创建任务
-    task = build_base_tree_node(
-        protocol="任务输入应该按照xxx的格式，任务输出应该按照xxx的格式进行",
-        tags={"example"},
-        task_type="demo_task",
-        max_depth=3,
-        completion_config=CompletionConfig(),
-    )
-
-    # 2. 创建 Agent（示例，需要配置实际 LLM）
-    executor = BaseAgent(name="executor", agent_type="EXECUTOR", llms={...})
-
-    # 3. 创建调度器
-    scheduler = create_simple_scheduler(executor=executor)
-
-    # 4. 执行任务
-    context = {"user_id": "demo"}
-    queue = Queue[Message]()
-    await scheduler.schedule(context, queue, task)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-### 核心设计原则
-
-1. **接口驱动**：所有核心组件都定义了清晰的接口契约
-2. **异步优先**：支持高并发场景的异步执行
-3. **类型安全**：基于 Python 3.12+ 泛型的完整类型系统
-4. **可组合性**：支持模块化扩展和组合
 
 ---
 
@@ -232,11 +288,7 @@ task = build_base_tree_node(
     tags={"example"},
     task_type="demo_task",
     max_depth=3,
-    completion_config=CompletionConfig(),
 )
-
-# 编译状态机
-task.compile(max_revisit_count=3)
 
 # 设置输入输出
 task.set_input({"data": "example_data"})
@@ -299,29 +351,25 @@ graph TD
 
 ---
 
-## 开发实践
+#### 职责划分
+- 工作流（Workflow）本身“不感知任务状态”。Workflow 的职责是按动作序列运行并产生“工作流事件”（workflow events），驱动工作流内部的自驱动流转与动作输出。为保证执行语义一致，所有 Workflow 的 action 应通过 Agent 的 observe/think/act 接口唤起对应阶段行为并返回工作流事件；若无法构成完整动作循环，请使用 Agent hooks 进行拦截或补充。
+- 调度器的 ***调度函数*** 必须返回用于驱动任务状态变化的“任务事件”（task events）。调度器负责将该任务事件交给 Task（task.handle_event），并在 Task 状态变化后执行调度器的后处理逻辑（on_state_changed）。
 
-项目结构
+> 简言之：Workflow 产生 workflow events；Scheduler 产生并消费 task events；只有 Scheduler 感知并控制 Task 的状态流转。
 
-```plaintext
-my_project/
-├── agents/             # Agent 自定义实现
-├── tasks/              # 自定义 Task
-├── schedulers/         # Scheduler 配置
-├── prompts/            # Prompts 文件与读取工具
-│   ├── read_prompt.py  # 单次运行前 hooks
-│   ├── task/           # 任务执行的协议提示词
-│   └── workflow/       # 工作流提示词
-└── hooks/              # Hooks 实现
-    ├── pre_once/       # 单次运行前 hooks
-    ├── post_once/      # 单次运行后 hooks
-    ├── pre_observe/    # 观察前 hooks
-    ├── post_observe/   # 观察后 hooks
-    ├── pre_think/      # 思考前 hooks
-    ├── post_think/     # 思考后 hooks
-    ├── pre_act/        # 执行前 hooks
-    └── post_act/       # 执行后 hooks
-```
+
+### 开发规范
+
+- 修改 Agent 的 Hook（Agent hooks）
+  - 可在 Agent 层加入拦截/预处理/后处理逻辑（如日志、缓存、流式响应控制等），影响任务执行上下文或消息流。
+
+- 自定义 Workflow 的 action（Workflow Actions）
+  - 每个 Workflow 的 action 都应通过 Agent 的 observe/think/act 调用来组成一个完整的 action，从而产生用于驱动工作流自身变化的工作流事件（workflow events）。若某个操作并非完整的 O/T/A 动作组合，则应考虑实现为 Agent 的 Hook（pre/post）而非定义新的 workflow 状态以及对应的 action。
+  - 修改或新增工作流状态（如Execute/Reflect）来改变工作流行为。每个状态应维护对应的提示词以及 action 函数，每个 action 应返回工作流事件以驱动工作流内的进一步流转。
+
+- 定制调度器行为（Scheduler）
+  - 通过实现/替换调度函数（on_state_fn）来自定义当 Task 处于某状态时的业务执行逻辑（必须返回 task event 或 None）。
+  - 通过实现状态变更后处理函数（on_state_changed_fn）来自定义在 Task 状态变更后需要执行的后处理逻辑（注意：后处理不会再次触发 on_state_changed 的循环）。
 
 ---
 

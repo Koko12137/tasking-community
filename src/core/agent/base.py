@@ -225,22 +225,13 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
             is_tags_valid = required_tags.issubset(task_tags)
 
             if is_tags_valid:
-                # 1.3 标签符合要求：直接调用工作流中的工具（添加超时保护）
-                import asyncio
-                timeout = 60.0  # 60秒超时
-
-                try:
-                    result = await asyncio.wait_for(
-                        self._workflow.call_tool(
-                            name=name,
-                            task=task,
-                            inject=inject,
-                            kwargs=kwargs
-                        ),
-                        timeout=timeout
-                    )
-                except asyncio.TimeoutError:
-                    raise RuntimeError(f"工作流工具调用 `{name}` 超时 ({timeout}秒)")
+                # 1.3 标签符合要求：直接调用工作流中的工具
+                result = await self._workflow.call_tool(
+                    name=name,
+                    task=task,
+                    inject=inject,
+                    kwargs=kwargs
+                )
                 
                 # 1.4 准备最终结果
                 content: list[dict[str, Any]] = []
@@ -267,20 +258,11 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
             kwargs.update(inject)
             
             try:
-                # 2.2 调用工具服务（添加超时保护）
-                import asyncio
-                timeout = 30.0  # 30秒超时
-
-                try:
-                    tool_call_result = await asyncio.wait_for(
-                        self._tool_service.call_tool(
-                            name=name,
-                            arguments=kwargs,
-                        ),
-                        timeout=timeout
-                    )
-                except asyncio.TimeoutError:
-                    raise RuntimeError(f"工具服务调用 `{name}` 超时 ({timeout}秒)")
+                # 2.2 调用工具服务（假设Client有async_request方法，参数为工具名+参数，若实际接口不同需调整）
+                tool_call_result = await self._tool_service.call_tool(
+                    name=name,
+                    arguments=kwargs,
+                )
                 # 2.3. 转换最终结果
                 result = CallToolResult(
                     content=tool_call_result.content,
@@ -366,8 +348,8 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
                     break
                 
                 # 执行动作
-                stream_action = workflow.get_action()
-                event = await stream_action(workflow, context, queue, task)
+                action = workflow.get_action()
+                event = await action(workflow, context, queue, task)
                 
                 # 检查是否重新回到第一个事件
                 if event == event_chain[0]:

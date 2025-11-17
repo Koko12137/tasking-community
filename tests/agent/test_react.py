@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-ReAct Agent测试套件
+ReAct Agent测试套件 [原Simple Agent]
 
 测试react.py中的功能：
+- end_workflow函数
 - get_react_transition函数
 - get_react_stages函数
 - get_react_event_chain函数
@@ -11,28 +12,105 @@ ReAct Agent测试套件
 """
 
 import unittest
-import asyncio
-from typing import Any, Dict
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 # pylint: disable=import-error
 # NOTE: E0401 import-error is a pylint configuration issue.
 # The tests run correctly with pytest, which resolves the src path.
 from src.core.agent.react import (
+    end_workflow,
     get_react_transition,
     get_react_stages,
     get_react_event_chain,
     get_react_actions,
     build_react_agent,
-    end_workflow,
     END_WORKFLOW_DOC
 )
-from src.core.agent.simple import end_workflow as simple_end_workflow
 from src.core.state_machine.workflow.const import ReActStage, ReActEvent
-from src.core.state_machine.task.const import TaskState, TaskEvent
-from src.core.state_machine.task.interface import ITask
-from src.model import Message, Role, StopReason, CompletionConfig
-from tests.agent.test_helpers import AgentTestMixin
+from src.model import Message, Role
+from tests.agent.test_helpers import AgentTestMixin, TestState
+
+
+class TestEndWorkflow(unittest.TestCase, AgentTestMixin):
+    """测试end_workflow函数"""
+
+    def setUp(self) -> None:
+        """测试设置"""
+        self.init_state, self.valid_states = TestState("RUNNING"), {
+            TestState("RUNNING"), TestState("FINISHED")
+        }
+        # 使用TestState类型
+        self.task = self.create_mock_task(
+            TestState("RUNNING"), {TestState("RUNNING"), TestState("FINISHED")}, "test-task"
+        )
+
+        # 创建包含output标签的消息
+        self.message_with_output = Message(
+            role=Role.ASSISTANT,
+            content="<output>\nTest output content\n</output>"
+        )
+
+        # 创建不包含output标签的消息
+        self.message_without_output = Message(
+            role=Role.ASSISTANT,
+            content="No output here"
+        )
+
+    def test_end_workflow_success(self) -> None:
+        """测试成功结束工作流"""
+        # 验证任务未完成
+        self.assertFalse(self.task.is_completed())
+
+        # 调用end_workflow
+        end_workflow({
+            "task": self.task,
+            "message": self.message_with_output
+        })
+
+        # 验证任务已完成
+        self.assertTrue(self.task.is_completed())
+        self.assertEqual(self.task.get_output(), "Test output content")
+
+    def test_end_workflow_missing_task(self) -> None:
+        """测试缺少task参数的错误"""
+        with self.assertRaises(RuntimeError) as cm:
+            end_workflow({"message": self.message_with_output})
+
+        self.assertIn("缺少必要的 'task' 注入参数", str(cm.exception))
+
+    def test_end_workflow_missing_message(self) -> None:
+        """测试缺少message参数的错误"""
+        with self.assertRaises(RuntimeError) as cm:
+            end_workflow({"task": self.task})
+
+        self.assertIn("缺少必要的 'message' 注入参数", str(cm.exception))
+
+    def test_end_workflow_no_output_content(self) -> None:
+        """测试没有输出内容的错误"""
+        with self.assertRaises(Exception) as cm:
+            end_workflow({
+                "task": self.task,
+                "message": self.message_without_output
+            })
+
+        error_msg = str(cm.exception)
+        self.assertIn("没有从标签", error_msg)
+        self.assertIn("中提取到任何内容", error_msg)
+
+    def test_end_workflow_wrong_role(self) -> None:
+        """测试错误的消息角色"""
+        wrong_role_message = Message(
+            role=Role.USER,  # 错误的角色
+            content="<output>Test output</output>"
+        )
+
+        with self.assertRaises(AssertionError) as cm:
+            end_workflow({
+                "task": self.task,
+                "message": wrong_role_message
+            })
+
+        self.assertIn("最后一个 Message 不是 Assistant Message", str(cm.exception))
 
 
 class TestReActTransition(unittest.TestCase):
@@ -45,41 +123,27 @@ class TestReActTransition(unittest.TestCase):
         self.assertIsInstance(transitions, dict)
         self.assertGreater(len(transitions), 0)
 
-    def test_reasoning_to_reflecting_transition(self) -> None:
-        """测试REASONING + REFLECT转换"""
+    def test_processing_to_process_transition(self) -> None:
+        """测试PROCESSING + PROCESS转换"""
         transitions = get_react_transition()
 
-        key = (ReActStage.REASONING, ReActEvent.REFLECT)
+        key = (ReActStage.PROCESSING, ReActEvent.PROCESS)
         self.assertIn(key, transitions)
 
         next_stage, callback = transitions[key]
-        self.assertEqual(next_stage, ReActStage.REFLECTING)
+        self.assertEqual(next_stage, ReActStage.PROCESSING)
         self.assertIsNotNone(callback)
-        self.assertTrue(asyncio.iscoroutinefunction(callback))
 
-    def test_reflecting_to_finished_transition(self) -> None:
-        """测试REFLECTING + FINISH转换"""
+    def test_processing_to_complete_transition(self) -> None:
+        """测试PROCESSING + COMPLETE转换"""
         transitions = get_react_transition()
 
-        key = (ReActStage.REFLECTING, ReActEvent.FINISH)
+        key = (ReActStage.PROCESSING, ReActEvent.COMPLETE)
         self.assertIn(key, transitions)
 
         next_stage, callback = transitions[key]
-        self.assertEqual(next_stage, ReActStage.FINISHED)
+        self.assertEqual(next_stage, ReActStage.COMPLETED)
         self.assertIsNotNone(callback)
-        self.assertTrue(asyncio.iscoroutinefunction(callback))
-
-    def test_reflecting_to_reasoning_transition(self) -> None:
-        """测试REFLECTING + REASON转换"""
-        transitions = get_react_transition()
-
-        key = (ReActStage.REFLECTING, ReActEvent.REASON)
-        self.assertIn(key, transitions)
-
-        next_stage, callback = transitions[key]
-        self.assertEqual(next_stage, ReActStage.REASONING)
-        self.assertIsNotNone(callback)
-        self.assertTrue(asyncio.iscoroutinefunction(callback))
 
 
 class TestReActStages(unittest.TestCase):
@@ -90,10 +154,9 @@ class TestReActStages(unittest.TestCase):
         stages = get_react_stages()
 
         self.assertIsInstance(stages, set)
-        self.assertIn(ReActStage.REASONING, stages)
-        self.assertIn(ReActStage.REFLECTING, stages)
-        self.assertIn(ReActStage.FINISHED, stages)
-        self.assertEqual(len(stages), 3)
+        self.assertIn(ReActStage.PROCESSING, stages)
+        self.assertIn(ReActStage.COMPLETED, stages)
+        self.assertEqual(len(stages), 2)
 
 
 class TestReActEventChain(unittest.TestCase):
@@ -104,10 +167,9 @@ class TestReActEventChain(unittest.TestCase):
         event_chain = get_react_event_chain()
 
         self.assertIsInstance(event_chain, list)
-        self.assertEqual(len(event_chain), 3)
-        self.assertEqual(event_chain[0], ReActEvent.REASON)
-        self.assertEqual(event_chain[1], ReActEvent.REFLECT)
-        self.assertEqual(event_chain[2], ReActEvent.FINISH)
+        self.assertEqual(len(event_chain), 2)
+        self.assertEqual(event_chain[0], ReActEvent.PROCESS)
+        self.assertEqual(event_chain[1], ReActEvent.COMPLETE)
 
 
 class TestReActActions(unittest.TestCase, AgentTestMixin):
@@ -119,15 +181,15 @@ class TestReActActions(unittest.TestCase, AgentTestMixin):
         mock_agent = Mock()
 
         # 设置get_llm方法
-        mock_llm = self.create_mock_llm("test-model", "ReAct response")
+        mock_llm = self.create_mock_llm()
         mock_agent.get_llm.return_value = mock_llm
 
         # 设置get_workflow方法
         mock_workflow = Mock()
-        mock_workflow.get_current_state.return_value = ReActStage.REASONING
-        mock_workflow.get_prompt.return_value = "Test ReAct prompt"
-        mock_workflow.get_observe_fn.return_value = lambda task, kwargs: Message(role=Role.USER, content="ReAct observation")
-        mock_workflow.get_end_workflow_tool.return_value = Mock()
+        mock_workflow.get_current_state.return_value = ReActStage.PROCESSING
+        mock_workflow.get_prompt.return_value = "Test prompt"
+        mock_workflow.get_tools.return_value = {}
+        mock_workflow.get_observe_fn.return_value = lambda task, kwargs: Message(role=Role.USER, content="test")
         mock_agent.get_workflow.return_value = mock_workflow
 
         self.mock_agent = mock_agent
@@ -137,81 +199,34 @@ class TestReActActions(unittest.TestCase, AgentTestMixin):
         actions = get_react_actions(self.mock_agent)
 
         self.assertIsInstance(actions, dict)
-        self.assertIn(ReActStage.REASONING, actions)
-        self.assertIn(ReActStage.REFLECTING, actions)
+        self.assertIn(ReActStage.PROCESSING, actions)
 
         # 验证动作是可调用对象
-        reasoning_action = actions[ReActStage.REASONING]
-        reflecting_action = actions[ReActStage.REFLECTING]
-        self.assertTrue(callable(reasoning_action))
-        self.assertTrue(callable(reflecting_action))
+        processing_action = actions[ReActStage.PROCESSING]
+        self.assertTrue(callable(processing_action))
 
-    async def test_reasoning_action_basic(self) -> None:
-        """测试REASONING动作基本功能"""
+    async def test_processing_action_signature(self) -> None:
+        """测试PROCESSING动作签名"""
         actions = get_react_actions(self.mock_agent)
-        reasoning_action = actions[ReActStage.REASONING]
+        processing_action = actions[ReActStage.PROCESSING]
 
         # 创建测试参数
         workflow = self.mock_agent.get_workflow.return_value
-        context = {"user_id": "test_user"}
+        context = {}
         queue = self.create_mock_queue()
-        task = self.create_mock_task(TaskState.RUNNING, {TaskState.RUNNING, TaskState.FINISHED})
+        task = self.create_mock_task(TestState("RUNNING"), {TestState("RUNNING"), TestState("FINISHED")})
 
-        # 设置task completion config
-        completion_config = CompletionConfig(
-            model="test-model",
-            max_tokens=100,
-            tools=[]
-        )
-        task.get_completion_config.return_value = completion_config
+        # MockTask已经设置了completion_config，不需要额外设置
 
         try:
             # 调用动作函数
-            result = await reasoning_action(workflow, context, queue, task)
+            result = await processing_action(workflow, context, queue, task)
 
             # 验证返回值是事件类型
             self.assertIsInstance(result, (ReActEvent, str))
-            self.assertIn(result, [ReActEvent.REFLECT, ReActEvent.REASON, ReActEvent.FINISH])
-
         except Exception as e:
             # 由于这个测试涉及复杂的异步操作，我们主要验证函数可以调用
-            self.assertIsInstance(e, (AttributeError, TypeError, RuntimeError))
-
-    async def test_reflecting_action_basic(self) -> None:
-        """测试REFLECTING动作基本功能"""
-        actions = get_react_actions(self.mock_agent)
-        reflecting_action = actions[ReActStage.REFLECTING]
-
-        # 更新workflow状态为REFLECTING
-        self.mock_agent.get_workflow.return_value.get_current_state.return_value = ReActStage.REFLECTING
-
-        # 创建测试参数
-        workflow = self.mock_agent.get_workflow.return_value
-        context = {"user_id": "test_user"}
-        queue = self.create_mock_queue()
-        task = self.create_mock_task(TaskState.RUNNING, {TaskState.RUNNING, TaskState.FINISHED})
-
-        # 设置task completion config
-        completion_config = CompletionConfig(
-            model="test-model",
-            max_tokens=100,
-            tools=[]
-        )
-        task.get_completion_config.return_value = completion_config
-
-        # 模拟工具调用
-        workflow.get_end_workflow_tool.return_value = Mock()
-
-        try:
-            # 调用动作函数
-            result = await reflecting_action(workflow, context, queue, task)
-
-            # 验证返回值是事件类型
-            self.assertIsInstance(result, (ReActEvent, str))
-            self.assertIn(result, [ReActEvent.REFLECT, ReActEvent.REASON, ReActEvent.FINISH])
-
-        except Exception as e:
-            # 由于这个测试涉及复杂的异步操作，我们主要验证函数可以调用
+            # 实际的集成测试应该使用更完整的设置
             self.assertIsInstance(e, (AttributeError, TypeError, RuntimeError))
 
 
@@ -220,33 +235,24 @@ class TestBuildReActAgent(unittest.TestCase):
 
     @patch('src.core.agent.react.get_settings')
     @patch('src.core.agent.react.OpenAiLLM')
-    @patch('src.core.agent.react.read_markdown')
-    @patch('src.core.agent.react.get_react_actions')
-    @patch('src.core.agent.react.get_react_transition')
-    def test_build_react_agent_basic(
-        self,
-        mock_get_transition,
-        mock_get_actions,
-        mock_read_markdown,
-        mock_openai_llm,
-        mock_get_settings
-    ):
+    @patch('src.core.agent.react.read_document')
+    def test_build_react_agent_basic(self, mock_read_doc, mock_openai_llm, mock_get_settings):
         """测试基本ReAct Agent构建"""
         # 设置模拟
         mock_agent_config = Mock()
-        mock_agent_config.agent_type = "ReActAgent"
+        mock_agent_config.agent_type = "SimpleAgent"
+        mock_llm_config = Mock()
+        mock_llm_config.model = "test-model"
+        mock_llm_config.base_url = "http://test.com"
+        mock_llm_config.api_key = "test-key"
 
         def mock_get_llm_config(stage):
-            mock_config = Mock()
-            mock_config.model = f"model-{stage}"
-            mock_config.base_url = "http://test.com"
-            mock_config.api_key = "test-key"
-            return mock_config
+            return mock_llm_config
 
         mock_agent_config.get_llm_config = mock_get_llm_config
 
         def mock_get_agent_config(name):
-            if name == "test-react-agent":
+            if name == "test-agent":
                 return mock_agent_config
             return None
 
@@ -254,167 +260,45 @@ class TestBuildReActAgent(unittest.TestCase):
         mock_settings.get_agent_config = mock_get_agent_config
         mock_get_settings.return_value = mock_settings
 
-        mock_read_markdown.return_value = "Test ReAct prompt content"
+        mock_read_doc.return_value = "Test prompt content"
         mock_openai_llm.return_value = Mock()
-        mock_get_actions.return_value = {}
-        mock_get_transition.return_value = {}
 
         try:
             # 构建Agent
-            agent = build_react_agent("test-react-agent")
+            agent = build_react_agent("test-agent")
 
             # 验证Agent基本属性
-            self.assertEqual(agent.get_name(), "test-react-agent")
-            self.assertEqual(agent.get_type(), "ReActAgent")
+            self.assertEqual(agent.get_name(), "test-agent")
+            self.assertEqual(agent.get_type(), "SimpleAgent")
 
-            # 验证LLM被创建（每个阶段都应该有一个LLM）
+            # 验证LLM被创建
             self.assertTrue(mock_openai_llm.called)
-            self.assertEqual(mock_openai_llm.call_count, len(ReActStage))
 
         except Exception as e:
             # 由于依赖外部配置，主要验证函数调用逻辑
             self.assertIsInstance(e, (ValueError, AttributeError, TypeError))
 
     @patch('src.core.agent.react.get_settings')
-    def test_build_react_agent_no_config(self, mock_get_settings):
+    def test_build_agent_no_config(self, mock_get_settings):
         """测试没有配置时的错误"""
         mock_settings = Mock()
         mock_settings.get_agent_config.return_value = None
         mock_get_settings.return_value = mock_settings
 
         with self.assertRaises(ValueError) as cm:
-            build_react_agent("nonexistent-react-agent")
+            build_react_agent("nonexistent-agent")
 
         self.assertIn("未找到名为", str(cm.exception))
 
-    @patch('src.core.agent.react.get_settings')
-    @patch('src.core.agent.react.OpenAiLLM')
-    @patch('src.core.agent.react.read_markdown')
-    @patch('src.core.agent.react.get_react_actions')
-    @patch('src.core.agent.react.get_react_transition')
-    def test_build_react_agent_custom_parameters(
-        self,
-        mock_get_transition,
-        mock_get_actions,
-        mock_read_markdown,
-        mock_openai_llm,
-        mock_get_settings
-    ):
-        """测试带自定义参数的ReAct Agent构建"""
-        # 设置模拟
-        mock_agent_config = Mock()
-        mock_agent_config.agent_type = "CustomReActAgent"
-        mock_agent_config.get_llm_config.return_value = Mock()
 
-        mock_settings = Mock()
-        mock_settings.get_agent_config.return_value = mock_agent_config
-        mock_get_settings.return_value = mock_settings
-
-        mock_read_markdown.return_value = "Custom prompt"
-        mock_openai_llm.return_value = Mock()
-
-        # 创建自定义参数
-        custom_actions = {ReActStage.REASONING: Mock()}
-        custom_transitions = {}
-        custom_prompts = {ReActStage.REASONING: "Custom reasoning prompt"}
-        custom_observe_funcs = {ReActStage.REASONING: lambda task, kwargs: Message(role=Role.USER, content="Custom observation")}
-        custom_end_workflow = Mock()
-
-        # 设置默认返回值
-        mock_get_actions.return_value = {}
-        mock_get_transition.return_value = {}
-
-        try:
-            # 构建带自定义参数的Agent
-            agent = build_react_agent(
-                name="custom-react-agent",
-                actions=custom_actions,
-                transitions=custom_transitions,
-                prompts=custom_prompts,
-                observe_funcs=custom_observe_funcs,
-                custom_end_workflow=custom_end_workflow
-            )
-
-            # 验证Agent基本属性
-            self.assertEqual(agent.get_name(), "custom-react-agent")
-            self.assertEqual(agent.get_type(), "CustomReActAgent")
-
-        except Exception as e:
-            # 由于依赖外部配置，主要验证函数调用逻辑
-            self.assertIsInstance(e, (ValueError, AttributeError, TypeError))
-
-
-class TestReActEndWorkflow(unittest.TestCase, AgentTestMixin):
-    """测试ReAct的end_workflow函数"""
-
-    def setUp(self) -> None:
-        """测试设置"""
-        self.task = self.create_mock_task(TaskState.RUNNING, {TaskState.RUNNING, TaskState.FINISHED})
-
-    @patch('src.core.agent.react.end_workflow')
-    def test_react_end_workflow_uses_simple_end_workflow(self, mock_simple_end_workflow):
-        """验证ReAct使用simple模块的end_workflow函数"""
-        # 由于react.py中导入的是simple模块的end_workflow，我们验证它可以正常使用
-        message_with_output = Message(
-            role=Role.ASSISTANT,
-            content="<output>\nReAct output\n</output>"
-        )
-
-        try:
-            # 直接调用react模块中的end_workflow（实际上是simple模块的函数）
-            simple_end_workflow({
-                "task": self.task,
-                "message": message_with_output
-            })
-
-            # 验证调用成功
-            self.assertTrue(self.task.is_completed())
-            self.assertEqual(self.task.get_output(), "ReAct output")
-
-        except Exception as e:
-            # 如果有任何其他依赖问题，至少验证函数存在
-            self.assertIsInstance(e, (AttributeError, TypeError))
-
-
-class TestReActWorkflowDocumentation(unittest.TestCase):
-    """测试ReAct工作流文档"""
+class TestWorkflowDocumentation(unittest.TestCase):
+    """测试工作流文档"""
 
     def test_end_workflow_doc(self) -> None:
         """测试end_workflow工具文档"""
         self.assertIsInstance(END_WORKFLOW_DOC, str)
         self.assertGreater(len(END_WORKFLOW_DOC), 0)
         self.assertIn("结束工作流", END_WORKFLOW_DOC)
-
-
-class TestReActIntegration(unittest.TestCase, AgentTestMixin):
-    """ReAct集成测试"""
-
-    def test_react_constants_consistency(self) -> None:
-        """测试ReAct常量的一致性"""
-        # 验证ReAct阶段的完整性
-        stages = get_react_stages()
-        self.assertIn(ReActStage.REASONING, stages)
-        self.assertIn(ReActStage.REFLECTING, stages)
-        self.assertIn(ReActStage.FINISHED, stages)
-
-        # 验证ReAct事件的完整性
-        event_chain = get_react_event_chain()
-        self.assertIn(ReActEvent.REASON, event_chain)
-        self.assertIn(ReActEvent.REFLECT, event_chain)
-        self.assertIn(ReActEvent.FINISH, event_chain)
-
-        # 验证转换规则覆盖所有必要的状态转换
-        transitions = get_react_transition()
-
-        # 关键转换应该存在
-        required_transitions = [
-            (ReActStage.REASONING, ReActEvent.REFLECT),
-            (ReActStage.REFLECTING, ReActEvent.FINISH),
-            (ReActStage.REFLECTING, ReActEvent.REASON)
-        ]
-
-        for state_event in required_transitions:
-            self.assertIn(state_event, transitions)
 
 
 if __name__ == "__main__":

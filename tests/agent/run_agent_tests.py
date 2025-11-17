@@ -48,6 +48,9 @@ class AgentTestRunner:
         self.no_coverage = False
         self.fast = False
 
+    # 类级别的静默模式标志
+    _quiet_mode = False
+
     @staticmethod
     def print_color(message: str, color: str = Colors.NC) -> None:
         """打印带颜色的消息"""
@@ -143,8 +146,8 @@ class AgentTestRunner:
             self.project_root / "src" / "core" / "agent" / "base.py",
             self.agent_test_dir / "test_base_agent.py",
             self.agent_test_dir / "test_interface.py",
-            self.agent_test_dir / "test_simple.py",
             self.agent_test_dir / "test_react.py",
+            self.agent_test_dir / "test_reflect.py",
             self.agent_test_dir / "test_helpers.py"
         ]
 
@@ -165,12 +168,16 @@ class AgentTestRunner:
         """安装测试依赖"""
         self.print_info("安装测试依赖...")
 
+        if not self.python_cmd:
+            self.print_error("Python命令未初始化")
+            return False
+
         os.chdir(self.project_root)
 
         try:
             # 安装pytest和相关依赖
             cmd = self.python_cmd + ['-m', 'pip', 'install', 'pytest', 'pytest-cov', 'pytest-asyncio']
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
             self.print_success("依赖安装完成")
             return True
         except subprocess.CalledProcessError as e:
@@ -186,7 +193,7 @@ class AgentTestRunner:
                 result = subprocess.run(cmd, capture_output=capture_output, text=True, check=True)
             return True, result.stdout if capture_output else ""
         except subprocess.CalledProcessError as e:
-            error_msg = e.stderr if e.stderr else str(e)
+            error_msg = e.stderr or str(e)
             return False, error_msg
 
     def run_basic_tests(self) -> bool:
@@ -198,6 +205,10 @@ class AgentTestRunner:
             "test_interface.py",
             "test_helpers.py"
         ]
+
+        if not self.pytest_cmd:
+            self.print_error("pytest命令未初始化")
+            return False
 
         pytest_args = []
         if self.verbose:
@@ -235,6 +246,10 @@ class AgentTestRunner:
             self.print_error(f"测试文件不存在: {test_file}")
             return False
 
+        if not self.pytest_cmd:
+            self.print_error("pytest命令未初始化")
+            return False
+
         pytest_args = []
         if self.verbose:
             pytest_args.append("-v")
@@ -248,11 +263,11 @@ class AgentTestRunner:
         if success:
             self.print_success(f"测试通过: {test_file}")
             return True
-        else:
-            self.print_error(f"测试失败: {test_file}")
-            if self.verbose:
-                print(output)
-            return False
+
+        self.print_error(f"测试失败: {test_file}")
+        if self.verbose:
+            print(output)
+        return False
 
     def generate_coverage_report(self) -> bool:
         """生成覆盖率报告"""
@@ -269,6 +284,10 @@ class AgentTestRunner:
             coverage_args.append("-v")
 
         self.print_info("生成覆盖率报告...")
+
+        if not self.pytest_cmd:
+            self.print_error("pytest命令未初始化")
+            return False
 
         cmd = self.pytest_cmd + ["."] + coverage_args
         success, output = self.run_command(cmd, self.agent_test_dir)
@@ -358,10 +377,14 @@ max-bool-expr=5
 
             pylintrc_path = self.project_root / ".pylintrc"
             try:
-                with open(pylintrc_path, 'w') as f:
+                with open(pylintrc_path, 'w', encoding='utf-8') as f:
                     f.write(pylint_config)
 
-                cmd = self.pylint_cmd + ["--rcfile", str(pylintrc_path), "src/core/agent/", "--score=yes"]
+                cmd = self.pylint_cmd + [
+                    "--rcfile", str(pylintrc_path),
+                    "src/core/agent/",
+                    "--score=yes"
+                ]
                 success, output = self.run_command(cmd, capture_output=True)
 
                 if success or "10/10" in output:  # Pylint有时会返回非零但评分是10/10
@@ -380,9 +403,9 @@ max-bool-expr=5
         if quality_passed:
             self.print_success("所有代码质量检查通过")
             return True
-        else:
-            self.print_error("代码质量检查失败")
-            return False
+
+        self.print_error("代码质量检查失败")
+        return False
 
     def cleanup(self) -> None:
         """清理临时文件"""
@@ -424,9 +447,9 @@ max-bool-expr=5
             if self.install_dependencies():
                 self.print_success("依赖安装完成")
                 return 0
-            else:
-                self.print_error("依赖安装失败")
-                return 1
+
+            self.print_error("依赖安装失败")
+            return 1
 
         start_time = time.time()
         test_passed = True
@@ -437,15 +460,15 @@ max-bool-expr=5
                 self.print_info("运行所有Agent测试...")
                 if not self.run_basic_tests():
                     test_passed = False
-                if not self.run_component_tests("simple"):
-                    test_passed = False
                 if not self.run_component_tests("react"):
+                    test_passed = False
+                if not self.run_component_tests("reflect"):
                     test_passed = False
 
             elif command == "basic":
                 test_passed = self.run_basic_tests()
 
-            elif command in ["interface", "simple", "react"]:
+            elif command in ["interface", "react", "reflect"]:
                 test_passed = self.run_component_tests(command)
 
             elif command == "coverage":
@@ -476,9 +499,9 @@ max-bool-expr=5
         if test_passed:
             self.print_success("所有测试通过！✅")
             return 0
-        else:
-            self.print_error("测试失败！❌")
-            return 1
+
+        self.print_error("测试失败！❌")
+        return 1
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -503,7 +526,7 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument(
         "command",
-        choices=["all", "basic", "interface", "simple", "react", "coverage", "quality", "install"],
+        choices=["all", "basic", "interface", "react", "reflect", "coverage", "quality", "install"],
         nargs="?",
         default="all",
         help="要执行的命令"

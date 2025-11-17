@@ -16,32 +16,36 @@ Scheduler 是一个**灵活的调度系统**，具有以下特点：
 
 ```mermaid
 graph TB
-    subgraph "Scheduler - Task 状态驱动"
-        S1[Task 状态变化] --> S2[Scheduler 监听]
-        S2 --> S3[触发状态回调]
-        S3 --> S4[执行业务逻辑]
-        S4 --> S5[发送 Event 给 Task]
-        S5 --> S6[Task 状态转换]
-        S6 --> S1
-    end
+    ScheduleStart[调度器入口]
+    ScheduleStart --> ReadState[读取 Task 当前状态]
+    ReadState -->|否| SelectHandler{根据状态选择调度函数}
+    SelectHandler --> CallHandler[调度函数<br/>执行业务逻辑<br/>]
+    HandlerReturn --> TaskHandle[将 Event 发送给 Task 执行处理]
+    TaskHandle --> OnStateChanged[调度器后处理：on_state_changed]
+    %% 后处理完成后回到“根据状态选择调度函数”进行最终判断
+    OnStateChanged --> ReadState{是否为结束状态？}
+    ReadState -->|是| END
 
     subgraph "Workflow - 自驱动事件链"
-        W1[Workflow 初始化] --> W2[event_chain_0]
-        W2 --> W3[执行阶段动作]
-        W3 --> W4[触发下一个 Event]
+        W1[Agent 执行任务] --> W2[获取第一个工作流事件<br/>event_chain_0]
+        W2 --> W3[执行工作流动作]
+        W3 --> W4[触发下一个 工作流Event]
         W4 --> W5[event_chain_1]
         W5 --> W3
         W3 -->|到达终态| W6[Workflow 结束]
     end
 
-    S5 -.->|调用| W1
+    CallHandler --> W1
+    W6 --> HandlerReturn[调度函数返回 Event 或 None]
 
-    style S1 fill:#fff3e0
-    style S5 fill:#fff3e0
-    style S6 fill:#fff3e0
-    style W2 fill:#e8f5e9
-    style W4 fill:#e8f5e9
-    style W6 fill:#e8f5e9
+    %% 说明与样式（便于阅读）
+    style ScheduleStart fill:#e1f5fe,stroke:#90caf9
+    style ReadState fill:#fff3e0
+    style SelectHandler fill:#fff9c4
+    style CallHandler fill:#f3e5f5
+    style HandlerReturn fill:#fff8e1
+    style TaskHandle fill:#e8f5e9
+    style OnStateChanged fill:#fce4ec
 ```
 
 **关键区别**：

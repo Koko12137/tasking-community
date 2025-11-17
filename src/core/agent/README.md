@@ -48,21 +48,20 @@ from queue import Queue
 Hooks 是 Agent 的扩展机制，允许在每次执行的各个关键节点注入自定义逻辑：
 
 ```mermaid
+
 graph TB
     %% 1. 外层基础节点（流程起点/终点/循环判断）
-    A[Agent 执行]
-    B{Observe-Think-Act 循环}
+    A[Agent 执行任务]
+    B{Observe-Think-Act <br/>工作流动作循环}
     P[结束]
 
-    %% 2. 核心执行循环（横向排列三个阶段，子图内竖向）
-    subgraph 执行循环
-        direction LR 
-        C[Pre-Run Hooks<br/>处理记忆相关]
-        O[Post-Run Hooks<br/>处理记忆相关]
+    %% 2. 核心执行循环
+    subgraph Action 循环
+        C[Pre-Run Hooks<br/>修改运行前上下文]
+        O[Post-Run Hooks<br/>修改运行后上下文]
 
-        %% 2.1 Observe 阶段（子图内「上→下」竖向）
+        %% 2.1 Observe 阶段
         subgraph Observe阶段
-            direction LR
             D[Pre-Observe Hooks<br/>修改观察信息]
             E[实际观察]
             F[Post-Observe Hooks<br/>处理观察结果]
@@ -70,20 +69,18 @@ graph TB
             E --> F
         end
 
-        %% 2.2 Think 阶段（子图内「上→下」竖向）
+        %% 2.2 Think 阶段
         subgraph Think阶段
-            direction LR
-            H[Pre-Think Hooks<br/>敏感信息屏蔽]
+            H[Pre-Think Hooks<br/>修改大模型推理输入]
             I[实际思考]
-            J[Post-Think Hooks<br/>恢复敏感信息]
+            J[Post-Think Hooks<br/>修改大模型推理输出]
             H --> I
             I --> J
         end
 
-        %% 2.3 Act 阶段（子图内「上→下」竖向）
+        %% 2.3 Act 阶段
         subgraph Act阶段
-            direction LR
-            L[Pre-Act Hooks<br/>执行许可验证]
+            L[Pre-Act Hooks<br/>处理大模型Act请求]
             M[实际执行]
             N[Post-Act Hooks<br/>执行后处理]
             L --> M
@@ -94,7 +91,7 @@ graph TB
         J --> L 
     end
 
-    %% 3. 外层完整流程（全用具体节点连接，无歧义）
+    %% 4. 外层完整流程（全用具体节点连接，无歧义）
     A --> B
     B --> C
     C --> D
@@ -102,12 +99,62 @@ graph TB
     O --> B
     B --> P
 
-    %% 保留原样式（无语法冲突）
+    %% 在结束后发送一个工作流事件，并交给工作流处理
+    P --> ReturnEvent[返回工作流事件<br/>Return Workflow Event]
+    ReturnEvent --> WorkflowHandler[Workflow 引擎状态转换处理]
+    WorkflowHandler -.-> Note_Workflow[此事件将交由工作流进行状态转换处理]
+
+    %% 各阶段 hook 着色（按阶段统一）
+    %% Pre-Run Hooks（整体/外层） - 淡蓝
+    style C fill:#e1f5fe
+    %% Post-Run Hooks（整体/外层） - 淡蓝
+    style O fill:#e1f5fe    
+
+    %% Pre-Observe Hooks - 观察阶段（淡橙）
+    style D fill:#fff3e0    
+    %% Post-Observe Hooks - 观察阶段（淡橙）
+    style F fill:#fff3e0    
+
+    %% Pre-Think Hooks - 思考阶段（淡绿）
+    style H fill:#e8f5e9    
+    %% Post-Think Hooks - 思考阶段（淡绿）
+    style J fill:#e8f5e9    
+
+    %% Pre-Act Hooks - 执行阶段（淡粉）
+    style L fill:#fce4ec    
+    %% Post-Act Hooks - 执行阶段（淡粉）
+    style N fill:#fce4ec    
+
+    %% 为每个钩子添加右侧的虚线笔记占位（我来填写内容）
+    C -.-> Note_PreRun[按照任务类型，加载必要的记忆内容，如和任务执行相关的“命令型记忆”]
+    O -.-> Note_PostRun[对上下文进行关键信息提取/压缩/折叠等操作]
+
+    D -.-> Note_PreObserve[按照任务类型，加载必要的依赖信息，如树型任务加载其父类的观察信息]
+    F -.-> Note_PostObserve[根据观察信息检索相应的“事件型记忆”，类似于人类的“看到某些情景就想起某些事”]
+
+    H -.-> Note_PreThink[可以用来将必要信息进行替换，如替换真实邮箱地址为虚拟邮箱地址，也可以在这里将观察阶段的上下文进行处理后输出到输出队列]
+    J -.-> Note_PostThink[可以将之前替换的内容替换回实际内容，也可以在这里将大模型推理内容处理后输出到输出队列]
+
+    L -.-> Note_PreAct[可以检查大模型执行该工具的许可，或者发起工具调用批准请求]
+    N -.-> Note_PostAct[可以通过回调函数向输出队列发送工具调用结果]
+
+    %% 新增工作流事件的笔记样式
+    style Note_Workflow fill:#fffde7,stroke:#f0e68c
+
+    %% 其他笔记样式（统一浅黄背景）
+    style Note_PreRun fill:#fffde7,stroke:#f0e68c
+    style Note_PostRun fill:#fffde7,stroke:#f0e68c
+    style Note_PreObserve fill:#fffde7,stroke:#f0e68c
+    style Note_PostObserve fill:#fffde7,stroke:#f0e68c
+    style Note_PreThink fill:#fffde7,stroke:#f0e68c
+    style Note_PostThink fill:#fffde7,stroke:#f0e68c
+    style Note_PreAct fill:#fffde7,stroke:#f0e68c
+    style Note_PostAct fill:#fffde7,stroke:#f0e68c
+
+    %% 保留其他节点样式
     style B fill:#e1f5fe
-    style D fill:#fff3e0
-    style H fill:#e8f5e9
-    style L fill:#fce4ec
     style P fill:#f3e5f5
+    style WorkflowHandler fill:#f8bbd9,stroke:#d0a3d0
 ```
 
 ### Run Hooks - 记忆管理

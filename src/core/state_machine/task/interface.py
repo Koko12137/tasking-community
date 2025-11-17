@@ -4,7 +4,7 @@ from typing import Any, Generic
 from src.core.state_machine.interface import IStateMachine
 from src.core.state_machine.const import StateT, EventT
 from src.core.context import IContext
-from src.model import Message, CompletionConfig
+from src.model import Message
 
 
 class ITask(IStateMachine[StateT, EventT]):
@@ -116,16 +116,6 @@ class ITask(IStateMachine[StateT, EventT]):
         pass
     
     # ********** 完成状态与信息 **********
-    
-    @abstractmethod
-    def get_completion_config(self) -> CompletionConfig:
-        """
-        获取任务的LLM推理配置信息
-        
-        Returns:
-            LLM推理配置信息实例
-        """
-        pass
     
     @abstractmethod
     def get_output(self) -> str:

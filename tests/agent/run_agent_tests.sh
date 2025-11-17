@@ -50,8 +50,8 @@ Agent模块测试运行脚本
     all             运行所有Agent测试（默认）
     basic           运行基础功能测试
     interface       运行接口测试
-    simple          运行Simple Agent测试
-    react           运行ReAct Agent测试
+    react           运行ReAct Agent测试 [原Simple]
+    reflect         运行Reflect Agent测试 [原ReAct]
     coverage        生成测试覆盖率报告
     quality         运行代码质量检查
     install         安装测试依赖
@@ -151,8 +151,8 @@ validate_project_structure() {
         "$PROJECT_ROOT/src/core/agent/base.py"
         "$AGENT_TEST_DIR/test_base_agent.py"
         "$AGENT_TEST_DIR/test_interface.py"
-        "$AGENT_TEST_DIR/test_simple.py"
         "$AGENT_TEST_DIR/test_react.py"
+        "$AGENT_TEST_DIR/test_reflect.py"
         "$AGENT_TEST_DIR/test_helpers.py"
     )
 
@@ -407,7 +407,7 @@ main() {
     # 解析命令行参数
     while [[ $# -gt 0 ]]; do
         case $1 in
-            all|basic|interface|simple|react|coverage|quality|install|help)
+            all|basic|interface|react|reflect|coverage|quality|install|help)
                 command="$1"
                 shift
                 ;;
@@ -497,10 +497,10 @@ main() {
             if ! run_basic_tests; then
                 test_passed=false
             fi
-            if ! run_component_tests "simple"; then
+            if ! run_component_tests "react"; then
                 test_passed=false
             fi
-            if ! run_component_tests "react"; then
+            if ! run_component_tests "reflect"; then
                 test_passed=false
             fi
             ;;
@@ -510,11 +510,11 @@ main() {
         "interface")
             run_component_tests "interface" || test_passed=false
             ;;
-        "simple")
-            run_component_tests "simple" || test_passed=false
-            ;;
         "react")
             run_component_tests "react" || test_passed=false
+            ;;
+        "reflect")
+            run_component_tests "reflect" || test_passed=false
             ;;
         "coverage")
             if [[ "$no_coverage" != "true" ]]; then

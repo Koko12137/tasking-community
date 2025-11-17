@@ -1,7 +1,6 @@
 from .interface import IScheduler
 from .base import BaseScheduler
-from .simple import create_simple_scheduler
-from .tree import create_tree_scheduler
+from .task import build_base_scheduler
 
 
 __all__ = [
@@ -10,5 +9,5 @@ __all__ = [
     # Implementations
     "BaseScheduler",
     # Scripts
-    "create_tree_scheduler", "create_simple_scheduler",
+    "build_base_scheduler",
 ]

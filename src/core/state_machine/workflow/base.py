@@ -8,12 +8,13 @@ from src.core.state_machine.base import BaseStateMachine
 from src.core.state_machine.task.interface import ITask, StateT, EventT
 from src.core.state_machine.workflow.interface import IWorkflow
 from src.core.state_machine.workflow.const import WorkflowStageT, WorkflowEventT
-from src.model import Message, IQueue
+from src.model import Message, IQueue, CompletionConfig
 
 
 class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], BaseStateMachine[WorkflowStageT, WorkflowEventT]):
     """基础工作流实现类"""
     _name: str
+    _completion_configs: dict[WorkflowStageT, CompletionConfig]
     # 基础能力
     _actions: dict[WorkflowStageT, Callable[
         [
@@ -43,6 +44,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         ],
         # Workflow 基本属性
         name: str,
+        completion_configs: dict[WorkflowStageT, CompletionConfig],
         actions: dict[
             WorkflowStageT, 
             Callable[
@@ -80,6 +82,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         """
         # 初始化基本属性
         self._name = name
+        self._completion_configs = completion_configs
         # 初始化基础能力
         self._actions = actions
         self._prompts = prompts
@@ -116,6 +119,17 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
     def get_name(self) -> str:
         """获取工作流的名称"""
         return self._name
+
+    def get_completion_config(self) -> CompletionConfig:
+        """
+        获取工作流当前阶段的LLM推理配置信息
+        
+        Returns:
+            LLM推理配置信息实例
+        """
+        # 获取当前状态
+        stage = self.get_current_state()
+        return self._completion_configs[stage]
 
     # ********** 基础能力信息 **********
 

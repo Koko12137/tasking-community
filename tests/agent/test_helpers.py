@@ -10,13 +10,35 @@ from unittest.mock import Mock, AsyncMock
 import asyncio
 
 from src.core.agent.interface import IAgent
-from src.core.state_machine.const import StateT, EventT
+from src.core.state_machine.const import StateProtocol, EventProtocol
 from src.core.state_machine.task.interface import ITask
 from src.core.state_machine.workflow.interface import IWorkflow
-from src.core.state_machine.workflow.const import WorkflowStageT, WorkflowEventT
+from src.core.state_machine.workflow.const import ReActStage, ReActEvent
 from src.llm.interface import ILLM
 from src.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue
 from src.utils.transform.tool import Provider
+
+
+class TestState(str):
+    """测试状态实现，符合StateProtocol"""
+
+    def __new__(cls, value: str):
+        return super().__new__(cls, value)
+
+    @property
+    def name(self) -> str:
+        return str(self)
+
+
+class TestEvent(str):
+    """测试事件实现，符合EventProtocol"""
+
+    def __new__(cls, value: str):
+        return super().__new__(cls, value)
+
+    @property
+    def name(self) -> str:
+        return str(self)
 
 
 class MockLLM(ILLM):
@@ -69,13 +91,13 @@ class MockLLM(ILLM):
         )
 
 
-class MockTask(ITask[StateT, EventT]):
+class MockTask(ITask):
     """模拟任务实现"""
 
     def __init__(
         self,
-        initial_state: StateT,
-        valid_states: set[StateT],
+        initial_state: TestState,
+        valid_states: set[TestState],
         task_id: str = "test-task"
     ) -> None:
         self._id = task_id
@@ -99,13 +121,13 @@ class MockTask(ITask[StateT, EventT]):
     def get_id(self) -> str:
         return self._id
 
-    def get_current_state(self) -> StateT:
+    def get_current_state(self) -> TestState:
         return self._current_state
 
-    def get_valid_states(self) -> set[StateT]:
+    def get_valid_states(self) -> set[TestState]:
         return self._valid_states.copy()
 
-    def get_transitions(self) -> dict[tuple[StateT, EventT], tuple[StateT, Callable[["IStateMachine[StateT, EventT]"], Awaitable[None] | None] | None]]:
+    def get_transitions(self) -> dict[tuple[TestState, TestEvent], tuple[TestState, Callable[["IStateMachine"], Awaitable[None] | None] | None]]:
         return {}
 
     def compile(self) -> None:
@@ -114,7 +136,7 @@ class MockTask(ITask[StateT, EventT]):
     def is_compiled(self) -> bool:
         return self._is_compiled
 
-    def handle_event(self, event: EventT) -> None:
+    def handle_event(self, event: TestEvent) -> None:
         # Simple mock implementation
         pass
 
@@ -123,7 +145,7 @@ class MockTask(ITask[StateT, EventT]):
         pass
 
     # ITask interface implementation
-    def get_state_visit_count(self, state: StateT) -> int:
+    def get_state_visit_count(self, state: TestState) -> int:
         return self._state_visit_count.get(state, 0)
 
     def set_max_revisit_count(self, count: int) -> None:
@@ -188,13 +210,13 @@ class MockTask(ITask[StateT, EventT]):
         return self._error_message is not None
 
 
-class MockWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]):
+class MockWorkflow(IWorkflow):
     """模拟工作流实现"""
 
     def __init__(
         self,
-        current_state: WorkflowStageT,
-        event_chain: list[EventT] = None,
+        current_state: ReActStage,
+        event_chain: list[ReActEvent] = None,
         workflow_id: str = "test-workflow"
     ) -> None:
         self._id = workflow_id
@@ -216,15 +238,15 @@ class MockWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]):
     def get_id(self) -> str:
         return self._id
 
-    def get_valid_states(self) -> set[WorkflowStageT]:
+    def get_valid_states(self) -> set[ReActStage]:
         return self._valid_states.copy()
 
-    def get_current_state(self) -> WorkflowStageT:
+    def get_current_state(self) -> ReActStage:
         return self._current_state
 
     def get_transitions(self) -> dict[
-        tuple[WorkflowStageT, WorkflowEventT],
-        tuple[WorkflowStageT, Callable[["IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]"], Awaitable[None] | None] | None]
+        tuple[ReActStage, ReActEvent],
+        tuple[ReActStage, Callable[["IWorkflow[ReActStage, ReActEvent, StateT, EventT]"], Awaitable[None] | None] | None]
     ]:
         return self._transitions.copy()
 
@@ -234,7 +256,7 @@ class MockWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]):
     def is_compiled(self) -> bool:
         return self._is_compiled
 
-    def handle_event(self, event: WorkflowEventT) -> None:
+    def handle_event(self, event: ReActEvent) -> None:
         # Simple mock implementation - just update current state
         pass
 
@@ -246,36 +268,36 @@ class MockWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]):
     def get_name(self) -> str:
         return "MockWorkflow"
 
-    def has_stage(self, stage: WorkflowStageT) -> bool:
+    def has_stage(self, stage: ReActStage) -> bool:
         return stage in self._valid_states
 
     def get_end_workflow_tool(self):
         return self._end_workflow_tool
 
-    def get_event_chain(self) -> list[WorkflowEventT]:
+    def get_event_chain(self) -> list[ReActEvent]:
         return self._event_chain.copy()
 
-    def get_actions(self) -> dict[WorkflowStageT, Callable[
+    def get_actions(self) -> dict[ReActStage, Callable[
         [
-            "IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]",
+            "IWorkflow[ReActStage, ReActEvent, StateT, EventT]",
             dict[str, Any],
             IQueue[Message],
-            ITask[StateT, EventT],
+            ITask[TestState, TestEvent],
         ],
-        Awaitable[WorkflowEventT]
+        Awaitable[ReActEvent]
     ]]:
         return self._actions.copy()
 
     def get_action(self):
         return self._action
 
-    def get_prompts(self) -> dict[WorkflowStageT, str]:
+    def get_prompts(self) -> dict[ReActStage, str]:
         return self._prompts.copy()
 
     def get_prompt(self) -> str:
         return self._prompts.get(self._current_state, self._prompt)
 
-    def get_observe_funcs(self) -> dict[WorkflowStageT, Callable[[ITask[StateT, EventT], dict[str, Any]], Message]]:
+    def get_observe_funcs(self) -> dict[ReActStage, Callable[[ITask[TestState, TestEvent], dict[str, Any]], Message]]:
         return self._observe_funcs.copy()
 
     def get_observe_fn(self):
@@ -292,7 +314,7 @@ class MockWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]):
     def get_tools(self) -> dict[str, tuple[Any, set[str]]]:
         return {"test_tool": (Mock(), set())}
 
-    async def call_tool(self, name: str, task: ITask[StateT, EventT], inject: dict[str, Any], kwargs: dict[str, Any]):
+    async def call_tool(self, name: str, task: ITask[TestState, TestEvent], inject: dict[str, Any], kwargs: dict[str, Any]):
         # Mock tool call implementation
         result = Mock()
         result.content = [Mock()]
@@ -325,6 +347,20 @@ class MockQueue(IQueue[Message]):
     def clear(self) -> None:
         self.messages.clear()
 
+    def get_nowait(self) -> Message:
+        """立即获取消息，如果没有消息则抛出异常"""
+        if self.messages:
+            return self.messages.pop(0)
+        raise asyncio.QueueEmpty()
+
+    def put_nowait(self, item: Message) -> None:
+        """立即放入消息"""
+        self.messages.append(item)
+
+    def is_full(self) -> bool:
+        """检查队列是否已满"""
+        return False  # Mock队列永不 满
+
 
 class AgentTestMixin:
     """Agent测试混入类，提供共享的测试工具方法"""
@@ -340,8 +376,8 @@ class AgentTestMixin:
 
     @staticmethod
     def create_mock_task(
-        initial_state: StateT,
-        valid_states: set[StateT],
+        initial_state: TestState,
+        valid_states: set[TestState],
         task_id: str = "test-task"
     ) -> MockTask:
         """创建模拟任务"""
@@ -349,8 +385,8 @@ class AgentTestMixin:
 
     @staticmethod
     def create_mock_workflow(
-        current_state: StateT,
-        event_chain: list[EventT] = None,
+        current_state: ReActStage,
+        event_chain: list[ReActEvent] = None,
         workflow_id: str = "test-workflow"
     ) -> MockWorkflow:
         """创建模拟工作流"""
@@ -390,15 +426,15 @@ class AgentTestMixin:
             raise AssertionError(f"Test timed out after {timeout} seconds")
 
 
-def create_simple_agent_test_state() -> tuple[StateT, set[StateT]]:
-    """创建简单的Agent测试状态"""
+def create_react_agent_test_state() -> tuple[TestState, set[TestState]]:
+    """创建ReAct Agent的测试状态"""
     # Using string literals as mock states for testing
-    init_state: StateT = "PROCESSING"  # type: ignore
-    valid_states: set[StateT] = {"PROCESSING", "COMPLETED"}  # type: ignore
+    init_state = TestState("PROCESSING")
+    valid_states: set[TestState] = {TestState("PROCESSING"), TestState("COMPLETED")}
     return init_state, valid_states
 
 
-def create_simple_agent_test_events() -> list[EventT]:
-    """创建简单的Agent测试事件"""
-    # Using string literals as mock events for testing
-    return ["PROCESS", "COMPLETE"]  # type: ignore
+def create_react_agent_test_events() -> list[ReActEvent]:
+    """创建ReAct Agent的测试事件"""
+    # Using SimpleEvent constants for testing
+    return [ReActEvent.PROCESS, ReActEvent.COMPLETE]

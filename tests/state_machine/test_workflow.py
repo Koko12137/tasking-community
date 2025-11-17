@@ -16,7 +16,7 @@ from queue import Queue
 from fastmcp.tools import Tool as FastMcpTool
 
 from src.core.state_machine.workflow.base import BaseWorkflow
-from src.core.state_machine.workflow.const import ReActStage, ReActEvent, SimpleStage, SimpleEvent
+from src.core.state_machine.workflow.const import ReflectStage, ReflectEvent, ReActStage, ReActEvent
 from src.core.state_machine.workflow.interface import IWorkflow
 from src.core.state_machine.task.interface import ITask
 from src.core.state_machine.task.const import TaskState, TaskEvent
@@ -24,13 +24,13 @@ from src.model import Message, Role
 
 # Type aliases for complex types
 ReActTransition = tuple[
-    ReActStage,
+    ReflectStage,
     Callable[
-        [IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent]],
+        [IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent]],
         Awaitable[None] | None
     ] | None
 ]
-ReActTransitionMap = dict[tuple[ReActStage, ReActEvent], ReActTransition]
+ReActTransitionMap = dict[tuple[ReflectStage, ReflectEvent], ReActTransition]
 
 
 class TestBaseWorkflow(unittest.IsolatedAsyncioTestCase):
@@ -44,48 +44,48 @@ class TestBaseWorkflow(unittest.IsolatedAsyncioTestCase):
 
         # 创建状态转换
         self.transitions: ReActTransitionMap = {
-            (ReActStage.REASONING, ReActEvent.REASON): (ReActStage.REASONING, None),
-            (ReActStage.REASONING, ReActEvent.REFLECT): (ReActStage.REFLECTING, None),
-            (ReActStage.REFLECTING, ReActEvent.FINISH): (ReActStage.REASONING, None),
+            (ReflectStage.REASONING, ReflectEvent.REASON): (ReflectStage.REASONING, None),
+            (ReflectStage.REASONING, ReflectEvent.REFLECT): (ReflectStage.REFLECTING, None),
+            (ReflectStage.REFLECTING, ReflectEvent.FINISH): (ReflectStage.REASONING, None),
         }
 
         # 创建工作流
         self.workflow = BaseWorkflow[
-            ReActStage,  # WorkflowStageT
-            ReActEvent,  # WorkflowEventT
+            ReflectStage,  # WorkflowStageT
+            ReflectEvent,  # WorkflowEventT
             TaskState,   # StateT
             TaskEvent    # EventT
         ](
-            valid_states={ReActStage.REASONING, ReActStage.REASONING, ReActStage.REFLECTING},
-            init_state=ReActStage.REASONING,
+            valid_states={ReflectStage.REASONING, ReflectStage.REASONING, ReflectStage.REFLECTING},
+            init_state=ReflectStage.REASONING,
             transitions=self.transitions,
             name="test_workflow",
             labels={"test": "test_workflow", "output": "workflow_output"},
             actions={
-                ReActStage.REASONING: self._mock_action,
-                ReActStage.REFLECTING: self._mock_action,
+                ReflectStage.REASONING: self._mock_action,
+                ReflectStage.REFLECTING: self._mock_action,
             },
             prompts={
-                ReActStage.REASONING: "Reason about the task",
-                ReActStage.REFLECTING: "Reflect on the result",
+                ReflectStage.REASONING: "Reason about the task",
+                ReflectStage.REFLECTING: "Reflect on the result",
             },
             observe_funcs={
-                ReActStage.REASONING: self._mock_observe,
-                ReActStage.REFLECTING: self._mock_observe,
+                ReflectStage.REASONING: self._mock_observe,
+                ReflectStage.REFLECTING: self._mock_observe,
             },
-            event_chain=[ReActEvent.REASON, ReActEvent.REFLECT, ReActEvent.FINISH],
+            event_chain=[ReflectEvent.REASON, ReflectEvent.REFLECT, ReflectEvent.FINISH],
             end_workflow=self.end_workflow_tool
         )
 
     async def _mock_action(
         self,
-        _workflow: IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
+        _workflow: IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
         _context: Dict[str, Any],
         _queue: Queue[Message],
         _task: ITask[TaskState, TaskEvent]
-    ) -> ReActEvent:
+    ) -> ReflectEvent:
         """模拟工作流动作"""
-        return ReActEvent.FINISH
+        return ReflectEvent.FINISH
 
     def _mock_observe(
         self,
@@ -104,14 +104,14 @@ class TestBaseWorkflow(unittest.IsolatedAsyncioTestCase):
     async def test_workflow_stage_properties(self) -> None:
         """测试工作流阶段属性"""
         # 测试 ReActStage 的属性
-        self.assertTrue(hasattr(ReActStage, 'REASONING'))
-        self.assertTrue(hasattr(ReActStage, 'REFLECTING'))
-        self.assertTrue(hasattr(ReActStage, 'FINISHED'))
+        self.assertTrue(hasattr(ReflectStage, 'REASONING'))
+        self.assertTrue(hasattr(ReflectStage, 'REFLECTING'))
+        self.assertTrue(hasattr(ReflectStage, 'FINISHED'))
 
         # 测试 ReActEvent 的属性
-        self.assertTrue(hasattr(ReActEvent, 'REASON'))
-        self.assertTrue(hasattr(ReActEvent, 'REFLECT'))
-        self.assertTrue(hasattr(ReActEvent, 'FINISH'))
+        self.assertTrue(hasattr(ReflectEvent, 'REASON'))
+        self.assertTrue(hasattr(ReflectEvent, 'REFLECT'))
+        self.assertTrue(hasattr(ReflectEvent, 'FINISH'))
 
     async def test_workflow_methods(self) -> None:
         """测试工作流方法"""
@@ -133,31 +133,31 @@ class TestWorkflowIntegration(unittest.IsolatedAsyncioTestCase):
         end_workflow_tool.name = "end_workflow"
 
         workflow = BaseWorkflow[
-            SimpleStage,   # WorkflowStageT
-            SimpleEvent,   # WorkflowEventT
+            ReActStage,   # WorkflowStageT
+            ReActEvent,   # WorkflowEventT
             TaskState,     # StateT
             TaskEvent      # EventT
         ](
-            valid_states={SimpleStage.PROCESSING, SimpleStage.COMPLETED},
-            init_state=SimpleStage.PROCESSING,
+            valid_states={ReActStage.PROCESSING, ReActStage.COMPLETED},
+            init_state=ReActStage.PROCESSING,
             transitions={
-                (SimpleStage.PROCESSING, SimpleEvent.COMPLETE): (SimpleStage.COMPLETED, None),
+                (ReActStage.PROCESSING, ReActEvent.COMPLETE): (ReActStage.COMPLETED, None),
             },
             name="simple_workflow",
             labels={"simple": "test_workflow", "output": "simple_output"},
             actions={
-                SimpleStage.PROCESSING: self._mock_simple_action,
-                SimpleStage.COMPLETED: self._mock_simple_action,
+                ReActStage.PROCESSING: self._mock_simple_action,
+                ReActStage.COMPLETED: self._mock_simple_action,
             },
             prompts={
-                SimpleStage.PROCESSING: "Process",
-                SimpleStage.COMPLETED: "Complete",
+                ReActStage.PROCESSING: "Process",
+                ReActStage.COMPLETED: "Complete",
             },
             observe_funcs={
-                SimpleStage.PROCESSING: self._mock_simple_observe,
-                SimpleStage.COMPLETED: self._mock_simple_observe,
+                ReActStage.PROCESSING: self._mock_simple_observe,
+                ReActStage.COMPLETED: self._mock_simple_observe,
             },
-            event_chain=[SimpleEvent.COMPLETE],
+            event_chain=[ReActEvent.COMPLETE],
             end_workflow=end_workflow_tool
         )
 
@@ -166,13 +166,13 @@ class TestWorkflowIntegration(unittest.IsolatedAsyncioTestCase):
 
     async def _mock_simple_action(
         self,
-        _workflow: IWorkflow[SimpleStage, SimpleEvent, TaskState, TaskEvent],
+        _workflow: IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
         _context: Dict[str, Any],
         _queue: Queue[Message],
         _task: ITask[TaskState, TaskEvent]
-    ) -> SimpleEvent:
+    ) -> ReActEvent:
         """模拟简单工作流动作"""
-        return SimpleEvent.COMPLETE
+        return ReActEvent.COMPLETE
 
     def _mock_simple_observe(
         self,
