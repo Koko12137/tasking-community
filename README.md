@@ -90,14 +90,15 @@ Tasking的设计哲学体现了AI系统设计的演进：**从被动防御上下
 
 ```mermaid
 stateDiagram-v2
-    [*] --> INITED: 任务创建
-    INITED --> CREATED: 初始化完成
-    CREATED --> RUNNING: 开始执行
-    RUNNING --> FINISHED: 执行成功
-    RUNNING --> FAILED: 执行失败
-    RUNNING --> CANCELED: 任务取消
-    FAILED --> RUNNING: 重试执行
-    FINISHED --> [*]: 任务结束
+    [*] --> INITED: 初始化
+    INITED --> CREATED: IDENTIFIED
+    CREATED --> RUNNING: PLANED
+    RUNNING --> FINISHED: DONE
+    RUNNING --> FAILED: ERROR
+    FAILED --> RUNNING: RETRY
+    FAILED --> CANCELED: CANCEL
+    FINISHED --> [*]
+    CANCELED --> [*]
 ```
 
 **任务的自治特性**：
@@ -252,7 +253,9 @@ pytest tests/           # 禁止
 
 ```python
 import asyncio
+
 from loguru import logger
+from fastmcp import Client
 
 from src.core.agent import build_simple_agent
 from src.core.scheduler import create_simple_scheduler
@@ -267,7 +270,8 @@ async def main():
     logger.info("🎯 用户目标：介绍人工智能技术")
 
     # 第一步：创建智能体执行器（Agent + Workflow）
-    agent = build_simple_agent(name="AI助手")
+    mcp = Client("./server.py")
+    agent = build_simple_agent(name="AI助手", tool_service=mcp)
     logger.info("🤖 智能体执行器已创建，提供高质量执行能力")
 
     # 第二步：创建调度器（任务状态管理器）
@@ -354,32 +358,7 @@ Tasking通过清晰的职责分离和标准化接口实现了以下关键优势�
 
 ## 适用场景：何时选择Tasking？
 
-### 🎯 最佳适用场景
-
-#### 1. 复杂工作流管理
-**场景**：需要多个步骤、多种工具的复杂任务
-**示例**：
-- 智能文档处理（解析→分析→生成报告）
-- 多模态内容创作（文本→图像→视频）
-- 复杂数据分析流程（收集→清洗→分析→可视化）
-
-#### 2. 团队协作开发
-**场景**：多人协作的AI应用开发
-**优势**：
-- 清晰的接口定义
-- 类型安全的开发体验
-- 完整的错误处理机制
-
-#### 3. 自定义AI能力扩展
-**场景**：需要集成特定领域工具和服务
-**示例**：
-- 企业内部系统集成
-- 特定行业的专业工具
-- 自定义LLM模型集成
-
-### 🎯 适用场景
-
-#### 最适合使用Tasking的场景
+### 最适合使用Tasking的场景
 
 1. **复杂任务协作**：需要多个任务层次化协作来完成复杂目标
 2. **状态管理要求高**：需要精确追踪和控制任务执行状态
@@ -387,7 +366,7 @@ Tasking通过清晰的职责分离和标准化接口实现了以下关键优势�
 4. **长期维护系统**：需要稳定可靠的生产级AI系统
 5. **自定义扩展需求**：需要集成特定工具和服务的场景
 
-#### Tasking的核心价值
+### Tasking的核心价值
 
 - **清晰性**：明确的职责边界让系统易于理解和维护
 - **可靠性**：完整的错误处理和状态管理确保系统稳定
@@ -402,7 +381,7 @@ Tasking通过清晰的职责分离和标准化接口实现了以下关键优势�
 - **[开发者文档](src/README.md)** - 完整的架构说明、API文档和最佳实践
 - **[CLAUDE.md](CLAUDE.md)** - AI辅助开发规范和代码质量要求
 
-### 🔧 核心能力
+### 🔧 核心能力 Road Map
 
 **任务管理核心**：
 - [x] 完整的任务状态机（INITED → CREATED → RUNNING → FINISHED/FAILED/CANCELED）
@@ -422,6 +401,8 @@ Tasking通过清晰的职责分离和标准化接口实现了以下关键优势�
 - [x] 完整的错误处理和恢复机制
 - [x] 异步优先的执行框架
 - [x] 提供商无关的LLM集成接口
+
+---
 
 ### 🎯 MVP设计原则
 
