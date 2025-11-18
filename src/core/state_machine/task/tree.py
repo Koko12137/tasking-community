@@ -6,7 +6,6 @@ from src.core.state_machine.const import StateT, EventT
 from src.core.state_machine.task.interface import ITask, ITreeTaskNode, ITaskView
 from src.core.state_machine.task.base import BaseTask, TodoTaskView, DocumentTaskView, RequirementTaskView, JsonTaskView
 from src.core.context import IContext, BaseContext
-from src.model import CompletionConfig
 
 
 class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
@@ -32,7 +31,6 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
         tags: set[str],
         task_type: str,
         max_depth: int,
-        completion_config: CompletionConfig,
         context_cls: type[IContext] = BaseContext,
         parent: ITreeTaskNode[StateT, EventT] | None = None,
         sub_tasks: list[ITreeTaskNode[StateT, EventT]] | None = None,
@@ -67,7 +65,6 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
             protocol=protocol,
             tags=tags,
             task_type=task_type,
-            completion_config=completion_config,
             context_cls=context_cls,
             **kwargs,
         )

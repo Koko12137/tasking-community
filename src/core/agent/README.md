@@ -1,54 +1,538 @@
-# Agent 模块文档
+# Agent 工作流系统
 
-> Agent 模块提供智能体实现，支持 LLM 集成、工作流管理和扩展钩子机制。
->
-> **注意**: ReAct 工作流相关功能正在开发中 [WIP]
+本文档旨在帮助开发者由浅入深地理解 Agent 工作流系统的设计和实现，并提供清晰的开发指导。通过阅读本文档，你将了解 Agent 的核心工作原理、架构设计以及如何实现自定义的工作流。
 
-## 核心功能
+## 📚 文档导航
 
-### Agent 类型
+- **架构概览**: 通过可视化架构图理解 Agent 系统的组件关系
+- **核心概念**: 深入了解 Agent、Action、Transition 等核心概念
+- **开发指南**: 分步骤说明如何创建新的 Agent 工作流
+- **Hook 机制**: 了解如何扩展和自定义 Agent 行为
 
-Agent 支持三种类型：
+## 🏗️ 系统架构
 
-- **SUPERVISOR**: 监督型智能体，负责任务分解和子任务协调
-- **PLANNER**: 规划型智能体，负责任务规划和执行计划制定
-- **EXECUTOR**: 执行型智能体，负责具体任务执行
+```mermaid
+graph TB
+    %% 1. Scheduler 调度流程（基于 Scheduler 文档）
+    ScheduleStart[调度器入口]
+    ScheduleStart --> ReadState[读取 Task 当前状态]
+    ReadState -->|否| SelectHandler{根据状态选择调度函数}
+    SelectHandler --> CallHandler[调度函数<br/>执行业务逻辑<br/>调用 Agent]
+    CallHandler --> TaskHandle[将 Event 发送给 Task 执行处理]
+    TaskHandle --> OnStateChanged[调度器后处理：on_state_changed]
+    %% 后处理完成后回到"根据状态选择调度函数"进行最终判断
+    OnStateChanged --> ReadState{Task是否为结束状态}
+    ReadState -->|是| END
 
-### 创建 Agent
+    %% 2. Workflow - 自驱动事件链（基于 Scheduler 文档，扩展为 Agent 的 Workflow）
+    subgraph "Workflow - 自驱动事件链（Agent 内部）"
+        W1[Agent 执行任务] --> W2[获取第一个工作流事件<br/>event_chain_0<br/>STARTED]
+        W2 --> W3[执行工作流动作<br/>Observe-Think-Act动作函数]
+        W3 --> W4[触发下一个 Workflow Event<br/>通过 Actions/Transitions]
+        W4 --> W5[event_chain_N<br/>中间事件...]
+        W5 --> W3
+        W3 -->|到达终态| W6[Workflow 结束<br/>DONE]
+    end
 
-```python
-from src.core.agent.simple import BaseAgent
-# 注意：ReAct 相关功能正在开发中 [WIP]
+    CallHandler --> W1
+    W6 --> HandlerReturn[调度函数返回 Event 或 None]
 
-# 创建基础 Agent
-# agent = BaseAgent[name="my_agent", agent_type="EXECUTOR", llms={}, tool_service=None]
+    %% 说明与样式（便于阅读）
+    style ScheduleStart fill:#e1f5fe,stroke:#90caf9
+    style ReadState fill:#fff3e0
+    style SelectHandler fill:#fff9c4
+    style CallHandler fill:#f3e5f5
+    style HandlerReturn fill:#fff8e1
+    style TaskHandle fill:#e8f5e9
+    style OnStateChanged fill:#fce4ec
 
-# 关联工作流 [WIP]
-# agent.set_workflow(workflow)
+    %% Workflow 区域样式
+    style W1 fill:#f8bbd9
+    style W2 fill:#e1bee7
+    style W3 fill:#c5cae9
+    style W4 fill:#c5cae9
+    style W5 fill:#e1bee7
+    style W6 fill:#f8bbd9
+
+    %% Actions/Transitions 样式
+    classDef action fill:#81c784,stroke:#388e3c
+    classDef transition fill:#ffb74d,stroke:#f57c00
+    classDef event fill:#ce93d8,stroke:#8e24aa
+
+    class A1,A2,A3 action
+    class T1,T2,T3 transition
+    class E0,E1 event
 ```
 
-### 执行任务
+根据架构图，Agent 系统由以下核心部分组成：
+
+### 系统组件
+
+1. **Agent（智能体）** - 被调度的执行主体
+   - 接收 Scheduler 的调用
+   - 启动并执行 Workflow
+
+2. **Workflow（工作流）** - 自驱动的事件链系统
+   - 通过 event_chain 定义执行序列
+   - 在每个事件中执行 Observe-Think-Act 动作函数
+   - 通过 Actions 和 Transitions 控制流程推进
+   - 自主执行，不关心外部 Task 状态
+
+3. **Actions（行动）** - Workflow 的具体执行单元
+   - SelectToolAction：选择合适的工具
+   - CallToolAction：调用选定的工具
+   - ParseResultAction：解析工具执行结果
+
+4. **Transitions（转移）** - Workflow 状态转移条件
+   - ShouldSelectTool：判断是否需要选择工具
+   - ShouldCallTool：判断是否应该调用工具
+   - ShouldParseResult：判断是否需要解析结果
+
+### 执行流程
+
+1. **调度阶段**：
+   - Scheduler 监听 Task 状态变化
+   - 当 Task 进入特定状态（如 RUNNING）时触发调度
+   - 调度函数调用对应的 Agent
+
+2. **执行阶段**：
+   - Agent 被调用后启动 Workflow
+   - Workflow 获取第一个事件（STARTED）
+   - 执行 Observe-Think-Act 动作函数
+   - 通过 Actions 执行具体任务
+   - 通过 Transitions 决定下一个事件
+
+3. **完成阶段**：
+   - Workflow 到达终态
+   - 返回 **任务事件** 给 Scheduler
+   - Scheduler 更新 Task 状态并执行后处理
+
+### 关键特点
+
+- **关注点分离**：Scheduler 管理 Task 生命周期，Workflow 管理具体执行逻辑
+- **自驱动执行**：Workflow 一旦启动就按事件链自主推进
+- **灵活扩展**：通过 Actions/Transitions 和工具接口支持功能扩展
+
+## 🔧 Agent 工作流开发指南
+
+参照[orchestrate.py](./orchestrate.py)，创建一个新的 Agent 工作流需要定义以下六个核心部分：
+
+### 1. 定义 Workflow Stage 以及对应的驱动事件 Workflow Event
+
+工作流通过事件链驱动，需要先定义业务需求的 **工作流状态** 以及对应的 **驱动事件**。
+在编排工作流中，编排需要对内容进行思考，然后执行编排的动作，将任务拆分成子树。
 
 ```python
-from queue import Queue
+class OrchestrateStage(str, Enum):
+    """Orchestrate 工作流阶段枚举"""
+    THINKING = "thinking"
+    ORCHESTRATING = "orchestrating"
+    FINISHED = "finished"
+    
+    @classmethod
+    def list_stages(cls) -> list['OrchestrateStage']:
+        """列出所有工作流阶段
+        
+        Returns:
+            工作流阶段列表
+        """
+        return [stage for stage in OrchestrateStage]
 
-# 执行任务流式返回 [WIP]
-# context = {"user_id": "user123", "session_id": "abc"}
-# queue = Queue[Message]()
-#
-# result_task = await agent.run_task_stream(
-#     context=context,
-#     queue=queue,
-#     task=task
-# )
+
+class OrchestrateEvent(Enum):
+    """Orchestrate 工作流事件枚举"""
+    THINK = auto()          # 触发思考
+    ORCHESTRATE = auto()    # 触发编排
+    FINISH = auto()         # 触发完成
+
+    @property
+    def name(self) -> str:
+        """获取事件名称"""
+        return self._name_.lower()
+
+
+def get_orch_stages() -> set[OrchestrateStage]:
+    """获取 Think - Orchestrate - Finish 工作流的阶段
+    - THINKING, ORCHESTRATING, FINISHED
+    
+    Returns:
+        orchestrate 工作流的阶段集合
+    """
+    return {
+        OrchestrateStage.THINKING,
+        OrchestrateStage.ORCHESTRATING,
+        OrchestrateStage.FINISHED,
+    }
+    
+
+def get_orch_event_chain() -> list[OrchestrateEvent]:
+    """获取编排工作流事件链
+    -  THINK, ORCHESTRATE, FINISH
+
+    Returns:
+        orchestrate工作流事件链
+    """
+    return [
+        OrchestrateEvent.THINK,
+        OrchestrateEvent.ORCHESTRATE,
+        OrchestrateEvent.FINISH,
+    ]
 ```
 
-## Hooks 机制
+**关键事件**：
+- **启动事件**: 工作流开始的第一个事件
+- **中间事件**: 执行过程中的各种状态变化
+- **结束事件**: 工作流完成的最后一个事件
+
+**开发要点**：
+- 明确定义启动和结束事件
+- 确保事件链的完整性和逻辑性
+- 避免无限循环或无法到达结束状态
+
+### 2. 定义 Actions（行动）
+
+Actions 是工作流的基本执行单元，用于根据工作流状态执行具体任务。每个 Action 负责一个特定的执行步骤。
+
+```python
+def get_orch_actions(
+    agent: IAgent[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
+) -> dict[
+    OrchestrateStage, 
+    Callable[
+        [
+            IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
+            dict[str, Any],
+            IQueue[Message],
+            ITask[TaskState, TaskEvent],
+        ], 
+        Awaitable[OrchestrateEvent]
+    ]
+]:
+    """获取 Orchestrate 工作流动作定义
+    -  THINKING: thinking_action
+    -  CHECKING: checking_action
+    -  ORCHESTRATING: orchestrating_action
+
+    Args:
+        agent (IAgent): 关联的智能体实例
+
+    Returns:
+        常用工作流动作定义，注意，这里的工作流动作函数必须遵守规定的函数签名
+    """
+    # 初始化动作函数容器
+    actions: dict[OrchestrateStage, Callable[
+        [
+            IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
+            dict[str, Any],
+            IQueue[Message],
+            ITask[TaskState, TaskEvent],
+        ], 
+        Awaitable[OrchestrateEvent]]
+    ] = {}
+    
+    # THINKING 阶段动作定义
+    async def think(
+        workflow: IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
+        context: dict[str, Any],
+        queue: IQueue[Message],
+        task: ITask[TaskState, TaskEvent],
+    ) -> OrchestrateEvent:
+        """THINKING 阶段动作函数
+        
+        Args:
+            context (dict[str, Any]): 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
+            queue (IQueue[Message]): 数据队列，用于输出数据
+            workflow (IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent]): 工作流实例
+            task (ITask[TaskState, TaskEvent]): 任务实例
+
+        Returns:
+            OrchestrateEvent: 触发的事件类型
+        """
+        ...
+
+        # 获取当前工作流的提示词
+        prompt = workflow.get_prompt()
+        # 创建新的任务消息
+        message = Message(role=Role.USER, content=prompt)
+        # 添加 message 到当前任务上下文
+        task.get_context().append_context_data(message)
+        # 观察 Task
+        observe = await agent.observe(
+            context=context,
+            queue=queue,
+            task=task,
+            observe_fn=workflow.get_observe_fn(),
+        )
+        # 开始 LLM 推理
+        message = await agent.think(
+            context=context,
+            queue=queue,
+            llm_name=current_state.name, 
+            observe=observe, 
+            completion_config=workflow.get_completion_config(),
+        )
+        # 推理结果反馈到任务
+        task.get_context().append_context_data(message)
+        
+        # 允许执行工具标志位
+        allow_tool: bool = True
+        # Get all the tool calls from the assistant message
+        if message.stop_reason == StopReason.TOOL_CALL:
+            # Act on the task or environment
+            for tool_call in message.tool_calls:
+
+                # 检查工具执行许可
+                if not allow_tool:
+                    # 生成错误信息
+                    result = Message(
+                        role=Role.TOOL,
+                        tool_call_id=tool_call.id,
+                        is_error=True,
+                        content="由于前置工具调用出错，后续工具调用被禁止继续执行"
+                    )
+                    continue
+
+                # 开始执行工具，如果是工具服务的工具，则 task/workflow 不会被注入到参数中
+                result = await agent.act(
+                    context=context,
+                    queue=queue,
+                    tool_call=tool_call,
+                    task=task,
+                    workflow=workflow,
+                )
+                # 工具调用结果反馈到任务
+                task.get_context().append_context_data(result)
+                # 检查调用错误状态
+                if result.is_error:
+                    # 将任务设置为错误状态
+                    task.set_error(result.content)
+                    # 停止执行剩余的工具
+                    allow_tool = False
+
+        if not allow_tool or task.is_error():
+            # 调用了工具，但出现错误，或者计划没有被批准，返回 THINK 事件重新思考
+            return OrchestrateEvent.THINK
+        
+        # 正常完成思考，开始检查计划内容是否合理
+        return OrchestrateEvent.CHECK
+    
+    # 添加到动作定义字典
+    actions[OrchestrateStage.THINKING] = think
+    
+    # CHECKING 阶段动作定义
+    async def check(
+        workflow: IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
+        context: dict[str, Any],
+        queue: IQueue[Message],
+        task: ITask[TaskState, TaskEvent],
+    ) -> OrchestrateEvent:
+        """CHECKING 阶段动作函数
+        
+        Args:
+            context (dict[str, Any]): 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
+            queue (IQueue[Message]): 数据队列，用于输出数据
+            workflow (IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent]): 工作流实例
+            task (ITask[TaskState, TaskEvent]): 任务实例
+
+        Returns:
+            OrchestrateEvent: 触发的事件类型
+        """
+        approve_plan = ApprovePlan()
+        
+        ...
+
+        # 获取任务的推理配置
+        completion_config = workflow.get_completion_config()
+        # 新增批准或否决函数工具，并强调必须选择该工具
+        completion_config.update(
+            tools=[
+                FastMcpTool.from_function(
+                    fn=approve_or_reject_plan,
+                    name="approve_or_reject_plan",
+                    description=APPROVE_OR_REJECT_DOC,
+                    exclude_args=["kwargs"],    # 该参数由框架自动注入
+                )
+            ],
+            tool_choice="approve_or_reject_plan",
+        )
+        
+        ...
+
+        # Get all the tool calls from the assistant message
+        if message.stop_reason == StopReason.TOOL_CALL:
+            # Act on the task or environment
+            for tool_call in message.tool_calls:
+
+                ...
+
+                # 注入 Task 和 approve_plan，并开始执行工具
+                result = await agent.act(
+                    context=context,
+                    queue=queue,
+                    tool_call=tool_call,
+                    task=task,
+                    approve_plan=approve_plan,
+                )
+
+                ...
+        
+        ...
+
+        if task.is_error() or not allow_tool or not approve_plan.is_approved():
+            # 调用了工具，但出现错误，或者计划没有被批准，返回 THINK 事件重新思考
+        else:
+            return OrchestrateEvent.ORCHESTRATE
+
+    # 添加到动作定义字典
+    actions[OrchestrateStage.CHECKING] = check
+    
+    # ORCHESTRATING 阶段动作定义
+    async def orchestrate(
+        workflow: IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
+        context: dict[str, Any],
+        queue: IQueue[Message],
+        task: ITask[TaskState, TaskEvent],
+    ) -> OrchestrateEvent:
+        """ORCHESTRATING 阶段动作函数
+        
+        Args:
+            context (dict[str, Any]): 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
+            queue (IQueue[Message]): 数据队列，用于输出数据
+            workflow (IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent]): 工作流实例
+            task (ITask[TaskState, TaskEvent]): 任务实例
+
+        Returns:
+            OrchestrateEvent: 触发的事件类型
+        """
+        ...
+
+        # 获取任务的推理配置
+        completion_config = workflow.get_completion_config()
+        # 要求输出必须格式化为JSON
+        completion_config.update(format_json=True)
+
+        ...
+
+        try:
+            # 强制类型转换
+            task_casted = cast(ITreeTaskNode[TaskState, TaskEvent], task)
+            # 解析 JSON 结果
+            create_sub_tasks(task_casted, message.content)
+        except ValueError as e:
+            # 设置任务错误状态
+            task.set_error(f"无法解析子任务 JSON 字符串: {e}")
+            return OrchestrateEvent.THINK
+        
+        return OrchestrateEvent.FINISH
+
+    # 添加到动作定义字典
+    actions[OrchestrateStage.ORCHESTRATING] = orchestrate
+
+    return actions
+```
+
+**开发要点**：
+- `Action` 动作函数的签名必须符合要求
+- 针对不同的工作流阶段使用不同的大模型推理配置 `CompletionConfig`
+
+### 3. 定义 Transitions（转移）
+
+Transitions 定义了工作流状态之间的转移条件，根据任务的执行结果决定下一个状态。
+
+```python
+coming soon
+```
+
+**开发要点**：
+- coming soon
+
+### 4. 实现工作流结束或其他特定函数
+
+```python
+class ApprovePlan:
+    _approved: bool
+    
+    def __init__(self) -> None:
+        """Initialize the ApprovePlan instance. Default is not approved."""
+        self._approved = False
+        
+    def approve(self) -> None:
+        self._approved = True
+        
+    def reject(self) -> None:
+        self._approved = False
+        
+    def is_approved(self) -> bool:
+        return self._approved
+    
+
+APPROVE_OR_REJECT_DOC = """
+现在你需要根据用户的反馈（如果有）或者你自己的思考来决定是否批准当前的计划。
+
+Args:
+        approve (bool): 是否批准计划
+"""
+
+
+def approve_or_reject_plan(approve: bool, kwargs: dict[str, Any]) -> None:
+    """根据外部输入批准或拒绝计划，这个是需要智能体根据用户反馈或者自我思考选择是否通过计划的工具函数
+    
+    Args:
+        approve (bool): 是否批准计划
+        kwargs (dict[str, Any]): 关键字参数，必须包含 "approve_plan" 键，对应 ApprovePlan 实例。
+            该参数由框架自动注入。
+    
+    Returns:
+        None
+    """
+    approve_plan: ApprovePlan = kwargs["approve_plan"]
+    
+    if approve:
+        approve_plan.approve()
+    else:
+        approve_plan.reject()
+```
+
+**功能**：
+- 用于结束工作流或者某些判断工作流状态转换的特殊方法
+
+### 5. 配置阶段提示词
+
+提示词用于指导每个工作流阶段的任务执行，相当于阶段性的执行指令。
+
+```python
+coming soon
+```
+
+**配置要点**：
+- **分阶段配置**: 每个工作流阶段都有独立的提示词
+- **清晰指令**: 提供明确的执行指导
+- **上下文相关**: 根据阶段特点定制内容
+- **错误处理**: 包含异常情况的处理指导
+
+### 6. 实现观察函数
+
+观察函数将任务状态转换为 LLM 可以理解的格式，因为任务包含多个属性，但不同工作流可能只需要关注特定属性。
+
+```python
+coming soon
+```
+
+**设计原则**：
+- **选择性观察**: 只提取当前阶段需要的任务属性
+- **格式转换**: 将内部数据结构转换为 LLM 友好格式
+- **上下文过滤**: 提供相关上下文，避免信息过载
+- **阶段适配**: 不同阶段可以有不同的观察逻辑
+
+## 🔌 Hook 机制
+
+Hook 机制允许在不修改核心代码的情况下扩展 Agent 的行为。通过 Hook，可以在关键执行点插入自定义逻辑。
+
+### Hook 架构图
 
 Hooks 是 Agent 的扩展机制，允许在每次执行的各个关键节点注入自定义逻辑：
 
 ```mermaid
-
 graph TB
     %% 1. 外层基础节点（流程起点/终点/循环判断）
     A[Agent 执行任务]
@@ -87,8 +571,8 @@ graph TB
             M --> N
         end
 
-        F --> H 
-        J --> L 
+        F --> H
+        J --> L
     end
 
     %% 4. 外层完整流程（全用具体节点连接，无歧义）
@@ -108,24 +592,24 @@ graph TB
     %% Pre-Run Hooks（整体/外层） - 淡蓝
     style C fill:#e1f5fe
     %% Post-Run Hooks（整体/外层） - 淡蓝
-    style O fill:#e1f5fe    
+    style O fill:#e1f5fe
 
     %% Pre-Observe Hooks - 观察阶段（淡橙）
-    style D fill:#fff3e0    
+    style D fill:#fff3e0
     %% Post-Observe Hooks - 观察阶段（淡橙）
-    style F fill:#fff3e0    
+    style F fill:#fff3e0
 
     %% Pre-Think Hooks - 思考阶段（淡绿）
-    style H fill:#e8f5e9    
+    style H fill:#e8f5e9
     %% Post-Think Hooks - 思考阶段（淡绿）
-    style J fill:#e8f5e9    
+    style J fill:#e8f5e9
 
     %% Pre-Act Hooks - 执行阶段（淡粉）
-    style L fill:#fce4ec    
+    style L fill:#fce4ec
     %% Post-Act Hooks - 执行阶段（淡粉）
-    style N fill:#fce4ec    
+    style N fill:#fce4ec
 
-    %% 为每个钩子添加右侧的虚线笔记占位（我来填写内容）
+    %% 为每个钩子添加右侧的虚线笔记占位
     C -.-> Note_PreRun[按照任务类型，加载必要的记忆内容，如和任务执行相关的“命令型记忆”]
     O -.-> Note_PostRun[对上下文进行关键信息提取/压缩/折叠等操作]
 
@@ -157,281 +641,45 @@ graph TB
     style WorkflowHandler fill:#f8bbd9,stroke:#d0a3d0
 ```
 
-### Run Hooks - 记忆管理
+### 可用的 Hook 接口
+
+当前可用的 Hook 接口：
+- `observe`: 自定义观察逻辑
+- `act`: 自定义行动逻辑
+- `should_act`: 自定义行动判断逻辑
+- `done`: 自定义完成处理逻辑
+
+### Hook 使用示例
+
+#### Run Hooks - 记忆管理
 
 **在每次循环前后触发**，主要用于处理 Agent 的记忆相关操作。
 
 ```python
-# 每次循环前
-# 示例函数 - 需要根据实际需求实现
-async def pre_run_hook(
-    context: dict[str, Any],
-    queue: Queue[Message],
-    task: ITask[TaskState, TaskEvent]
-) -> None:
-    """每次循环前的记忆准备"""
-    # 从长期记忆加载相关信息
-    # context["working_memory"] = load_working_memory(task.get_id())  # 示例函数
-
-    # 设置本次循环的上下文
-    context["loop_count"] = context.get("loop_count", 0) + 1
-    print(f"[Loop {context['loop_count']}] 开始新一轮执行")
-
-# 每次循环后
-async def post_run_hook(
-    context: dict[str, Any],
-    queue: Queue[Message],
-    task: ITask[TaskState, TaskEvent]
-) -> None:
-    """每次循环后的记忆整理"""
-    # 保存工作记忆到长期存储
-    # working_memory = context.get("working_memory", {})
-    # save_working_memory(task.get_id(), working_memory)  # 示例函数
-
-    # 压缩和整理记忆
-    if context.get("loop_count", 0) % 5 == 0:  # 每5轮压缩一次
-        # compress_memories(task.get_id())  # 示例函数
-        pass
-
-# 注册 Hooks
-agent.add_pre_run_once_hook(pre_run_hook)
-agent.add_post_run_once_hook(post_run_hook)
+coming soon
 ```
 
-### Observe Hooks - 观察信息处理
+#### Observe Hooks - 观察信息处理
 
 **用于处理对观察信息的修改操作**。
 
 ```python
-# 观察前，修改观察行为
-# 示例函数 - 需要根据实际需求实现
-async def pre_observe_hook(
-    context: dict[str, Any],
-    queue: Queue[Message],
-    task: ITask[TaskState, TaskEvent]
-) -> None:
-    """修改观察行为或过滤观察源"""
-    # 根据用户权限设置观察范围
-    user_role = context.get("user_role", "guest")
-    if user_role == "guest":
-        # 访客只能看到部分信息
-        context["observe_scope"] = "public"
-    else:
-        context["observe_scope"] = "all"
-
-# 观察后，修改观察结果
-async def post_observe_hook(
-    context: dict[str, Any],
-    queue: Queue[Message],
-    task: ITask[TaskState, TaskEvent],
-    observe_res: list[Message]
-) -> None:
-    """处理和修改观察结果"""
-    # 清理观察结果，移除敏感信息
-    cleaned_results = []
-    for msg in observe_res:
-        # cleaned_msg = filter_sensitive_info(msg)  # 示例函数，需要实现
-        cleaned_results.append(msg)
-
-    # 更新观察结果（列表是可变的）
-    observe_res.clear()
-    observe_res.extend(cleaned_results)
-
-    # 添加元数据注释
-    for msg in observe_res:
-        msg.metadata = {"source": "filtered", "timestamp": time.time()}
-
-# agent.add_pre_observe_hook(pre_observe_hook)
-# agent.add_post_observe_hook(post_observe_hook)
+coming soon
 ```
 
-### Think Hooks - 敏感信息处理
-
-**用于敏感信息的屏蔽和恢复操作**。
-
-```python
-# 示例函数 - 需要根据实际需求实现
-async def pre_think_hook(
-    context: dict[str, Any],
-    queue: Queue[Message],
-    observe_res: list[Message]
-) -> None:
-    """屏蔽观察结果中的敏感信息"""
-    # 保存原始信息到上下文，以便恢复
-    # context["original_observe"] = copy.deepcopy(observe_res)  # 需要 import copy
-
-    # 屏蔽敏感信息
-    for msg in observe_res:
-        if msg.content:
-            # 替换个人信息
-            # msg.content = mask_personal_info(msg.content)  # 示例函数
-            # 替换机密数据
-            # msg.content = mask_confidential_data(msg.content)  # 示例函数
-            # 标记已屏蔽
-            msg.metadata = msg.metadata or {}
-            msg.metadata["masked"] = True
-
-# 思考后，恢复敏感信息（如果需要）
-async def post_think_hook(
-    context: dict[str, Any],
-    queue: Queue[Message],
-    observe_res: list[Message],
-    think_result: Message
-) -> None:
-    """处理思考结果，必要时恢复信息"""
-    # 清理思考结果中的敏感信息
-    if think_result.content:
-        # think_result.content = sanitize_thinking_output(think_result.content)  # 示例函数
-        pass
-
-    # 如果需要保留原始观察用于后续处理
-    if context.get("keep_original"):
-        # 恢复观察信息
-        # original = context.get("original_observe", [])
-        # observe_res.clear()
-        # observe_res.extend(original)
-        pass
-
-# agent.add_pre_think_hook(pre_think_hook)
-# agent.add_post_think_hook(post_think_hook)
-```
-
-### Act Hooks - 执行许可与安全
+#### Act Hooks - 执行许可与安全
 
 **用于敏感信息处理和执行许可验证**。
 
 ```python
-# 行动前，执行许可验证
-async def pre_act_hook(
-    context: dict[str, Any],
-    queue: Queue[Message],
-    task: ITask[TaskState, TaskEvent]
-) -> None:
-    """验证执行许可和安全检查"""
-    # 检查用户权限
-    user_id = context.get("user_id")
-    action_permission = check_user_permission(user_id, "execute_tools")
-
-    if not action_permission:
-        raise PermissionError(f"用户 {user_id} 无执行工具权限")
-
-    # 检查工具使用频率限制
-    tool_name = context.get("pending_tool")
-    if not check_rate_limit(user_id, tool_name):
-        raise RateLimitError(f"工具 {tool_name} 使用频率超限")
-
-    # 记录执行审计日志
-    log_action_attempt(user_id, tool_name, task.get_id())
-
-# 行动后，处理敏感结果
-async def post_act_hook(
-    context: dict[str, Any],
-    queue: Queue[Message],
-    task: ITask[TaskState, TaskEvent],
-    act_result: Message
-) -> None:
-    """处理执行结果和敏感信息"""
-    # 检查执行结果是否包含敏感信息
-    if act_result.content:
-        # 脱敏处理
-        act_result.content = desensitize_result(act_result.content)
-
-        # 添加水印（如需要）
-        if context.get("add_watermark"):
-            act_result.content = add_watermark(
-                act_result.content,
-                user_id=context.get("user_id")
-            )
-
-    # 更新使用统计
-    update_usage_stats(context.get("user_id"), context.get("tool_name"))
-
-    # 记录执行日志
-    log_action_complete(
-        user_id=context.get("user_id"),
-        tool_name=context.get("tool_name"),
-        success=act_result.metadata.get("success", True)
-    )
-
-agent.add_pre_act_hook(pre_act_hook)
-agent.add_post_act_hook(post_act_hook)
+coming soon
 ```
 
-## 核心能力
+Hook 系统提供了一个灵活的扩展点，支持插件式的功能增强。通过合理使用 Hooks，可以实现：
+- 记忆管理和上下文处理
+- 安全检查和权限控制
+- 敏感信息过滤和脱敏
+- 性能监控和日志记录
+- 自定义业务逻辑注入
 
-### Observe - 观察
-
-从任务和环境中提取信息：
-
-```python
-observations = await agent.observe(
-    context={},
-    queue=queue,
-    task=task
-)
-```
-
-### Think - 思考
-
-基于观察进行推理：
-
-```python
-from src.model.llm import CompletionConfig
-
-think_result = await agent.think(
-    context={},
-    queue=queue,
-    llm_name="reasoning",
-    observe=observations,
-    completion_config=CompletionConfig(
-        model="gpt-4",
-        max_tokens=1000,
-        temperature=0.7
-    )
-)
-```
-
-### Act - 行动
-
-执行工具调用：
-
-```python
-act_result = await agent.act(
-    context={},
-    queue=queue,
-    task=task,
-    think_result=think_result
-)
-```
-
-## 工具调用
-
-Agent 支持通过工作流调用工具：
-
-```python
-# 通过工作流调用工具
-result = await workflow.call_tool(
-    name="search",
-    task=task,
-    inject={"user_id": context.get("user_id")},
-    kwargs={"query": "Python async", "max_results": 5}
-)
-
-# 直接通过 Agent 调用工具
-result = await agent.call_tool(
-    name="search",
-    task=task,
-    inject={},
-    kwargs={}
-)
-```
-
-## 最佳实践
-
-1. **Hooks 执行顺序**：同类型 Hooks 按注册顺序执行
-2. **错误处理**：在 Hooks 中捕获异常，避免影响主流程
-3. **性能监控**：使用 Hooks 记录执行时间和性能指标
-4. **权限控制**：在 Pre-Act Hooks 中检查工具调用权限
-5. **日志记录**：使用 Hooks 记录详细的执行日志
-
-**最后更新**: 2025-11-11
+**最后更新**: 2025-11-19

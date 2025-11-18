@@ -8,6 +8,7 @@ dependencies = [
     "anthropic>=0.72.0",
     "asyncer>=0.0.10",
     "fastmcp>=2.13.0.2",
+    "json-repair>=0.54",
     "loguru>=0.7.3",
     "mypy>=1.18.2",
     "openai>=2.6.1",

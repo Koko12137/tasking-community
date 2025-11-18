@@ -325,10 +325,6 @@ def build_react_agent(
         ReActStage,
         Callable[[ITask[TaskState, TaskEvent], dict[str, Any]], Message]
     ] | None = None,
-    custom_end_workflow: Callable[
-        [ITask[TaskState, TaskEvent], IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent]],
-        None
-    ] | None = None,
 ) -> IAgent[ReActStage, ReActEvent, TaskState, TaskEvent]:
     """构建一个简单的智能体实例
 
@@ -339,7 +335,6 @@ def build_react_agent(
         transitions: 状态转换规则，可选，如果未提供则使用默认定义
         prompts: 提示词，可选，如果未提供则使用默认定义
         observe_funcs: 观察函数，可选，如果未提供则使用默认定义
-        custom_end_workflow: 结束工作流函数，可选，如果未提供则使用默认定义
 
     Returns:
         IAgent[reactStage, reactEvent, TaskState, TaskEvent]: 智能体实例
@@ -411,7 +406,7 @@ def build_react_agent(
     
     # 构建结束工作流工具实例
     end_workflow_tool = FastMcpTool.from_function(
-        fn= custom_end_workflow if custom_end_workflow is not None else end_workflow,
+        fn= end_workflow,
         name="end_workflow",
         description=END_WORKFLOW_DOC,
         exclude_args=["kwargs"],
@@ -439,7 +434,7 @@ def build_react_agent(
         prompts=prompts,
         observe_funcs=observe_funcs,
         event_chain=event_chain,
-        end_workflow=end_workflow_tool,
+        tools={end_workflow_tool.name: (end_workflow_tool, set())},
     )
     # 关联工作流到智能体
     agent.set_workflow(workflow)

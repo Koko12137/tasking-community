@@ -30,8 +30,6 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
     _event_chain: list[WorkflowEventT]
     # 工具集合
     _tools: dict[str, tuple[FastMcpTool, set[str]]]
-    # 结束工作流的函数
-    _end_workflow_fn: FastMcpTool
 
     def __init__(
         self,
@@ -60,7 +58,6 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         prompts: dict[WorkflowStageT, str],
         observe_funcs: dict[WorkflowStageT, Callable[[ITask[StateT, EventT], dict[str, Any]], Message]],
         event_chain: list[WorkflowEventT],
-        end_workflow: FastMcpTool, 
         tools: dict[str, tuple[FastMcpTool, set[str]]] | None = None,
         **kwargs: Any
     ) -> None:
@@ -90,9 +87,6 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         self._event_chain = event_chain
         # 工具集合，默认包括结束工作流工具
         self._tools = tools if tools is not None else {}
-        self._tools[end_workflow.name] = (end_workflow, set())
-        # 结束工作流函数
-        self._end_workflow_fn = end_workflow
 
         # 需要转换 transitions 中的回调函数类型，从 IWorkflow 转为 IStateMachine
         converted_transitions: dict[
@@ -143,14 +137,6 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
             bool: 如果包含则返回 True，否则返回 False
         """
         return stage in self._valid_states if self._valid_states else False
-    
-    def get_end_workflow_tool(self) -> FastMcpTool:
-        """获取结束工作流的工具
-
-        Returns:
-            FastMcpTool: 结束工作流的工具
-        """
-        return self._end_workflow_fn
     
     def get_event_chain(self) -> list[WorkflowEventT]:
         """获取工作流的事件链的副本，第一个为初始事件，最后一个为结束事件

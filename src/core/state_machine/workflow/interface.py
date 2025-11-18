@@ -43,15 +43,6 @@ class IWorkflow(IStateMachine[WorkflowStageT, WorkflowEventT], Generic[WorkflowS
             bool: 如果包含则返回 True，否则返回 False
         """
         pass
-    
-    @abstractmethod
-    def get_end_workflow_tool(self) -> FastMcpTool:
-        """获取结束工作流的工具
-
-        Returns:
-            FastMcpTool: 结束工作流的工具
-        """
-        pass
 
     @abstractmethod
     def get_event_chain(self) -> list[WorkflowEventT]:

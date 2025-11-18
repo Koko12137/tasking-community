@@ -255,7 +255,7 @@ def get_reflect_actions(
         completion_config = workflow.get_completion_config()
         # 更新推理配置以适应反思阶段
         completion_config.update(
-            tools=[workflow.get_end_workflow_tool()],
+            tools=[workflow.get_tool("end_workflow")],
             stop_words=["</final_flag>", "</finish>", "</finish_flag>", "</end_flag>"],
         )
         
@@ -375,10 +375,6 @@ def build_reflect_agent(
         ReflectStage,
         Callable[[ITask[TaskState, TaskEvent], dict[str, Any]], Message]
     ] | None = None,
-    custom_end_workflow: Callable[
-        [ITask[TaskState, TaskEvent], IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent]],
-        None
-    ] | None = None,
 ) -> IAgent[ReflectStage, ReflectEvent, TaskState, TaskEvent]:
     """构建一个 `Reason - Act - Reflection` 的智能体实例
 
@@ -389,7 +385,6 @@ def build_reflect_agent(
         transitions: 状态转换规则，可选，如果未提供则使用默认定义
         prompts: 提示词，可选，如果未提供则使用默认定义
         observe_funcs: 观察函数，可选，如果未提供则使用默认定义
-        custom_end_workflow: 结束工作流函数，可选，如果未提供则使用默认定义
 
     Returns:
         智能体实例
@@ -447,7 +442,7 @@ def build_reflect_agent(
     
     # 构建结束工作流工具实例
     end_workflow_tool = FastMcpTool.from_function(
-        fn= custom_end_workflow if custom_end_workflow is not None else end_workflow,
+        fn= end_workflow,
         name="end_workflow",
         description=END_WORKFLOW_DOC,
         exclude_args=["workflow", "task"],
@@ -475,7 +470,7 @@ def build_reflect_agent(
         prompts=prompts,
         observe_funcs=observe_funcs,
         event_chain=event_chain,
-        end_workflow=end_workflow_tool,
+        tools={end_workflow_tool.name: (end_workflow_tool, set())},
     )
     # 关联工作流到智能体
     agent.set_workflow(workflow)

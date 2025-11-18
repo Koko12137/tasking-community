@@ -681,6 +681,15 @@ wheels = [
 ]
 
 [[package]]
+name = "json-repair"
+version = "0.54"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b1/51/b70cce3907ccf091f21d2b7d73f61f5ee3eda39b4dfe7d833c6d96a7b853/json_repair-0.54.tar.gz", hash = "sha256:8ba612a54ff7171cc0529ad050843d4f72fe3b93a1571b9c8637a64fa3acf5f1", size = 38455, upload-time = "2025-11-18T14:21:49.301Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/3c/80c4dfaa14bb7668d2a699906fbd8584d40ebe460a6104df12da1f5621b2/json_repair-0.54-py3-none-any.whl", hash = "sha256:e0a988eb08000fc460b6061acaf3b7aa6e1170eae3de9ea246a89ec21cbc4f8d", size = 29273, upload-time = "2025-11-18T14:21:47.833Z" },
+]
+
+[[package]]
 name = "jsonschema"
 version = "4.25.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1525,6 +1534,7 @@ dependencies = [
     { name = "anthropic" },
     { name = "asyncer" },
     { name = "fastmcp" },
+    { name = "json-repair" },
     { name = "loguru" },
     { name = "mypy" },
     { name = "openai" },
@@ -1548,6 +1558,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.72.0" },
     { name = "asyncer", specifier = ">=0.0.10" },
     { name = "fastmcp", specifier = ">=2.13.0.2" },
+    { name = "json-repair", specifier = ">=0.54" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mypy", specifier = ">=1.18.2" },
     { name = "openai", specifier = ">=2.6.1" },

@@ -6,7 +6,6 @@ from src.core.state_machine.task.const import TaskState, TaskEvent
 from src.core.state_machine.task.interface import ITreeTaskNode
 from src.core.state_machine.task.base import BaseTask
 from src.core.state_machine.task.tree import BaseTreeTaskNode
-from src.model import CompletionConfig
 from src.utils.io import read_document
     
 
@@ -129,7 +128,6 @@ def build_base_tree_node(
     tags: set[str],
     task_type: str,
     max_depth: int,
-    completion_config: CompletionConfig,
 ) -> BaseTreeTaskNode[TaskState, TaskEvent]:
     """构建基础树形任务节点状态机实例
 
@@ -152,7 +150,6 @@ def build_base_tree_node(
         init_state=TaskState.INITED,
         max_depth=max_depth,
         transitions=transitions,
-        completion_config=completion_config,
     )
     assert isinstance(node, BaseTreeTaskNode)
     return node
@@ -169,7 +166,6 @@ def build_default_tree_node() -> BaseTreeTaskNode[TaskState, TaskEvent]:
         tags=set[str](),
         task_type="default_tree_task",
         max_depth=5,
-        completion_config=CompletionConfig(),
     )
 
 
@@ -186,7 +182,6 @@ if __name__ == "__main__":
         init_state=TaskState.INITED,
         max_depth=3,
         transitions=transitions,
-        completion_config=CompletionConfig(),
     )
     assert isinstance(task, BaseTreeTaskNode)
     state = task.get_current_state()
@@ -199,21 +194,18 @@ if __name__ == "__main__":
         tags={"tree", "root"},
         task_type="tree_task",
         max_depth=3,
-        completion_config=CompletionConfig(),
     )
     child_node1 = build_base_tree_node(
         protocol="tree_protocol_v1.0",
         tags={"tree", "child1"},
         task_type="tree_task",
         max_depth=3,
-        completion_config=CompletionConfig(),
     )
     child_node2 = build_base_tree_node(
         protocol="tree_protocol_v1.0",
         tags={"tree", "child2"},
         task_type="tree_task",
         max_depth=3,
-        completion_config=CompletionConfig(),
     )
     root_node.add_sub_task(child_node1)
     root_node.add_sub_task(child_node2)
