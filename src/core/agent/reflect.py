@@ -5,13 +5,13 @@ from fastmcp import Client
 from fastmcp.client.transports import ClientTransport
 from fastmcp.tools import Tool as FastMcpTool
 
-from src.core.agent.interface import IAgent
+from src.core.agent.interface import IAgent, IHumanClient
 from src.core.agent.base import BaseAgent
 from src.core.agent.react import end_workflow, END_WORKFLOW_DOC
 from src.core.state_machine.workflow import ReflectStage, ReflectEvent, IWorkflow, BaseWorkflow
 from src.core.state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView
 from src.llm import OpenAiLLM, ILLM
-from src.model import Message, StopReason, Role, get_settings, IQueue, CompletionConfig
+from src.model import Message, StopReason, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
 from src.utils.io import read_markdown
 from src.utils.string.extract import extract_by_label
 
@@ -153,11 +153,11 @@ def get_reflect_actions(
         Returns:
             reflectEvent: 触发的事件类型
         """
-        # === Thinking ===
         # 获取当前工作流的状态
         current_state = workflow.get_current_state()
         if current_state != ReflectStage.REASONING:
             raise RuntimeError(f"当前工作流状态错误，期望：{ReflectStage.REASONING}，实际：{current_state}")
+
         # 获取当前工作流的提示词
         prompt = workflow.get_prompt()
         # 创建新的任务消息
@@ -171,29 +171,32 @@ def get_reflect_actions(
             task=task,
             observe_fn=workflow.get_observe_fn(),
         )
-        # 记录观察结果
-        logger.debug(f"Observe: \n{observe[-1].content}")
-        # 开始 LLM 推理
-        message = await agent.think(
-            context=context,
-            queue=queue,
-            llm_name=current_state.name, 
-            observe=observe, 
-            completion_config=workflow.get_completion_config(),
-        )
-        # 推理结果反馈到任务
-        task.get_context().append_context_data(message)
-        # 记录推理信息
-        logger.debug(f"{str(agent)}: \n{message}")
-        
-        # === Act ===
+        try:
+            # 开始 LLM 推理
+            message = await agent.think(
+                context=context,
+                queue=queue,
+                llm_name=current_state.name, 
+                observe=observe, 
+                completion_config=workflow.get_completion_config(),
+            )
+            # 推理结果反馈到任务
+            task.get_context().append_context_data(message)
+        except HumanInterfere as e:
+            # 将人类介入信息反馈到任务
+            task.get_context().append_context_data(Message(
+                role=Role.USER,
+                content=str(e)
+            ))
+            # 重新进入处理流程
+            return ReflectEvent.REASON
+
         # 允许执行工具标志位
         allow_tool: bool = True
-        # Get all the tool calls from the assistant message
+
         if message.stop_reason == StopReason.TOOL_CALL:
             # Act on the task or environment
             for tool_call in message.tool_calls:
-
                 # 检查工具执行许可
                 if not allow_tool:
                     # 生成错误信息
@@ -205,16 +208,25 @@ def get_reflect_actions(
                     )
                     continue
 
-                # 开始执行工具，如果是工具服务的工具，则 task/workflow 不会被注入到参数中
-                result = await agent.act(
-                    context=context,
-                    queue=queue,
-                    tool_call=tool_call,
-                    task=task,
-                    workflow=workflow,
-                )
-                # Log the tool call result
-                logger.debug(f"Tool Call Result: \n{result}")
+                try:
+                    # 开始执行工具，如果是工具服务的工具，则 task/workflow 不会被注入到参数中
+                    result = await agent.act(
+                        context=context,
+                        queue=queue,
+                        tool_call=tool_call,
+                        task=task,
+                        workflow=workflow,
+                    )
+                except HumanInterfere as e:
+                    # 将人类介入信息反馈到任务
+                    result = Message(
+                        role=Role.USER,
+                        content=str(e),
+                        is_error=True,
+                    )
+                    # 禁止后续工具调用执行
+                    allow_tool = False
+
                 # 工具调用结果反馈到任务
                 task.get_context().append_context_data(result)
                 # 检查调用错误状态
@@ -258,8 +270,7 @@ def get_reflect_actions(
             tools=[workflow.get_tool("end_workflow")],
             stop_words=["</final_flag>", "</finish>", "</finish_flag>", "</end_flag>"],
         )
-        
-        # === Thinking ===
+
         # 获取当前工作流的提示词
         prompt = workflow.get_prompt()
         # 创建新的任务消息
@@ -273,8 +284,6 @@ def get_reflect_actions(
             task=task,
             observe_fn=workflow.get_observe_fn(),
         )
-        # 记录观察结果
-        logger.debug(f"Observe: \n{observe[-1].content}")
         # 开始 LLM 推理
         message = await agent.think(
             context=context,
@@ -285,20 +294,15 @@ def get_reflect_actions(
         )
         # 推理结果反馈到任务
         task.get_context().append_context_data(message)
-        # 记录推理信息
-        logger.debug(f"{str(agent)}: \n{message}")
-
         # 从 Message 中获取结束工作流的标志内容
         finish_flag = extract_by_label(message.content, "finish", "finish_flag", "finish_workflow")
 
-        # === Act ===
         # 允许执行工具标志位
         allow_tool: bool = True
-        # Get all the tool calls from the assistant message
+
         if message.stop_reason == StopReason.TOOL_CALL:
             # Act on the task or environment
             for tool_call in message.tool_calls:
-
                 # 检查工具执行许可
                 if not allow_tool:
                     # 生成错误信息
@@ -318,8 +322,6 @@ def get_reflect_actions(
                     task=task,
                     workflow=workflow,
                 )
-                # Log the tool call result
-                logger.debug(f"Tool Call Result: \n{result}")
                 # 工具调用结果反馈到任务
                 task.get_context().append_context_data(result)
                 # 检查调用错误状态
@@ -351,6 +353,7 @@ def get_reflect_actions(
 def build_reflect_agent(
     name: str,
     tool_service: Client[ClientTransport] | None = None,
+    human_client: IHumanClient | None = None,
     actions: dict[
         ReflectStage, 
         Callable[
@@ -381,6 +384,7 @@ def build_reflect_agent(
     Args:
         name: 智能体名称，必填，用于在 settings 中读取对应的配置
         tool_service: 工具服务客户端，可选，如果未提供则不关联工具服务
+        human_client: 人类客户端，可选，如果未提供则不关联人类客户端
         actions: 动作定义，可选，如果未提供则使用默认定义
         transitions: 状态转换规则，可选，如果未提供则使用默认定义
         prompts: 提示词，可选，如果未提供则使用默认定义
@@ -413,6 +417,7 @@ def build_reflect_agent(
         agent_type=agent_cfg.agent_type,
         llms=llms,
         tool_service=tool_service,
+        human_client=human_client,
     )
     # 获取 event chain
     event_chain = get_reflect_event_chain()

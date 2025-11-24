@@ -247,6 +247,23 @@ pip install package      # 禁止
 pytest tests/           # 禁止
 ```
 
+复制配置文件模板，并修改内容
+
+```bash
+# 复制 .env 模板
+cp .env.template .env
+
+# 修改 .env 中的内容
+# 为 executor_agent 定义基本信息
+AGENTS__executor_agent__name=demo
+AGENTS__executor_agent__agent_type=EXECUTOR
+# 为该 agent 指定默认的 LLM（使用 agent 下的 llm 映射）
+AGENTS__executor_agent__llm__default__provider=openai
+AGENTS__executor_agent__llm__default__model=GLM-4.6
+AGENTS__executor_agent__llm__default__base_url=https://open.bigmodel.cn/api/coding/paas/v4
+AGENTS__executor_agent__llm__default__api_key=REPLACE_WITH_EXECUTOR_API_KEY
+```
+
 ### 第三步：创建你的第一个任务
 
 让我们构建一个完整的任务执行故事：

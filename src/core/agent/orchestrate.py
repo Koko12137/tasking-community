@@ -6,61 +6,18 @@ from json_repair import repair_json
 from loguru import logger
 from fastmcp import Client
 from fastmcp.client.transports import ClientTransport
-from fastmcp.tools import Tool as FastMcpTool
 
-from src.core.agent.interface import IAgent
+from src.core.agent.interface import IAgent, IHumanClient
 from src.core.agent.base import BaseAgent
 from src.core.state_machine.workflow import IWorkflow, BaseWorkflow
 from src.core.state_machine.task import (
     ITask, ITreeTaskNode, TaskState, TaskEvent, RequirementTaskView, build_base_tree_node
 )
 from src.llm import OpenAiLLM, ILLM
-from src.model import Message, StopReason, Role, get_settings, IQueue, CompletionConfig
+from src.model import (
+    Message, StopReason, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
+)
 from src.utils.io import read_markdown
-
-
-class ApprovePlan:
-    _approved: bool
-    
-    def __init__(self) -> None:
-        """Initialize the ApprovePlan instance. Default is not approved."""
-        self._approved = False
-        
-    def approve(self) -> None:
-        self._approved = True
-        
-    def reject(self) -> None:
-        self._approved = False
-        
-    def is_approved(self) -> bool:
-        return self._approved
-    
-
-APPROVE_OR_REJECT_DOC = """
-现在你需要根据用户的反馈（如果有）或者你自己的思考来决定是否批准当前的计划。
-
-Args:
-        approve (bool): 是否批准计划
-"""
-
-
-def approve_or_reject_plan(approve: bool, kwargs: dict[str, Any]) -> None:
-    """根据外部输入批准或拒绝计划，这个是需要智能体根据用户反馈或者自我思考选择是否通过计划的工具函数
-    
-    Args:
-        approve (bool): 是否批准计划
-        kwargs (dict[str, Any]): 关键字参数，必须包含 "approve_plan" 键，对应 ApprovePlan 实例。
-            该参数由框架自动注入。
-    
-    Returns:
-        None
-    """
-    approve_plan: ApprovePlan = kwargs["approve_plan"]
-    
-    if approve:
-        approve_plan.approve()
-    else:
-        approve_plan.reject()
 
 
 def create_sub_tasks(task: ITreeTaskNode[TaskState, TaskEvent], json_str: str) -> None:
@@ -96,7 +53,6 @@ def create_sub_tasks(task: ITreeTaskNode[TaskState, TaskEvent], json_str: str) -
 class OrchestrateStage(str, Enum):
     """Orchestrate 工作流阶段枚举"""
     THINKING = "thinking"
-    CHECKING = "checking"
     ORCHESTRATING = "orchestrating"
     FINISHED = "finished"
     
@@ -113,7 +69,6 @@ class OrchestrateStage(str, Enum):
 class OrchestrateEvent(Enum):
     """Orchestrate 工作流事件枚举"""
     THINK = auto()          # 触发思考
-    CHECK = auto()          # 触发检查
     ORCHESTRATE = auto()    # 触发编排
     FINISH = auto()         # 触发完成
 
@@ -222,24 +177,35 @@ def get_orch_actions(
             task=task,
             observe_fn=workflow.get_observe_fn(),
         )
-        # 开始 LLM 推理
-        message = await agent.think(
-            context=context,
-            queue=queue,
-            llm_name=current_state.name, 
-            observe=observe, 
-            completion_config=workflow.get_completion_config(),
-        )
-        # 推理结果反馈到任务
-        task.get_context().append_context_data(message)
+        try:
+            # 开始 LLM 推理
+            message = await agent.think(
+                context=context,
+                queue=queue,
+                llm_name=current_state.name, 
+                observe=observe, 
+                completion_config=workflow.get_completion_config(),
+            )
+            # 推理结果反馈到任务
+            task.get_context().append_context_data(message)
+        except HumanInterfere as e:
+            # 将人类介入信息反馈到任务
+            result = Message(
+                role=Role.USER,
+                content=str(e),
+                is_error=True,
+            )
+            # 记录到任务上下文
+            task.get_context().append_context_data(result)
+            # 返回 THINK 事件重新思考
+            return OrchestrateEvent.THINK
         
         # 允许执行工具标志位
         allow_tool: bool = True
-        # Get all the tool calls from the assistant message
+        
         if message.stop_reason == StopReason.TOOL_CALL:
             # Act on the task or environment
             for tool_call in message.tool_calls:
-
                 # 检查工具执行许可
                 if not allow_tool:
                     # 生成错误信息
@@ -250,15 +216,26 @@ def get_orch_actions(
                         content="由于前置工具调用出错，后续工具调用被禁止继续执行"
                     )
                     continue
-
-                # 开始执行工具，如果是工具服务的工具，则 task/workflow 不会被注入到参数中
-                result = await agent.act(
-                    context=context,
-                    queue=queue,
-                    tool_call=tool_call,
-                    task=task,
-                    workflow=workflow,
-                )
+                
+                try:
+                    # 开始执行工具，如果是工具服务的工具，则 task/workflow 不会被注入到参数中
+                    result = await agent.act(
+                        context=context,
+                        queue=queue,
+                        tool_call=tool_call,
+                        task=task,
+                        workflow=workflow,
+                    )
+                except HumanInterfere as e:
+                    # 将人类介入信息反馈到任务
+                    result = Message(
+                        role=Role.USER,
+                        content=str(e),
+                        is_error=True,
+                    )
+                    # 禁止后续工具调用执行
+                    allow_tool = False
+                    
                 # 工具调用结果反馈到任务
                 task.get_context().append_context_data(result)
                 # 检查调用错误状态
@@ -272,119 +249,11 @@ def get_orch_actions(
             # 调用了工具，但出现错误，或者计划没有被批准，返回 THINK 事件重新思考
             return OrchestrateEvent.THINK
         
-        # 正常完成思考，开始检查计划内容是否合理
-        return OrchestrateEvent.CHECK
+        # 正常完成思考，开始编排
+        return OrchestrateEvent.ORCHESTRATE
     
     # 添加到动作定义字典
     actions[OrchestrateStage.THINKING] = think
-    
-    # CHECKING 阶段动作定义
-    async def check(
-        workflow: IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
-        context: dict[str, Any],
-        queue: IQueue[Message],
-        task: ITask[TaskState, TaskEvent],
-    ) -> OrchestrateEvent:
-        """CHECKING 阶段动作函数
-        
-        Args:
-            context (dict[str, Any]): 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
-            queue (IQueue[Message]): 数据队列，用于输出数据
-            workflow (IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent]): 工作流实例
-            task (ITask[TaskState, TaskEvent]): 任务实例
-
-        Returns:
-            OrchestrateEvent: 触发的事件类型
-        """
-        approve_plan = ApprovePlan()
-        
-        # 检查工作流当前状态
-        current_state = workflow.get_current_state()
-        if current_state != OrchestrateStage.CHECKING:
-            raise RuntimeError(f"当前工作流状态错误，期望：{OrchestrateStage.CHECKING}，实际：{current_state}")
-
-        # 获取任务的推理配置
-        completion_config = workflow.get_completion_config()
-        # 新增批准或否决函数工具，并强调必须选择该工具
-        completion_config.update(
-            tools=[
-                FastMcpTool.from_function(
-                    fn=approve_or_reject_plan,
-                    name="approve_or_reject_plan",
-                    description=APPROVE_OR_REJECT_DOC,
-                    exclude_args=["kwargs"],    # 该参数由框架自动注入
-                )
-            ],
-            tool_choice="approve_or_reject_plan",
-        )
-        
-        # 获取当前工作流的提示词
-        prompt = workflow.get_prompt()
-        # 创建新的任务消息
-        message = Message(role=Role.USER, content=prompt)
-        # 添加 message 到当前任务上下文
-        task.get_context().append_context_data(message)
-        # 观察 Task
-        observe = await agent.observe(
-            context=context,
-            queue=queue,
-            task=task,
-            observe_fn=workflow.get_observe_fn(),
-        )
-        # 开始 LLM 推理
-        message = await agent.think(
-            context=context,
-            queue=queue,
-            llm_name=current_state.name, 
-            observe=observe, 
-            completion_config=completion_config,
-        )
-        # 推理结果反馈到任务
-        task.get_context().append_context_data(message)
-
-        # 允许执行工具标志位
-        allow_tool: bool = True
-        # Get all the tool calls from the assistant message
-        if message.stop_reason == StopReason.TOOL_CALL:
-            # Act on the task or environment
-            for tool_call in message.tool_calls:
-
-                # 检查工具执行许可
-                if not allow_tool:
-                    # 生成错误信息
-                    result = Message(
-                        role=Role.TOOL,
-                        tool_call_id=tool_call.id,
-                        is_error=True,
-                        content="由于前置工具调用出错，后续工具调用被禁止继续执行"
-                    )
-                    continue
-
-                # 注入 Task 和 Workflow，并开始执行工具
-                result = await agent.act(
-                    context=context,
-                    queue=queue,
-                    tool_call=tool_call,
-                    task=task,
-                    approve_plan=approve_plan,
-                )
-                # 工具调用结果反馈到任务
-                task.get_context().append_context_data(result)
-                # 检查调用错误状态
-                if result.is_error:
-                    # 将任务设置为错误状态
-                    task.set_error(result.content)
-                    # 停止执行剩余的工具
-                    allow_tool = False
-
-        if task.is_error() or not allow_tool or not approve_plan.is_approved():
-            # 调用了工具，但出现错误，或者计划没有被批准，返回 THINK 事件重新思考
-            return OrchestrateEvent.THINK
-        else:
-            return OrchestrateEvent.ORCHESTRATE
-
-    # 添加到动作定义字典
-    actions[OrchestrateStage.CHECKING] = check
     
     # ORCHESTRATING 阶段动作定义
     async def orchestrate(
@@ -406,8 +275,8 @@ def get_orch_actions(
         """
         # 检查工作流当前状态
         current_state = workflow.get_current_state()
-        if current_state != OrchestrateStage.CHECKING:
-            raise RuntimeError(f"当前工作流状态错误，期望：{OrchestrateStage.CHECKING}，实际：{current_state}")
+        if current_state != OrchestrateStage.ORCHESTRATING:
+            raise RuntimeError(f"当前工作流状态错误，期望：{OrchestrateStage.ORCHESTRATING}，实际：{current_state}")
 
         # 获取任务的推理配置
         completion_config = workflow.get_completion_config()
@@ -479,25 +348,25 @@ def get_orch_transition() -> dict[
         ]
     ] = {}
     
-    # 1. THINKING -> CHECKING (事件： check)
-    async def on_THINKING_to_checking(
+    # 1. THINKING -> THINKING (事件： THINK)
+    async def on_thinking_to_thinking(
         workflow: IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
     ) -> None:
-        """从 THINKING 到 CHECKING 的转换回调函数"""
-        logger.debug(f"Workflow {workflow.get_id()} Transition: {OrchestrateStage.THINKING} -> {OrchestrateStage.CHECKING}.")
+        """从 THINKING 到 THINKING 的转换回调函数"""
+        logger.debug(f"Workflow {workflow.get_id()} Transition: {OrchestrateStage.THINKING} -> {OrchestrateStage.THINKING}.")
         
     # 添加转换规则
-    transition[(OrchestrateStage.THINKING, OrchestrateEvent.CHECK)] = (OrchestrateStage.CHECKING, on_THINKING_to_checking)
+    transition[(OrchestrateStage.THINKING, OrchestrateEvent.THINK)] = (OrchestrateStage.THINKING, on_thinking_to_thinking)
 
-    # 2. CHECKING -> ORCHESTRATING (事件： ORCHESTRATE)
-    async def on_checking_to_orchestrating(
+    # 2. THINKING -> ORCHESTRATING (事件： ORCHESTRATE)
+    async def on_thinking_to_orchestrating(
         workflow: IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
     ) -> None:
-        """从 CHECKING 到 ORCHESTRATING 的转换回调函数"""
-        logger.debug(f"Workflow {workflow.get_id()} Transition: {OrchestrateStage.CHECKING} -> {OrchestrateStage.ORCHESTRATING}.")
+        """从 THINKING 到 ORCHESTRATING 的转换回调函数"""
+        logger.debug(f"Workflow {workflow.get_id()} Transition: {OrchestrateStage.THINKING} -> {OrchestrateStage.ORCHESTRATING}.")
         
     # 添加转换规则
-    transition[(OrchestrateStage.ORCHESTRATING, OrchestrateEvent.FINISH)] = (OrchestrateStage.FINISHED, on_checking_to_orchestrating)
+    transition[(OrchestrateStage.THINKING, OrchestrateEvent.ORCHESTRATE)] = (OrchestrateStage.ORCHESTRATING, on_thinking_to_orchestrating)
     
     # 3. ORCHESTRATING -> THINKING (事件： THINK)
     async def on_orchestrating_to_THINKING(
@@ -525,6 +394,7 @@ def get_orch_transition() -> dict[
 def build_orch_agent(
     name: str,
     tool_service: Client[ClientTransport] | None = None,
+    human_client: IHumanClient | None = None,
     actions: dict[
         OrchestrateStage, 
         Callable[
@@ -549,10 +419,6 @@ def build_orch_agent(
         OrchestrateStage,
         Callable[[ITask[TaskState, TaskEvent], dict[str, Any]], Message]
     ] | None = None,
-    custom_end_workflow: Callable[
-        [ITask[TaskState, TaskEvent], IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent]],
-        None
-    ] | None = None,
 ) -> IAgent[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent]:
     """构建一个 `Orchestrate` 的智能体实例
 
@@ -563,7 +429,6 @@ def build_orch_agent(
         transitions: 状态转换规则，可选，如果未提供则使用默认定义
         prompts: 提示词，可选，如果未提供则使用默认定义
         observe_funcs: 观察函数，可选，如果未提供则使用默认定义
-        custom_end_workflow: 结束工作流函数，可选，如果未提供则使用默认定义
 
     Returns:
         智能体实例
@@ -592,6 +457,7 @@ def build_orch_agent(
         agent_type=agent_cfg.agent_type,
         llms=llms,
         tool_service=tool_service,
+        human_client=human_client,
     )
     # 获取 event chain
     event_chain = get_orch_event_chain()
@@ -605,7 +471,8 @@ def build_orch_agent(
     transitions = transitions if transitions is not None else get_orch_transition()
     # 定义提示词
     prompts = prompts if prompts is not None else {
-        OrchestrateStage.THINKING: read_markdown("prompt/workflow/orch/system.md"),
+        OrchestrateStage.THINKING: read_markdown("prompt/workflow/orch/thinking.md"),
+        OrchestrateStage.ORCHESTRATING: read_markdown("prompt/workflow/orch/orchestrating.md"),
     }
     # 定义观察函数
     def observe_task_view(task: ITask[TaskState, TaskEvent], kwargs: dict[str, Any]) -> Message:
@@ -616,7 +483,6 @@ def build_orch_agent(
 
     observe_funcs = observe_funcs if observe_funcs is not None else {
         OrchestrateStage.THINKING: observe_task_view,
-        OrchestrateStage.CHECKING: observe_task_view,
         OrchestrateStage.ORCHESTRATING: observe_task_view,
     }
     

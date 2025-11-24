@@ -11,6 +11,52 @@ from src.model import CompletionConfig, Message, ToolCallRequest, IQueue
 from src.llm import ILLM
 
 
+class IHumanClient(ABC):
+    """Human in the loop接口定义"""
+
+    @abstractmethod
+    async def ask_human(
+        self,
+        context: dict[str, Any],
+        queue: IQueue[Message],
+        message: Message,
+    ) -> Message:
+        """发送消息给人类进行交互
+        
+        参数:
+            context (dict[str, Any]): 当前请求的上下文信息, 包含用户信息、请求元数据等
+            queue (IQueue[Message]): 向人类发送消息的队列
+            message (Message): 发送给人类的消息内容
+            
+        返回:
+            Message: 人类回复的消息
+        """
+        pass
+    
+    @abstractmethod
+    async def retrieve_human_response(
+        self,
+        context: dict[str, Any],
+        queue: IQueue[Message],
+        timeout: float | None = None,
+    ) -> Message:
+        """检索人类的回复消息
+        
+        参数:
+            context (dict[str, Any]): 当前请求的上下文信息, 包含用户信息、请求元数据等
+            queue (IQueue[Message]): 用于向人类发送消息的队列
+            timeout (float | None): 等待人类回复的超时时间，单位为秒。默认为None，表示无限等待
+            
+        返回:
+            Message: 人类回复的消息
+            
+        异常:
+            TimeoutError: 如果在指定的超时时间内没有收到人类的回复
+            HumanInterfere: 如果人类用户介入了流程
+        """
+        pass
+
+
 class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
     """Agent接口定义"""
     
@@ -51,6 +97,18 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
         """
         pass
     
+    # ********** Human in the loop **********
+
+    @abstractmethod
+    def get_human_client(self) -> IHumanClient | None:
+        """获取Human in the loop客户端
+        
+        Returns:
+            IHumanClient | None:
+                Human in the loop客户端实例，如果未设置则返回None
+        """
+        pass
+
     # ********** 工作流与工具管理 **********
     
     @abstractmethod
@@ -223,9 +281,6 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
                 - queue: IQueue[Message]
                 - task: ITask[StateT, EventT]
                 - observe_res: list[Message]
-        
-        返回:
-            Awaitable[None] | None
         """
         pass
 
@@ -274,16 +329,16 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
                 - observe_res: list[Message]
-                
-        返回:
-            Awaitable[None] | None
         """
         pass
     
     @abstractmethod
     def add_post_think_hook(
         self, 
-        hook: Callable[[dict[str, Any], IQueue[Message], list[Message], Message], Awaitable[None] | None], 
+        hook: Callable[
+            [dict[str, Any], IQueue[Message], Message], 
+            Awaitable[None] | None
+        ], 
     ) -> None:
         """添加思考后钩子函数
         
@@ -292,11 +347,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
                 思考后钩子函数，接受上下文信息/输出队列/观察结果/思考结果/生成配置和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
-                - observe_res: list[Message]
                 - think_result: Message
-        
-        返回:
-            Awaitable[None] | None
         """
         pass
 
@@ -336,7 +387,10 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
     @abstractmethod
     def add_pre_act_hook(
         self, 
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None], 
+        hook: Callable[
+            [dict[str, Any], IQueue[Message], ITask[StateT, EventT]], 
+            Awaitable[None] | None
+        ], 
     ) -> None:
         """添加行动前钩子函数
         
@@ -346,10 +400,6 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
                 - task: ITask[StateT, EventT]
-                - tool_call: Message
-                
-        返回:
-            Awaitable[None] | None
         """
         pass
     
@@ -366,10 +416,6 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
                 - task: ITask[StateT, EventT]
-                - tool_call: Message
                 - act_result: Message
-                
-        返回:
-            Awaitable[None] | None
         """
         pass

@@ -5,12 +5,12 @@ from fastmcp import Client
 from fastmcp.client.transports import ClientTransport
 from fastmcp.tools import Tool as FastMcpTool
 
-from src.core.agent.interface import IAgent
+from src.core.agent.interface import IAgent, IHumanClient
 from src.core.agent.base import BaseAgent
 from src.core.state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView, DocumentTreeTaskView
 from src.core.state_machine.workflow import ReActStage, ReActEvent, IWorkflow, BaseWorkflow
 from src.llm import OpenAiLLM, ILLM
-from src.model import Message, StopReason, Role, get_settings, IQueue, CompletionConfig
+from src.model import Message, StopReason, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
 from src.utils.io import read_document
 from src.utils.string.extract import extract_by_label
 
@@ -68,57 +68,6 @@ Args:
 Raises:
     Exception: 如果输出提取失败，没有找到输出的内容，无法正确结束工作流。
 """
-
-
-def get_react_transition() -> dict[
-    tuple[ReActStage, ReActEvent],
-    tuple[
-        ReActStage,
-        Callable[[IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent]], Awaitable[None] | None] | None
-    ]
-]:
-    """获取常用工作流转换规则   # BUG: 规则会造成死循环
-    -  PROCESSING + PROCESS -> PROCESSING
-    -  PROCESSING + COMPLETE -> COMPLETED
-
-    Returns:
-        常用工作流转换规则
-    """
-    transition: dict[
-        tuple[ReActStage, ReActEvent],
-        tuple[
-            ReActStage,
-            Callable[[IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent]], Awaitable[None] | None] | None
-        ]
-    ] = {}
-
-    # 1. PROCESSING -> PROCESSING (事件： PROCESS)
-    def on_processing_to_processing(
-        workflow: IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
-    ) -> None:
-        """从 PROCESSING 到 PROCESSING 的转换回调函数"""
-        logger.debug(
-            f"Transitioning from PROCESSING to PROCESSING for workflow {workflow.get_id()}"
-        )
-
-    # 添加转换规则
-    transition[(ReActStage.PROCESSING, ReActEvent.PROCESS)] = (
-        ReActStage.PROCESSING, on_processing_to_processing
-    )
-
-    # 2. PROCESSING -> COMPLETED (事件： COMPLETE)
-    def on_processing_to_completed(
-        workflow: IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
-    ) -> None:
-        """从 PROCESSING 到 COMPLETED 的转换回调函数"""
-        logger.debug(f"Transitioning from PROCESSING to COMPLETED for workflow {workflow.get_id()}")
-
-    # 添加转换规则
-    transition[(ReActStage.PROCESSING, ReActEvent.COMPLETE)] = (
-        ReActStage.COMPLETED, on_processing_to_completed
-    )
-
-    return transition
 
 
 def get_react_stages() -> set[ReActStage]:
@@ -208,7 +157,6 @@ def get_react_actions(
             tools.append(tool)
         completion_config.update(tools=tools)
 
-        # === Thinking ===
         # 获取当前工作流的状态
         current_state = workflow.get_current_state()
         if current_state != ReActStage.PROCESSING:
@@ -226,32 +174,36 @@ def get_react_actions(
             task=task,
             observe_fn=workflow.get_observe_fn(),
         )
-        # 记录观察结果
-        logger.debug(f"Observe: \n{observe[-1].content}")
-        # 开始 LLM 推理
-        message = await agent.think(
-            context=context,
-            queue=queue,
-            llm_name=current_state.name,
-            observe=observe,
-            completion_config=completion_config,
-        )
-        # 推理结果反馈到任务
-        task.get_context().append_context_data(message)
-        # 记录推理信息
-        logger.debug(f"{str(agent)}: \n{message}")
+
+        try:
+            # 开始 LLM 推理
+            message = await agent.think(
+                context=context,
+                queue=queue,
+                llm_name=current_state.name,
+                observe=observe,
+                completion_config=completion_config,
+            )
+            # 推理结果反馈到任务
+            task.get_context().append_context_data(message)
+        except HumanInterfere as e:
+            # 将人类介入信息反馈到任务
+            task.get_context().append_context_data(Message(
+                role=Role.USER,
+                content=str(e)
+            ))
+            # 重新进入处理流程
+            return ReActEvent.PROCESS
 
         # 从 Message 中获取结束工作流的标志内容
         finish_flag = extract_by_label(message.content, "finish", "finish_flag", "finish_workflow")
 
-        # === Act ===
         # 允许执行工具标志位
         allow_tool: bool = True
-        # Get all the tool calls from the assistant message
+
         if message.stop_reason == StopReason.TOOL_CALL:
             # Act on the task or environment
             for tool_call in message.tool_calls:
-
                 # 检查工具执行许可
                 if not allow_tool:
                     # 生成错误信息
@@ -263,16 +215,25 @@ def get_react_actions(
                     )
                     continue
 
-                # 注入 Task 和 Workflow，并开始执行工具
-                result = await agent.act(
-                    context=context,
-                    queue=queue,
-                    tool_call=tool_call,
-                    task=task,
-                    message=message,
-                )
-                # Log the tool call result
-                logger.debug(f"Tool Call Result: \n{result}")
+                try:
+                    # 注入 Task 和 Workflow，并开始执行工具
+                    result = await agent.act(
+                        context=context,
+                        queue=queue,
+                        tool_call=tool_call,
+                        task=task,
+                        message=message,
+                    )
+                except HumanInterfere as e:
+                    # 将人类介入信息反馈到任务
+                    result = Message(
+                        role=Role.USER,
+                        content=str(e),
+                        is_error=True,
+                    )
+                    # 禁止后续工具调用执行
+                    allow_tool = False
+                    
                 # 工具调用结果反馈到任务
                 task.get_context().append_context_data(result)
                 # 检查调用错误状态
@@ -298,9 +259,61 @@ def get_react_actions(
     return actions
 
 
+def get_react_transition() -> dict[
+    tuple[ReActStage, ReActEvent],
+    tuple[
+        ReActStage,
+        Callable[[IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent]], Awaitable[None] | None] | None
+    ]
+]:
+    """获取常用工作流转换规则   # BUG: 规则会造成死循环
+    -  PROCESSING + PROCESS -> PROCESSING
+    -  PROCESSING + COMPLETE -> COMPLETED
+
+    Returns:
+        常用工作流转换规则
+    """
+    transition: dict[
+        tuple[ReActStage, ReActEvent],
+        tuple[
+            ReActStage,
+            Callable[[IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent]], Awaitable[None] | None] | None
+        ]
+    ] = {}
+
+    # 1. PROCESSING -> PROCESSING (事件： PROCESS)
+    def on_processing_to_processing(
+        workflow: IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
+    ) -> None:
+        """从 PROCESSING 到 PROCESSING 的转换回调函数"""
+        logger.debug(
+            f"Transitioning from PROCESSING to PROCESSING for workflow {workflow.get_id()}"
+        )
+
+    # 添加转换规则
+    transition[(ReActStage.PROCESSING, ReActEvent.PROCESS)] = (
+        ReActStage.PROCESSING, on_processing_to_processing
+    )
+
+    # 2. PROCESSING -> COMPLETED (事件： COMPLETE)
+    def on_processing_to_completed(
+        workflow: IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
+    ) -> None:
+        """从 PROCESSING 到 COMPLETED 的转换回调函数"""
+        logger.debug(f"Transitioning from PROCESSING to COMPLETED for workflow {workflow.get_id()}")
+
+    # 添加转换规则
+    transition[(ReActStage.PROCESSING, ReActEvent.COMPLETE)] = (
+        ReActStage.COMPLETED, on_processing_to_completed
+    )
+
+    return transition
+
+
 def build_react_agent(
     name: str, 
     tool_service: Client[ClientTransport] | None = None,
+    human_client: IHumanClient | None = None,
     actions: dict[
         ReActStage, 
         Callable[
@@ -331,6 +344,7 @@ def build_react_agent(
     Args:
         name: 智能体名称，必填，用于在 settings 中读取对应的配置
         tool_service: 工具服务客户端，可选，如果未提供则不关联工具服务
+        human_client: 人类客户端接口，可选，如果未提供则不关联人类客户端
         actions: 动作定义，可选，如果未提供则使用默认定义
         transitions: 状态转换规则，可选，如果未提供则使用默认定义
         prompts: 提示词，可选，如果未提供则使用默认定义
@@ -363,6 +377,7 @@ def build_react_agent(
         agent_type=agent_cfg.agent_type,
         llms=llms,
         tool_service=tool_service,
+        human_client=human_client,
     )
     # 获取 event chain
     event_chain = get_react_event_chain()
