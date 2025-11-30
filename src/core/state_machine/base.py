@@ -1,7 +1,7 @@
 from uuid import uuid4
 from typing import Callable, Any, List, Awaitable
 
-from src.core.state_machine.interface import IStateMachine, StateT, EventT
+from .interface import IStateMachine, StateT, EventT
 
 
 class BaseStateMachine(IStateMachine[StateT, EventT]):

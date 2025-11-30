@@ -5,14 +5,14 @@ from fastmcp import Client
 from fastmcp.client.transports import ClientTransport
 from fastmcp.tools import Tool as FastMcpTool
 
-from src.core.agent.interface import IAgent, IHumanClient
-from src.core.agent.base import BaseAgent
-from src.core.state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView, DocumentTreeTaskView
-from src.core.state_machine.workflow import ReActStage, ReActEvent, IWorkflow, BaseWorkflow
-from src.llm import OpenAiLLM, ILLM
-from src.model import Message, StopReason, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
-from src.utils.io import read_document
-from src.utils.string.extract import extract_by_label
+from .interface import IAgent, IHumanClient
+from .base import BaseAgent
+from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView, DocumentTreeTaskView
+from ..state_machine.workflow import ReActStage, ReActEvent, IWorkflow, BaseWorkflow
+from ...llm import OpenAiLLM, ILLM
+from ...model import Message, StopReason, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
+from ...utils.io import read_document
+from ...utils.string.extract import extract_by_label
 
 
 NO_OUTPUT_TEMPLATE = """没有从标签 '{label}' 中提取到任何内容，但工作流被请求结束，请确保输出内容被正确包裹在该标签内。

@@ -2,11 +2,11 @@ from typing import Callable, Awaitable
 
 from loguru import logger
 
-from src.core.state_machine.task.const import TaskState, TaskEvent
-from src.core.state_machine.task.interface import ITreeTaskNode
-from src.core.state_machine.task.base import BaseTask
-from src.core.state_machine.task.tree import BaseTreeTaskNode
-from src.utils.io import read_document
+from .const import TaskState, TaskEvent
+from .interface import ITreeTaskNode
+from .base import BaseTask
+from .tree import BaseTreeTaskNode
+from ....utils.io import read_document
     
 
 def get_base_states() -> set[TaskState]:

@@ -3,18 +3,21 @@ import getpass
 import json
 from typing import Any
 
-from loguru import logger
 from pydantic import SecretStr
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion_usage import CompletionUsage as OpenAICompletionUsage
 
-from src.llm.interface import ILLM, IEmbeddingLLM
-from src.model import (
-    ToolCallRequest, Message, StopReason, CompletionUsage, 
-    Role, CompletionConfig
+from .interface import ILLM, IEmbeddingLLM
+from ..model import (
+    ToolCallRequest, 
+    Message, 
+    Role,
+    StopReason, 
+    CompletionConfig,
+    CompletionUsage,
 )
-from src.utils.transform.tool import Provider
+from ..utils.transform.tool import Provider
 
 
 def to_openai_dict(messages: list[Message]) -> list[dict[str, str | list[dict[str, str]]]]:
@@ -187,26 +190,21 @@ class OpenAiLLM(ILLM):
             **kwargs, 
         )
             
-        content: str = response.choices[0].message.content  # pyright: ignore[reportUnknownMemberType, reportAssignmentType, reportUnknownVariableType]
-        logger.debug(f"\n{content}")
+        content: str = response.choices[0].message.content
         # Get the usage
-        openai_usage: OpenAICompletionUsage = response.usage  # pyright: ignore[reportUnknownVariableType, reportAssignmentType, reportUnknownMemberType]
+        openai_usage: OpenAICompletionUsage = response.usage
         # Create the usage
         usage = CompletionUsage(
             prompt_tokens=openai_usage.prompt_tokens or -100,
             completion_tokens=openai_usage.completion_tokens or -100,
             total_tokens=openai_usage.total_tokens or -100
         )
-        # Log the usage
-        logger.warning(f"Usage: {usage}")
         
         # Extract tool calls from response
         tool_calls: list[ToolCallRequest] = []
-        if response.choices[0].message.tool_calls is not None:  # pyright: ignore[reportUnknownMemberType]
+        if response.choices[0].message.tool_calls is not None:
             # Traverse all the tool calls and log the tool call
-            for i, tool_call in enumerate(response.choices[0].message.tool_calls):  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-                # Log the tool call
-                logger.debug(f"Tool call {i + 1}: {tool_call}")
+            for i, tool_call in enumerate(response.choices[0].message.tool_calls):
                 
                 # Create the tool call request
                 tool_calls.append(ToolCallRequest(
@@ -217,13 +215,13 @@ class OpenAiLLM(ILLM):
                 ))
         
         # Extract Finish reason
-        if response.choices[0].finish_reason == "length":  # pyright: ignore[reportUnknownMemberType]
+        if response.choices[0].finish_reason == "length":
             stop_reason = StopReason.LENGTH
-        elif response.choices[0].finish_reason == "content_filter":  # pyright: ignore[reportUnknownMemberType]
+        elif response.choices[0].finish_reason == "content_filter":
             stop_reason = StopReason.CONTENT_FILTER
-        elif response.choices[0].finish_reason != "stop" or len(tool_calls) > 0:  # pyright: ignore[reportUnknownMemberType]
+        elif response.choices[0].finish_reason != "stop" or len(tool_calls) > 0:
             stop_reason = StopReason.TOOL_CALL
-        elif response.choices[0].finish_reason == "stop" and len(tool_calls) == 0:  # pyright: ignore[reportUnknownMemberType]
+        elif response.choices[0].finish_reason == "stop" and len(tool_calls) == 0:
             stop_reason = StopReason.STOP
         else:
             stop_reason = StopReason.NONE
@@ -259,10 +257,6 @@ class OpenAiEmbeddingLLM(IEmbeddingLLM):
                 The model of the embedding LLM.
             base_url (str): 
                 The base URL of the embedding LLM.
-            custom_logger (Logger, defaults to logger): 
-                The custom logger. If not provided, the default loguru logger will be used.
-            debug (bool, defaults to False): 
-                The debug flag.
             **kwargs: 
                 The additional keyword arguments.
         """

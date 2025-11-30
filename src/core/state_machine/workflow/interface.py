@@ -4,10 +4,10 @@ from typing import Any, Generic, Awaitable, Callable
 from fastmcp.tools import Tool as FastMcpTool
 from mcp.types import CallToolResult
 
-from src.core.state_machine.interface import IStateMachine
-from src.core.state_machine.task.interface import ITask, StateT, EventT
-from src.core.state_machine.workflow.const import WorkflowStageT, WorkflowEventT
-from src.model import Message, IQueue, CompletionConfig
+from ..interface import IStateMachine
+from ..task.interface import ITask, StateT, EventT
+from .const import WorkflowStageT, WorkflowEventT
+from ....model import Message, IQueue, CompletionConfig
 
 
 class IWorkflow(IStateMachine[WorkflowStageT, WorkflowEventT], Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):

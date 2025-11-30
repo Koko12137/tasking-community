@@ -1,10 +1,10 @@
 from abc import abstractmethod, ABC
 from typing import Any, Generic
 
-from src.core.state_machine.interface import IStateMachine
-from src.core.state_machine.const import StateT, EventT
-from src.core.context import IContext
-from src.model import Message
+from ..interface import IStateMachine
+from ..const import StateT, EventT
+from ...context import IContext
+from ....model import Message
 
 
 class ITask(IStateMachine[StateT, EventT]):
@@ -96,22 +96,22 @@ class ITask(IStateMachine[StateT, EventT]):
         pass
     
     @abstractmethod
-    def get_input(self) -> str | dict[str, Any]:
+    def get_input(self) -> str | list[dict[str, Any]]:
         """
         获取任务的输入数据
         
         Returns:
-            输入数据内容
+            输入数据内容，可以是字符串或字典列表
         """
         pass
     
     @abstractmethod
-    def set_input(self, input_data: str | dict[str, Any]) -> None:
+    def set_input(self, input_data: str | list[dict[str, Any]]) -> None:
         """
         设置任务的输入数据
         
         Args:
-            input_data: 输入数据内容
+            input_data: 输入数据内容，可以是字符串或字典列表
         """
         pass
     

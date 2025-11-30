@@ -2,22 +2,29 @@ import json
 from enum import Enum, auto
 from typing import Any, Callable, Awaitable, cast
 
+from asyncer import syncify
 from json_repair import repair_json
 from loguru import logger
 from fastmcp import Client
 from fastmcp.client.transports import ClientTransport
 
-from src.core.agent.interface import IAgent, IHumanClient
-from src.core.agent.base import BaseAgent
-from src.core.state_machine.workflow import IWorkflow, BaseWorkflow
-from src.core.state_machine.task import (
-    ITask, ITreeTaskNode, TaskState, TaskEvent, RequirementTaskView, build_base_tree_node
+from .interface import IAgent, IHumanClient
+from .base import BaseAgent
+from ..state_machine.workflow import IWorkflow, BaseWorkflow
+from ..state_machine.task import (
+    ITask,
+    ITreeTaskNode,
+    TaskState,
+    TaskEvent,
+    RequirementTaskView,
+    ProtocolTaskView,
+    build_base_tree_node,
 )
-from src.llm import OpenAiLLM, ILLM
-from src.model import (
+from ...llm import OpenAiLLM, ILLM
+from ...model import (
     Message, StopReason, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
 )
-from src.utils.io import read_markdown
+from ...utils.io import read_markdown
 
 
 def create_sub_tasks(task: ITreeTaskNode[TaskState, TaskEvent], json_str: str) -> None:
@@ -393,6 +400,7 @@ def get_orch_transition() -> dict[
 
 def build_orch_agent(
     name: str,
+    valid_tasks: set[ITask[TaskState, TaskEvent]],
     tool_service: Client[ClientTransport] | None = None,
     human_client: IHumanClient | None = None,
     actions: dict[
@@ -424,7 +432,9 @@ def build_orch_agent(
 
     Args:
         name: 智能体名称，必填，用于在 settings 中读取对应的配置
+        valid_tasks: 有效任务集合，必填，用于智能体管理和调度
         tool_service: 工具服务客户端，可选，如果未提供则不关联工具服务
+        human_client: 人类客户端，可选，如果未提供则不关联人类交互
         actions: 动作定义，可选，如果未提供则使用默认定义
         transitions: 状态转换规则，可选，如果未提供则使用默认定义
         prompts: 提示词，可选，如果未提供则使用默认定义
@@ -469,10 +479,25 @@ def build_orch_agent(
     actions = actions if actions is not None else get_orch_actions(agent)
     # 获取转换规则
     transitions = transitions if transitions is not None else get_orch_transition()
+    # 获取可用工具定义
+    tools = syncify(tool_service.list_tools)() if tool_service is not None else []
+    tool_info: list[str] = []
+    for tool in tools:
+        if tool.meta is None:
+            tool_info.append(f"{tool.name}(tags=[], description={tool.description})")
+            continue
+        meta = tool.meta.get("_fastmcp", {})
+        if meta.get("tags", []):
+            tool_info.append(f"{tool.name}(tags=[{', '.join(meta.get('tags', []))}], description={tool.description})")
+        else:
+            tool_info.append(f"{tool.name}(tags=[], description={tool.description})")
     # 定义提示词
     prompts = prompts if prompts is not None else {
-        OrchestrateStage.THINKING: read_markdown("prompt/workflow/orch/thinking.md"),
-        OrchestrateStage.ORCHESTRATING: read_markdown("prompt/workflow/orch/orchestrating.md"),
+        OrchestrateStage.THINKING: read_markdown("prompt/workflow/orchestrate/thinking.md").format(
+            task_types="\n".join([ProtocolTaskView()(t) for t in valid_tasks]),
+            tool_info="\n".join(tool_info),
+        ),
+        OrchestrateStage.ORCHESTRATING: read_markdown("prompt/workflow/orchestrate/orchestrating.md"),
     }
     # 定义观察函数
     def observe_task_view(task: ITask[TaskState, TaskEvent], kwargs: dict[str, Any]) -> Message:

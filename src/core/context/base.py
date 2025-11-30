@@ -1,5 +1,5 @@
-from src.core.context.interface import IContext
-from src.model import Message, Role
+from .interface import IContext
+from ...model import Message, Role
 
 
 class BaseContext(IContext):

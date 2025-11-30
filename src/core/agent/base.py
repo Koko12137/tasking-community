@@ -8,12 +8,12 @@ from fastmcp.client.transports import ClientTransport
 from mcp.types import CallToolResult, TextContent
 from asyncer import asyncify
 
-from src.core.agent.interface import IAgent, IHumanClient
-from src.core.state_machine.const import EventT, StateT
-from src.core.state_machine.task import ITask
-from src.core.state_machine.workflow import WorkflowEventT, WorkflowStageT, IWorkflow
-from src.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue
-from src.llm import ILLM
+from .interface import IAgent, IHumanClient
+from ..state_machine.const import EventT, StateT
+from ..state_machine.task import ITask
+from ..state_machine.workflow import WorkflowEventT, WorkflowStageT, IWorkflow
+from ...model import CompletionConfig, Message, Role, ToolCallRequest, IQueue
+from ...llm import ILLM
 
 
 class BaseHumanClient(IHumanClient):

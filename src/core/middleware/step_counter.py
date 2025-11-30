@@ -4,7 +4,7 @@ from threading import Lock
 
 from loguru import logger
 
-from src.model import CompletionUsage
+from ...model import CompletionUsage
 
 
 class IStepCounter(ABC):

@@ -5,10 +5,10 @@ from typing import Any, Callable, Awaitable, cast
 from loguru import logger
 from asyncer import asyncify
 
-from src.core.scheduler.interface import IScheduler
-from src.core.state_machine.const import StateT, EventT
-from src.core.state_machine.task import ITask
-from src.model import Message, IQueue
+from .interface import IScheduler
+from ..state_machine.const import StateT, EventT
+from ..state_machine.task import ITask
+from ...model import Message, IQueue
 
 
 class BaseScheduler(IScheduler[StateT, EventT]):

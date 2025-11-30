@@ -1,6 +1,6 @@
 
-from src.memory import IMemory
-from src.llm import IEmbeddingLLM
+from . import IMemory
+from ..llm import IEmbeddingLLM
 
 
 class TemplateMemory(IMemory):

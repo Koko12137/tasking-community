@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Generic, Callable, Awaitable
 
-from src.core.state_machine.const import StateT, EventT
+from .const import StateT, EventT
 
 
 class IStateMachine(ABC, Generic[StateT, EventT]):

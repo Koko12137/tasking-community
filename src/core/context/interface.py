@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from src.model import Message
+from ...model import Message
 
 
 class IContext(ABC):

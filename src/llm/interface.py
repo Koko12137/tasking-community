@@ -1,7 +1,7 @@
 from abc import abstractmethod, ABC
 from typing import Any
 
-from src.model import CompletionConfig, Provider, Message
+from ..model import CompletionConfig, Provider, Message
 
 
 class ILLM(ABC):

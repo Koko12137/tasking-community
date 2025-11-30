@@ -2,10 +2,16 @@ import re
 import json
 from typing import Any, Awaitable, Callable, override, cast
 
-from src.core.state_machine.const import StateT, EventT
-from src.core.state_machine.task.interface import ITask, ITreeTaskNode, ITaskView
-from src.core.state_machine.task.base import BaseTask, TodoTaskView, DocumentTaskView, RequirementTaskView, JsonTaskView
-from src.core.context import IContext, BaseContext
+from .interface import ITask, ITreeTaskNode, ITaskView
+from .base import (
+    BaseTask, 
+    TodoTaskView, 
+    DocumentTaskView, 
+    RequirementTaskView, 
+    JsonTaskView
+)
+from ..const import StateT, EventT
+from ...context import IContext, BaseContext
 
 
 class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
@@ -234,8 +240,12 @@ class RequirementTreeTaskView(ITaskView[StateT, EventT]):
     # 任务标题: 主任务
     - 类型: 主任务类型
     - 标签: 标签1, 标签2
-    - 协议: 主任务协议
-    - 输入: 主任务输入
+
+    ## 任务执行协议
+    主任务协议内容
+    
+    ## 任务输入
+    主任务输入内容
     ```
     """
 

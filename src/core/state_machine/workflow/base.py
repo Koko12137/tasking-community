@@ -3,12 +3,12 @@ from typing import Any, Callable, Awaitable, cast
 from fastmcp.tools import Tool as FastMcpTool
 from mcp.types import CallToolResult, TextContent
 
-from src.core.state_machine.interface import IStateMachine
-from src.core.state_machine.base import BaseStateMachine
-from src.core.state_machine.task.interface import ITask, StateT, EventT
-from src.core.state_machine.workflow.interface import IWorkflow
-from src.core.state_machine.workflow.const import WorkflowStageT, WorkflowEventT
-from src.model import Message, IQueue, CompletionConfig
+from ..interface import IStateMachine
+from ..base import BaseStateMachine
+from ..task.interface import ITask, StateT, EventT
+from .interface import IWorkflow
+from .const import WorkflowStageT, WorkflowEventT
+from ....model import Message, IQueue, CompletionConfig
 
 
 class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], BaseStateMachine[WorkflowStageT, WorkflowEventT]):

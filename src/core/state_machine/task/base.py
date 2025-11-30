@@ -4,12 +4,12 @@ from typing import Any, Callable, cast, Awaitable
 
 from loguru import logger
 
-from src.core.state_machine.interface import IStateMachine
-from src.core.state_machine.const import StateT, EventT
-from src.core.state_machine.task.interface import ITask, ITaskView
-from src.core.state_machine.base import BaseStateMachine
-from src.core.context import IContext, BaseContext
-from src.model import Message
+from ..interface import IStateMachine
+from ..const import StateT, EventT
+from .interface import ITask, ITaskView
+from ..base import BaseStateMachine
+from ...context import IContext, BaseContext
+from ....model import Message
 
 
 class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
@@ -25,7 +25,7 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
     
     # *** 任务输入输出 ***
     _protocol: str | dict[str, Any]
-    _input_data: str | dict[str, Any]
+    _input_data: str | list[dict[str, Any]]
     _output_data: str
     _is_completed: bool
     
@@ -158,11 +158,11 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
         """获取任务的协议定义，包括输入输出格式等信息"""
         return copy.deepcopy(self._protocol)
 
-    def get_input(self) -> str | dict[str, Any]:
+    def get_input(self) -> str | list[dict[str, Any]]:
         """获取任务的输入数据"""
         return copy.deepcopy(self._input_data)
 
-    def set_input(self, input_data: str | dict[str, Any]) -> None:
+    def set_input(self, input_data: str | list[dict[str, Any]]) -> None:
         """设置任务的输入数据"""
         self._input_data = input_data
 
@@ -381,6 +381,30 @@ class DocumentTaskView(ITaskView[StateT, EventT]):
             title=task.get_title(),
             output=task.get_output()
         )
+        
+        
+class ProtocolTaskView(ITaskView[StateT, EventT]):
+    """将任务可视化为协议格式的字符串表示，格式化结果仅包含标题和协议内容
+    
+    Example:
+    ```markdown
+    # 任务类型
+    任务协议内容
+    ```
+    """
+    _template: str = "# {title}\n{protocol}"
+
+    def __call__(self, task: ITask[StateT, EventT], **kwargs: Any) -> str:
+        """返回任务的待办事项字符串表示
+
+        Args:
+            task (ITask[StateT, EventT]): 任务实例
+            **kwargs: 其他参数
+        """
+        return self._template.format(
+            title=task.get_task_type(),
+            protocol=task.get_protocol()
+        )
 
 
 class RequirementTaskView(ITaskView[StateT, EventT]):
@@ -392,11 +416,15 @@ class RequirementTaskView(ITaskView[StateT, EventT]):
     - 类型: 示例类型
     - 标签: 标签1, 标签2
     - 完成: False
-    - 协议: 示例协议内容
-    - 输入: 示例输入内容
+    
+    ## 任务执行协议
+    示例协议内容
+    
+    ## 任务输入
+    示例输入内容
     ```
     """
-    _template: str = "# 任务标题: {title}\n- 类型: {task_type}\n- 标签: {tags}\n- 完成: {is_completed}\n- 协议: {protocol}\n- 输入: {input_data}"
+    _template: str = "# 任务标题: {title}\n- 类型: {task_type}\n- 标签: {tags}\n- 完成: {is_completed}\n## 任务执行协议\n{protocol}\n## 任务输入\n{input_data}"
 
     def __call__(self, task: ITask[StateT, EventT], **kwargs: Any) -> str:
         """返回任务的待办事项字符串表示

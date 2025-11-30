@@ -1,11 +1,11 @@
 from typing import Any, Callable, Awaitable, TypeVar
 
-from src.core.scheduler.interface import IScheduler
-from src.core.scheduler.base import BaseScheduler
-from src.core.state_machine.task import ITask, ITreeTaskNode, TaskState, TaskEvent
-from src.core.state_machine.workflow.const import WorkflowStageProtocol, WorkflowEventProtocol
-from src.core.agent import IAgent
-from src.model import Message, IQueue
+from .interface import IScheduler
+from .base import BaseScheduler
+from ..state_machine.task import ITask, ITreeTaskNode, TaskState, TaskEvent
+from ..state_machine.workflow.const import WorkflowStageProtocol, WorkflowEventProtocol
+from ..agent import IAgent
+from ...model import Message, IQueue
 
 
 ExecStage = TypeVar("ExecStage", bound=WorkflowStageProtocol)

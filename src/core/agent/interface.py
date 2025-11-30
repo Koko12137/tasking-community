@@ -4,11 +4,11 @@ from typing import Generic, Any, Callable, Awaitable
 from fastmcp import Client
 from fastmcp.client.transports import ClientTransport
 
-from src.core.state_machine.const import StateT, EventT
-from src.core.state_machine.workflow import IWorkflow, WorkflowStageT, WorkflowEventT
-from src.core.state_machine.task import ITask
-from src.model import CompletionConfig, Message, ToolCallRequest, IQueue
-from src.llm import ILLM
+from ..state_machine.const import StateT, EventT
+from ..state_machine.workflow import IWorkflow, WorkflowStageT, WorkflowEventT
+from ..state_machine.task import ITask
+from ...model import CompletionConfig, Message, ToolCallRequest, IQueue
+from ...llm import ILLM
 
 
 class IHumanClient(ABC):

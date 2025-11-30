@@ -1,32 +1,23 @@
 from enum import Enum
-from typing import TypeVar, Protocol
+from typing import TypeVar, Protocol, Any
         
         
 class MemoryProtocol(Protocol):
-    """记忆数据类型协议定义，可以根据需要扩展"""
+    """记忆对象必须实现的协议（如包含唯一标识、序列化方法等）"""
     
     @property
-    def name(self) -> str:
-        """
-        获取记忆名称
-        
-        Returns:
-            记忆名称
-        """
+    def id(self) -> str:
+        """唯一标识符"""
         ...
 
-    @classmethod
-    def list_types(cls) -> list[str]:
-        """
-        列出所有记忆类型
-
-        Returns:
-            记忆类型列表
-        """
+    def to_dict(self) -> dict[str, Any]: 
+        """将记忆对象转为字典形式"""
         ...
+
 
 # 记忆数据类型，允许不同的记忆类型分类自定义
 MemoryT = TypeVar('MemoryT', bound=MemoryProtocol)  
+"""记忆数据类型变量，必须实现MemoryProtocol协议，需要支持 `to_dict` 方法"""
 
 
 class DefaultMemory(str, Enum):

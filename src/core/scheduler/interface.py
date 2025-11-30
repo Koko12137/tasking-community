@@ -1,9 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Generic, Callable, Awaitable, Any
 
-from src.core.state_machine.const import EventT, StateT
-from src.core.state_machine.task import ITask
-from src.model import Message, IQueue
+from ..state_machine.const import EventT, StateT
+from ..state_machine.task import ITask
+from ...model import Message, IQueue
 
 
 class IScheduler(ABC, Generic[StateT, EventT]):

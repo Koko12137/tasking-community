@@ -6,14 +6,14 @@ from fastmcp import Client
 from fastmcp.client.transports import ClientTransport
 from fastmcp.tools import Tool as FastMcpTool
 
-from src.core.agent.interface import IAgent
-from src.core.agent.base import BaseAgent
-from src.core.agent.react import end_workflow, END_WORKFLOW_DOC
-from src.core.state_machine.workflow import IWorkflow, BaseWorkflow
-from src.core.state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView
-from src.llm import OpenAiLLM, ILLM
-from src.model import Message, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
-from src.utils.io import read_markdown
+from .interface import IAgent, IHumanClient
+from .base import BaseAgent
+from .react import end_workflow, END_WORKFLOW_DOC
+from ..state_machine.workflow import IWorkflow, BaseWorkflow
+from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView
+from ...llm import OpenAiLLM, ILLM
+from ...model import Message, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
+from ...utils.io import read_markdown
 
 
 class SuperviseStage(str, Enum):
@@ -68,9 +68,8 @@ def get_supervise_transition() -> dict[
     ]
 ]:
     """获取常用工作流转换规则
-    -  INIT + REASON -> REASONING
-    -  REASONING + supervise -> superviseION
-    -  superviseION + FINISH -> FINISHED
+    -  CLARIFYING -> CLARIFYING (事件： CLARIFY)
+    -  CLARIFYING -> FINISHED (事件： FINISH)
 
     Returns:
         常用工作流转换规则
@@ -207,6 +206,7 @@ def get_supervise_actions(
 def build_supervise_agent(
     name: str,
     tool_service: Client[ClientTransport] | None = None,
+    human_client: IHumanClient | None = None,
     actions: dict[
         SuperviseStage, 
         Callable[
@@ -269,6 +269,7 @@ def build_supervise_agent(
         agent_type=agent_cfg.agent_type,
         llms=llms,
         tool_service=tool_service,
+        human_client=human_client,
     )
     # 获取 event chain
     event_chain = get_supervise_event_chain()

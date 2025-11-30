@@ -3,7 +3,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ConfigDict
 from fastmcp.tools import Tool as FastMcpTool
 
-from src.utils.transform.tool import tool_schema, Provider
+from ..utils.transform.tool import tool_schema, Provider
 
 
 class CompletionConfig(BaseModel):
