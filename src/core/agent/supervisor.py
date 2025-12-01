@@ -180,7 +180,6 @@ def get_supervise_actions(
             message = await agent.think(
                 context=context,
                 queue=queue,
-                llm_name=current_state.name, 
                 observe=observe, 
                 completion_config=workflow.get_completion_config(),
             )
