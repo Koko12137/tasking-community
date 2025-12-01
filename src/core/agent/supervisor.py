@@ -283,7 +283,7 @@ def build_supervise_agent(
     transitions = transitions if transitions is not None else get_supervise_transition()
     # 定义提示词
     prompts = prompts if prompts is not None else {
-        SuperviseStage.CLARIFYING: read_markdown("prompt/workflow/supervise/system.md"),
+        SuperviseStage.CLARIFYING: read_markdown("workflow/supervise/system.md"),
     }
     # 定义观察函数
     def observe_task_view(task: ITask[TaskState, TaskEvent], kwargs: dict[str, Any]) -> Message:

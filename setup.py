@@ -15,7 +15,7 @@ setup(
     # 打包资源文件
     package_data={
         "": ["*.md", "*.xml"],
-        "tasking": ["*"],
+        "tasking": ["*", "py.typed"],
         "tasking.core": ["*"],
     },
     # 资源文件（prompt 目录）

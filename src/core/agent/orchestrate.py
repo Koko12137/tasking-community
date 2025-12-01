@@ -493,11 +493,11 @@ def build_orch_agent(
             tool_info.append(f"{tool.name}(tags=[], description={tool.description})")
     # 定义提示词
     prompts = prompts if prompts is not None else {
-        OrchestrateStage.THINKING: read_markdown("prompt/workflow/orchestrate/thinking.md").format(
+        OrchestrateStage.THINKING: read_markdown("workflow/orchestrate/thinking.md").format(
             task_types="\n".join([ProtocolTaskView()(t) for t in valid_tasks]),
             tool_info="\n".join(tool_info),
         ),
-        OrchestrateStage.ORCHESTRATING: read_markdown("prompt/workflow/orchestrate/orchestrating.md"),
+        OrchestrateStage.ORCHESTRATING: read_markdown("workflow/orchestrate/orchestrating.md"),
     }
     # 定义观察函数
     def observe_task_view(task: ITask[TaskState, TaskEvent], kwargs: dict[str, Any]) -> Message:

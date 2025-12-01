@@ -431,7 +431,7 @@ def build_reflect_agent(
     transitions = transitions if transitions is not None else get_reflect_transition()
     # 定义提示词
     prompts = prompts if prompts is not None else {
-        ReflectStage.REASONING: read_markdown("prompt/workflow/reflect/system.md"),
+        ReflectStage.REASONING: read_markdown("workflow/reflect/system.md"),
     }
     # 定义观察函数
     def observe_task_view(task: ITask[TaskState, TaskEvent], kwargs: dict[str, Any]) -> Message:

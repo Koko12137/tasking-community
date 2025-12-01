@@ -391,7 +391,7 @@ def build_react_agent(
     actions = actions if actions is not None else get_react_actions(agent)
     # 定义提示词
     prompts = prompts if prompts is not None else {
-        ReActStage.PROCESSING: read_document("prompt/workflow/react/processing.md"),
+        ReActStage.PROCESSING: read_document("workflow/react/processing.md"),
     }
     # 定义观察函数
     def observe_task_view(task: ITask[TaskState, TaskEvent], kwargs: dict[str, Any]) -> Message:
