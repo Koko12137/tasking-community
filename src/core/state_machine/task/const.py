@@ -7,7 +7,7 @@ class TaskState(Enum):
     CREATED = auto()    # 创建
     RUNNING = auto()    # 执行中
     FINISHED = auto()   # 完成
-    FAILED = auto()     # 失败
+    ERROR = auto()      # 错误
     CANCELED = auto()   # 取消
 
 
@@ -20,12 +20,3 @@ class TaskEvent(Enum):
     ERROR = auto()          # 执行错误
     RETRY = auto()          # 重试
     CANCEL = auto()         # 取消
-
-
-if __name__ == "__main__":
-    # 测试枚举定义
-    for state in TaskState:
-        print(f"TaskState: {state.name} = {state.value}")
-    
-    for event in TaskEvent:
-        print(f"TaskEvent: {event.name} = {event.value}")

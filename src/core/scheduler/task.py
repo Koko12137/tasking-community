@@ -73,6 +73,7 @@ def get_tree_on_state_fn(
         for sub_task in sub_tasks:
             if sub_task.get_current_state() != TaskState.FINISHED:
                 sub_task.handle_event(TaskEvent.CANCEL)
+
         # 返回 IDENTIFIED 事件，驱动状态机转换状态
         return TaskEvent.IDENTIFIED
 
@@ -128,10 +129,34 @@ def get_tree_on_state_fn(
         if fsm.is_error():
             # 任务执行出错，返回 ERROR 事件，驱动状态机转换状态
             return TaskEvent.ERROR
+
         # 返回 DONE 事件，驱动状态机转换状态
         return TaskEvent.DONE
 
     on_state_fn[TaskState.RUNNING] = running_to_finished_task
+    
+    # 4. ERROR -> RETRY / CANCELED
+    async def error_to_retry_task(
+        scheduler: IScheduler[TaskState, TaskEvent],
+        context: dict[str, Any],
+        queue: IQueue[Message],
+        fsm: ITask[TaskState, TaskEvent],
+    ) -> TaskEvent:
+        """ERROR -> RETRY / CANCELED 任务调度函数"""
+        # 强制转换为 ITreeTaskNode 以使用树形特定方法
+        assert isinstance(fsm, ITreeTaskNode)
+        
+        if (
+            fsm.get_state_visit_count(TaskState.ERROR) >= scheduler.get_max_revisit_count() 
+            and scheduler.get_max_revisit_count() > 0
+        ):
+            # 达到最大重试次数，返回 CANCEL 事件，驱动状态机转换状态
+            return TaskEvent.CANCEL
+        
+        # 返回 RETRY 事件，驱动状态机转换状态
+        return TaskEvent.RETRY
+    
+    on_state_fn[TaskState.ERROR] = error_to_retry_task
 
     return on_state_fn
 
@@ -147,7 +172,7 @@ def get_tree_on_state_changed_fn(
         IQueue[Message],
         ITask[TaskState, TaskEvent]
     ],
-    Awaitable[TaskEvent]
+    Awaitable[None]
 ]]:
     """获取树状任务调度器的状态变更调度函数映射表
     
@@ -159,7 +184,6 @@ def get_tree_on_state_changed_fn(
     Returns:
         dict: 状态变更调度函数映射表
     """
-
     on_state_changed_fn: dict[tuple[TaskState, TaskState], Callable[
         [
             IScheduler[TaskState, TaskEvent],
@@ -167,54 +191,8 @@ def get_tree_on_state_changed_fn(
             IQueue[Message],
             ITask[TaskState, TaskEvent]
         ],
-        Awaitable[TaskEvent]
+        Awaitable[None]
     ]] = {}
-
-    # 4. FAILED -> RUNNING / CANCELED
-    async def failed_to_running_task(
-        scheduler: IScheduler[TaskState, TaskEvent],
-        context: dict[str, Any],
-        queue: IQueue[Message],
-        fsm: ITask[TaskState, TaskEvent],
-    ) -> TaskEvent:
-        """FAILED -> RUNNING / CANCELED 任务调度函数。
-        根据当前任务的失败重试次数决定是重试执行任务还是取消任务。
-        """
-        failed_count = fsm.get_state_visit_count(TaskState.FAILED)
-        if failed_count >= scheduler.get_max_revisit_count():
-            # 达到最大重试次数，返回 CANCEL
-            return TaskEvent.CANCEL
-
-        # 返回 RETRY 事件，驱动状态机转换状态
-        return TaskEvent.RETRY
-
-    on_state_changed_fn[(TaskState.RUNNING, TaskState.FAILED)] = failed_to_running_task
-
-    # 添加从各状态到CANCELED的转换规则，确保所有结束状态都参与转换
-    async def to_canceled_task(
-        scheduler: IScheduler[TaskState, TaskEvent],
-        context: dict[str, Any],
-        queue: IQueue[Message],
-        fsm: ITask[TaskState, TaskEvent],
-    ) -> TaskEvent:
-        """各状态 -> CANCELED 任务调度函数"""
-        return TaskEvent.CANCEL
-
-    # 添加到CANCELED的转换规则
-    on_state_changed_fn[(TaskState.FAILED, TaskState.CANCELED)] = to_canceled_task
-
-    # 添加到FINISHED的转换规则
-    async def to_finished_task(
-        scheduler: IScheduler[TaskState, TaskEvent],
-        context: dict[str, Any],
-        queue: IQueue[Message],
-        fsm: ITask[TaskState, TaskEvent],
-    ) -> TaskEvent:
-        """各状态 -> FINISHED 任务调度函数"""
-        return TaskEvent.DONE
-
-    on_state_changed_fn[(TaskState.RUNNING, TaskState.FINISHED)] = to_finished_task
-
     return on_state_changed_fn
 
 

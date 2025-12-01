@@ -21,6 +21,7 @@ setup(
     # 资源文件（prompt 目录）
     data_files=[
         ("share/tasking/prompt", [
+            "prompt/tool/text_edit.md",
             "prompt/task/default.xml",
             "prompt/task/plan_and_exec.xml",
             "prompt/workflow/orchestrate/orchestrating.md",

@@ -24,7 +24,7 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
     _task_type: str
     
     # *** 任务输入输出 ***
-    _protocol: str | dict[str, Any]
+    _protocol: str | list[dict[str, Any]]
     _input_data: str | list[dict[str, Any]]
     _output_data: str
     _is_completed: bool
@@ -154,9 +154,12 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
 
     # ********** 实现ITask接口：输入输出管理 **********
     
-    def get_protocol(self) -> str | dict[str, Any]:
+    def get_protocol(self) -> str | list[dict[str, Any]]:
         """获取任务的协议定义，包括输入输出格式等信息"""
         return copy.deepcopy(self._protocol)
+    
+    def set_protocol(self, protocol: str | list[dict[str, Any]]) -> None:
+        self._protocol = protocol
 
     def get_input(self) -> str | list[dict[str, Any]]:
         """获取任务的输入数据"""

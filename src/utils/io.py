@@ -2,6 +2,34 @@ from pathlib import Path
 from typing import Union
 
 
+def get_prompt_file_path(prompt_rel_path: str) -> Path:
+    """动态获取 prompt 文件绝对路径（兼容开发/安装环境）"""
+    # 1. 开发环境：项目根目录下的 prompt
+    project_root = Path(__file__).parent.parent.parent.parent.parent  # 适配你的目录层级
+    dev_prompt_path = project_root / "prompt" / prompt_rel_path
+    if dev_prompt_path.exists():
+        return dev_prompt_path
+
+    # 2. 安装环境：share/tasking/prompt 目录
+    try:
+        from pkg_resources import resource_filename, Requirement
+        install_prompt_dir = Path(resource_filename(Requirement.parse("tasking"), "share/tasking/prompt"))
+    except ImportError:
+        import importlib.util
+        spec = importlib.util.find_spec("tasking")
+        if spec and spec.submodule_search_locations:
+            pkg_dir = Path(spec.submodule_search_locations[0])
+        else:
+            pkg_dir = Path(__file__).resolve().parent.parent
+        install_prompt_dir = pkg_dir.parent.parent / "share" / "tasking" / "prompt"
+
+    install_prompt_path = install_prompt_dir / prompt_rel_path
+    if install_prompt_path.exists():
+        return install_prompt_path
+
+    raise FileNotFoundError(f"Prompt 文件不存在：{prompt_rel_path}")
+
+
 def read_document(
     path: Union[str, Path],
     encoding: str = "utf-8",
@@ -17,12 +45,10 @@ def read_document(
 
     返回: 文本字符串
     """
+    # 获取文件绝对路径
+    path = get_prompt_file_path(str(path))
+    # 读取文件内容
     p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"文件不存在: {p}")
-    if p.is_dir():
-        raise IsADirectoryError(f"不是文件: {p}")
-
     return p.read_text(encoding=encoding)
 
 

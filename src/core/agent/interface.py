@@ -143,15 +143,17 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
 
     @abstractmethod
     async def call_tool(
-        self, 
-        name: str, 
-        task: ITask[StateT, EventT], 
-        inject: dict[str, Any], 
-        kwargs: dict[str, Any]
+        self,
+        context: dict[str, Any],
+        name: str,
+        task: ITask[StateT, EventT],
+        inject: dict[str, Any],
+        kwargs: dict[str, Any],
     ) -> Message:
         """调用指定名称的工具
 
         Args:
+            context (dict[str, Any]): 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
             name (str): 工具名称
             task (ITask[StateT, EventT]): 任务实例
             inject (dict[str, Any]): 注入工具的额外依赖参数
@@ -289,7 +291,6 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
         self,
         context: dict[str, Any],
         queue: IQueue[Message],
-        llm_name: str,
         observe: list[Message],
         completion_config: CompletionConfig,
         **kwargs: Any, 
@@ -301,8 +302,6 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
             queue (IQueue[Message]):
                 数据队列，用于输出任务运行过程中产生的数据
-            llm_name (str):
-                语言模型的名称，用于按照阶段名称选择对应的LLM
             observe (list[Message]):
                 从任务或环境观察到的消息
             completion_config (CompletionConfig):

@@ -86,12 +86,22 @@ class ITask(IStateMachine[StateT, EventT]):
     # ********** 任务输入输出协议/案例/输入数据 **********
 
     @abstractmethod
-    def get_protocol(self) -> str | dict[str, Any]:
+    def get_protocol(self) -> str | list[dict[str, Any]]:
         """
         获取任务的输入输出协议定义
         
         Returns:
             协议定义内容
+        """
+        pass
+    
+    @abstractmethod
+    def set_protocol(self, protocol: str | list[dict[str, Any]]) -> None:
+        """
+        设置任务的输入输出协议定义
+        
+        Args:
+            protocol: 协议定义内容
         """
         pass
     

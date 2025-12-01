@@ -11,7 +11,7 @@ from ....utils.io import read_document
 
 def get_base_states() -> set[TaskState]:
     """获取常用状态集合
-    -  INIT, CREATED, RUNNING, FINISHED, FAILED, CANCELED
+    -  INIT, CREATED, RUNNING, FINISHED, ERROR, CANCELED
     
     Returns:
         常用状态集合
@@ -21,7 +21,7 @@ def get_base_states() -> set[TaskState]:
         TaskState.CREATED,
         TaskState.RUNNING,
         TaskState.FINISHED,
-        TaskState.FAILED,
+        TaskState.ERROR,
         TaskState.CANCELED,
     }
 
@@ -31,15 +31,15 @@ def get_base_transition() -> dict[
     tuple[TaskState, Callable[[ITreeTaskNode[TaskState, TaskEvent]], Awaitable[None] | None] | None]
 ]:
     """获取常用状态和转换规则
-    - 状态： CREATED, RUNNING, FINISHED, FAILED, CANCELED
+    - 状态： CREATED, RUNNING, FINISHED, ERROR, CANCELED
     - 事件： Identified, FinishPlan, Done, Error, Retry, Cancel
     - 转换规则：
         1. INIT -> CREATED（事件：IDENTIFIED）
         2. CREATED → RUNNING（事件：FinishPlan）
         3. RUNNING → FINISHED（事件：Done）
-        4. RUNNING → FAILED（事件：Error）
-        5. FAILED → RUNNING（事件：Retry）
-        6. FAILED → CANCELED（事件：Cancel）
+        4. RUNNING → ERROR（事件：Error）
+        5. ERROR → RUNNING（事件：Retry）
+        6. ERROR → CANCELED（事件：Cancel）
 
     Args:
         protocol: 任务协议定义
@@ -53,7 +53,7 @@ def get_base_transition() -> dict[
         tuple[TaskState, TaskEvent],
         tuple[TaskState, Callable[[ITreeTaskNode[TaskState, TaskEvent]], Awaitable[None] | None] | None]
     ] = {}
-    
+
     # 1. INIT -> CREATED（事件：IDENTIFIED）
     def on_identified(sm: ITreeTaskNode[TaskState, TaskEvent]):
         assert isinstance(sm, BaseTask)
@@ -82,13 +82,13 @@ def get_base_transition() -> dict[
         TaskState.FINISHED, on_done
     )
 
-    # 4. RUNNING → FAILED（事件：Error）
+    # 4. RUNNING → ERROR（事件：ERROR）
     def on_error(sm: ITreeTaskNode[TaskState, TaskEvent]):
         assert isinstance(sm, BaseTask)
         logger.info(f"[{sm.get_id()}] 任务执行出错")
 
     transitions[(TaskState.RUNNING, TaskEvent.ERROR)] = (
-        TaskState.FAILED, on_error
+        TaskState.ERROR, on_error
     )
 
     # 5. RUNNING → INITED（事件：INIT）
@@ -96,27 +96,27 @@ def get_base_transition() -> dict[
         assert isinstance(sm, BaseTask)
         sm.clean_error_info()  # 重置时清除错误信息
         logger.info(f"[{sm.get_id()}] 任务重置，返回初始状态")
-        
+
     transitions[(TaskState.RUNNING, TaskEvent.INIT)] = (
         TaskState.INITED, on_init
     )
 
-    # 6. FAILED → RUNNING（事件：Retry）
+    # 6. ERROR → RUNNING（事件：RETRY）
     def on_retry(sm: ITreeTaskNode[TaskState, TaskEvent]):
         assert isinstance(sm, BaseTask)
         sm.clean_error_info()  # 重试时清除错误信息
         logger.info(f"[{sm.get_id()}] 任务重试，重新进入执行阶段")
 
-    transitions[(TaskState.FAILED, TaskEvent.RETRY)] = (
+    transitions[(TaskState.ERROR, TaskEvent.RETRY)] = (
         TaskState.RUNNING, on_retry
     )
 
-    # 7. FAILED → CANCELED（事件：Cancel）
+    # 7. ERROR → CANCELED（事件：CANCEL）
     def on_cancel(sm: ITreeTaskNode[TaskState, TaskEvent]):
         assert isinstance(sm, BaseTask)
         logger.info(f"[{sm.get_id()}] 任务取消，终止执行")
     
-    transitions[(TaskState.FAILED, TaskEvent.CANCEL)] = (
+    transitions[(TaskState.ERROR, TaskEvent.CANCEL)] = (
         TaskState.CANCELED, on_cancel
     )
 

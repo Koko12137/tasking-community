@@ -10,6 +10,7 @@ import subprocess
 import shlex
 import re
 from abc import ABC, abstractmethod
+from uuid import uuid4
 from typing import List, Optional
 
 # ------------------------------
@@ -55,6 +56,15 @@ class ITerminal(ABC):
     3. 逃逸禁止命令检查（拒绝嵌套在引号/反引号中的禁止命令）
     4. 禁止命令列表检查（拒绝列表内的危险命令）
     """
+    
+    @abstractmethod
+    def get_id(self) -> str:
+        """获取终端唯一标识符（实例化时自动生成）。
+
+        Returns:
+            str: 终端唯一ID字符串（如"terminal_1234567890"）。
+        """
+        raise NotImplementedError
 
     @abstractmethod
     def get_workspace(self) -> str:
@@ -179,7 +189,7 @@ class SingleThreadTerminal(ITerminal):
     - 默认禁用脚本执行，防止通过脚本逃逸工作空间限制
     - 实时同步终端当前目录，支持cd命令在工作空间内自由跳转
     """
-
+    _terminal_id: str                # 终端唯一标识符
     _workspace: str                  # 强制绑定的工作空间（绝对路径）
     _current_dir: Optional[str]      # 终端当前目录（与bash实时同步）
     _process: Optional[subprocess.Popen]  # 长期bash进程
@@ -209,6 +219,7 @@ class SingleThreadTerminal(ITerminal):
             NotADirectoryError: workspace路径存在但不是目录。
             RuntimeError: 终端进程启动失败。
         """
+        self._terminal_id = uuid4().hex  # 生成唯一终端ID
         # 1. 处理工作空间：校验路径合法性，必要时创建
         workspace_abs = os.path.abspath(workspace)
         if not os.path.exists(workspace_abs):
@@ -233,6 +244,9 @@ class SingleThreadTerminal(ITerminal):
         self._process = None
         self.open()  # 自动启动终端进程
         self._sync_current_dir()  # 同步初始目录（工作空间根目录）
+        
+    def get_id(self) -> str:
+        return self._terminal_id
 
     def get_workspace(self) -> str:
         if not self._workspace:

@@ -3,7 +3,7 @@ from typing import Any
 from ..core.state_machine.task import ITask
 
 
-def intend_identify(intend: int, kwargs: dict[str, Any] = {}) -> None:
+def intent_identify(intent: int, kwargs: dict[str, Any] = {}) -> None:
     """意图识别工具。这个是提供给大模型用的意图识别工具，开发者需要重新实现这个函数的文档，然后用 FastMCP 的 Tool 功能包装起来供大模型调用。
     
     Example:
@@ -38,9 +38,9 @@ def intend_identify(intend: int, kwargs: dict[str, Any] = {}) -> None:
     task_input = task.get_input()
     # 添加意图识别结果到任务输入的最后
     if isinstance(task_input, list):
-        task_input.append({"type": "text", "text": f"<intend>{intend}</intend>"})
+        task_input.append({"type": "text", "text": f"<intent>{intent}</intent>"})
         task.set_input(task_input)
     elif isinstance(task_input, str): # pyright: ignore[reportUnnecessaryIsInstance]
-        task.set_input(f"{task_input}\n<intend>{intend}</intend>")
+        task.set_input(f"{task_input}\n<intent>{intent}</intent>")
     else:
         raise TypeError("Unsupported input type for intent identification")

@@ -1,7 +1,7 @@
 """
-Document editor tool tests.
+Text editor tool tests.
 
-This module contains comprehensive tests for the document editor implementation,
+This module contains comprehensive tests for the text editor implementation,
 including line-based editing operations, file creation, and security constraints.
 """
 
@@ -12,11 +12,11 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 
 from src.tool.terminal import SingleThreadTerminal
-from src.tool.doc_edit import DocumentEditor
+from src.tool.text_edit import TextEditor, EditOperation
 
 
-class TestDocumentEditor:
-    """Test cases for DocumentEditor implementation."""
+class TestTextEditor:
+    """Test cases for TextEditor implementation."""
 
     @pytest.fixture
     def temp_workspace(self):
@@ -28,19 +28,27 @@ class TestDocumentEditor:
     @pytest.fixture
     def terminal(self, temp_workspace):
         """Create a terminal instance with a temporary workspace."""
+        # Change to temp workspace before creating terminal
+        old_cwd = os.getcwd()
+        os.chdir(temp_workspace)
+
         term = SingleThreadTerminal(
             workspace=temp_workspace,
             create_workspace=True,
-            allowed_commands=["ls", "cd", "pwd", "cat", "sed", "touch", "mkdir"],
+            allowed_commands=["ls", "cd", "pwd", "cat", "sed", "touch", "mkdir", "wc", "rm", "echo"],
             disable_script_execution=True
         )
+
+        # Restore original directory
+        os.chdir(old_cwd)
+
         yield term
         term.close()
 
     @pytest.fixture
-    def doc_editor(self, terminal):
-        """Create a document editor instance."""
-        return DocumentEditor(terminal=terminal)
+    def text_editor(self, terminal):
+        """Create a text editor instance."""
+        return TextEditor(terminal=terminal)
 
     @pytest.fixture
     def test_file_path(self, temp_workspace):
@@ -48,138 +56,129 @@ class TestDocumentEditor:
         return os.path.join(temp_workspace, "test_file.txt")
 
     def test_initialization(self, terminal):
-        """Test document editor initialization."""
-        editor = DocumentEditor(terminal=terminal)
+        """Test text editor initialization."""
+        editor = TextEditor(terminal=terminal)
         assert editor._terminal == terminal
         assert editor._workspace == terminal.get_workspace()
         assert isinstance(editor._sed_inplace_arg, list)
 
     def test_initialization_fails_without_workspace(self):
-        """Test document editor initialization fails without workspace."""
+        """Test text editor initialization fails without workspace."""
         mock_terminal = Mock()
         mock_terminal.get_workspace.return_value = ""
+        mock_terminal.get_allowed_commands.return_value = []
+        mock_terminal.is_script_execution_disabled.return_value = True
 
         with pytest.raises(RuntimeError):
-            DocumentEditor(terminal=mock_terminal)
+            TextEditor(terminal=mock_terminal)
 
-    def test_resolve_file_path_absolute(self, doc_editor, temp_workspace):
+    def test_resolve_file_path_absolute(self, text_editor, temp_workspace):
         """Test resolving absolute file paths."""
         absolute_path = os.path.join(temp_workspace, "test.txt")
-        file_abs, file_rel = doc_editor._resolve_file_path(absolute_path)
+        file_abs, file_rel = text_editor._resolve_file_path(absolute_path)
 
         assert file_abs == absolute_path
         assert file_rel == "test.txt"
 
-    def test_resolve_file_path_relative(self, doc_editor, temp_workspace):
+    def test_resolve_file_path_relative(self, text_editor, temp_workspace):
         """Test resolving relative file paths."""
         relative_path = "subdir/test.txt"
-        file_abs, file_rel = doc_editor._resolve_file_path(relative_path)
+        file_abs, file_rel = text_editor._resolve_file_path(relative_path)
 
         expected_abs = os.path.join(temp_workspace, relative_path)
         assert file_abs == expected_abs
         assert file_rel == relative_path
 
-    def test_resolve_file_path_outside_workspace(self, doc_editor):
+    def test_resolve_file_path_outside_workspace(self, text_editor):
         """Test resolving paths outside workspace raises error."""
         outside_path = "/etc/passwd"
 
         with pytest.raises(RuntimeError):
-            doc_editor._resolve_file_path(outside_path)
+            text_editor._resolve_file_path(outside_path)
 
-    def test_get_file_line_count_empty_file(self, doc_editor, temp_workspace):
+    def test_get_file_line_count_empty_file(self, text_editor, temp_workspace):
         """Test getting line count of empty file."""
         file_path = os.path.join(temp_workspace, "empty.txt")
         with open(file_path, 'w') as f:
             pass  # Create empty file
 
-        line_count = doc_editor._get_file_line_count("empty.txt")
+        line_count = text_editor._get_file_line_count("empty.txt")
         assert line_count == 0
 
-    def test_get_file_line_count_nonexistent_file(self, doc_editor):
+    def test_get_file_line_count_nonexistent_file(self, text_editor):
         """Test getting line count of nonexistent file."""
-        line_count = doc_editor._get_file_line_count("nonexistent.txt")
+        line_count = text_editor._get_file_line_count("nonexistent.txt")
         assert line_count == 0
 
-    def test_get_file_line_count_multiple_lines(self, doc_editor, temp_workspace):
+    def test_get_file_line_count_multiple_lines(self, text_editor, temp_workspace):
         """Test getting line count of file with multiple lines."""
         file_path = os.path.join(temp_workspace, "lines.txt")
         with open(file_path, 'w') as f:
             f.write("line 1\nline 2\nline 3\n")
 
-        line_count = doc_editor._get_file_line_count("lines.txt")
+        line_count = text_editor._get_file_line_count("lines.txt")
         assert line_count == 3
 
-    def test_ensure_parent_dir_exists(self, doc_editor, temp_workspace):
+    def test_ensure_parent_dir_exists(self, text_editor, temp_workspace):
         """Test ensuring parent directory exists."""
         nested_path = os.path.join(temp_workspace, "level1", "level2", "test.txt")
-        doc_editor._ensure_parent_dir(nested_path)
+        text_editor._ensure_parent_dir(nested_path)
 
         assert os.path.exists(os.path.join(temp_workspace, "level1", "level2"))
 
-    def test_escape_sed_content(self, doc_editor):
+    def test_escape_sed_content(self, text_editor):
         """Test escaping special characters for sed."""
         # Test basic escaping
-        assert doc_editor._escape_sed_content("path/to/file") == "path\\/to\\/file"
-        assert doc_editor._escape_sed_content("replace & insert") == "replace \\& insert"
-        assert doc_editor._escape_sed_content(r"c:\path") == r"c:\\path"
+        assert text_editor._escape_sed_content("path/to/file") == "path\\/to\\/file"
+        assert text_editor._escape_sed_content("replace & insert") == "replace \\& insert"
+        assert text_editor._escape_sed_content(r"c:\path") == r"c:\\path"
 
         # Test multiline content
         multiline = "line 1\nline 2"
-        escaped = doc_editor._escape_sed_content(multiline)
+        escaped = text_editor._escape_sed_content(multiline)
         assert "line 1" in escaped
         assert "line 2" in escaped
 
-    def test_edit_parameter_validation(self, doc_editor):
+    def test_edit_parameter_validation(self, text_editor):
         """Test edit method parameter validation."""
         file_path = "test.txt"
 
-        # Mismatched list lengths should raise ValueError
+        # Empty operations list should raise ValueError
         with pytest.raises(ValueError):
-            doc_editor.edit(
+            text_editor.edit(
                 file_path=file_path,
-                lines=[1, 2],
-                ops=["modify"],
-                contents=["content"]
+                operations=[]
             )
 
         # Invalid operation type should raise ValueError
         with pytest.raises(ValueError):
-            doc_editor.edit(
+            text_editor.edit(
                 file_path=file_path,
-                lines=[1],
-                ops=["invalid_op"],
-                contents=["content"]
+                operations=[EditOperation(line=1, op="invalid_op", content="content")]
             )
 
         # Invalid line number type should raise ValueError
         with pytest.raises(ValueError):
-            doc_editor.edit(
+            text_editor.edit(
                 file_path=file_path,
-                lines=["not_a_number"],
-                ops=["modify"],
-                contents=["content"]
+                operations=[EditOperation(line="not_a_number", op="modify", content="content")]
             )
 
         # Negative line number for non-insert operations should raise ValueError
         with pytest.raises(ValueError):
-            doc_editor.edit(
+            text_editor.edit(
                 file_path=file_path,
-                lines=[-1],
-                ops=["modify"],
-                contents=["content"]
+                operations=[EditOperation(line=-1, op="modify", content="content")]
             )
 
-    def test_edit_new_file_with_create(self, doc_editor, temp_workspace):
-        """Test creating a new file with allow_create=True."""
+    def test_edit_new_file(self, text_editor, temp_workspace):
+        """Test creating a new file (default behavior - allowed)."""
         file_path = "new_file.txt"
 
         # Create file with initial content
-        doc_editor.edit(
+        text_editor.edit(
             file_path=file_path,
-            lines=[0],
-            ops=["insert"],
-            contents=["First line"],
-            allow_create=True
+            operations=[EditOperation(line=0, op="insert", content="First line")]
         )
 
         # Verify file was created and contains content
@@ -190,32 +189,16 @@ class TestDocumentEditor:
             content = f.read()
         assert "First line" in content
 
-    def test_edit_new_file_without_create(self, doc_editor):
-        """Test editing nonexistent file with allow_create=False."""
-        file_path = "nonexistent.txt"
-
-        with pytest.raises(FileNotFoundError):
-            doc_editor.edit(
-                file_path=file_path,
-                lines=[0],
-                ops=["insert"],
-                contents=["content"],
-                allow_create=False
-            )
-
-    def test_edit_modify_existing_file(self, doc_editor, test_file_path):
+    def test_edit_modify_existing_file(self, text_editor, test_file_path):
         """Test modifying lines in existing file."""
         # Create initial file
         with open(test_file_path, 'w') as f:
             f.write("Line 1\nLine 2\nLine 3\n")
 
         # Modify line 2
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[2],
-            ops=["modify"],
-            contents=["Modified line 2"],
-            allow_create=False
+            operations=[EditOperation(line=2, op="modify", content="Modified line 2")]
         )
 
         # Verify modification
@@ -225,19 +208,19 @@ class TestDocumentEditor:
         assert "Modified line 2" in content
         assert "Line 3" in content
 
-    def test_edit_delete_lines(self, doc_editor, test_file_path):
+    def test_edit_delete_lines(self, text_editor, test_file_path):
         """Test deleting lines from file."""
         # Create initial file
         with open(test_file_path, 'w') as f:
             f.write("Line 1\nLine 2\nLine 3\nLine 4\n")
 
         # Delete lines 2 and 3
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[3, 2],  # Delete in reverse order to avoid line number shifts
-            ops=["delete", "delete"],
-            contents=["", ""],
-            allow_create=False
+            operations=[
+                EditOperation(line=3, op="delete", content=""),
+                EditOperation(line=2, op="delete", content="")
+            ]
         )
 
         # Verify deletion
@@ -248,19 +231,16 @@ class TestDocumentEditor:
         assert "Line 3" not in content
         assert "Line 4" in content
 
-    def test_edit_insert_lines(self, doc_editor, test_file_path):
+    def test_edit_insert_lines(self, text_editor, test_file_path):
         """Test inserting lines into file."""
         # Create initial file
         with open(test_file_path, 'w') as f:
             f.write("Line 1\nLine 3\n")
 
         # Insert line at position 2
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[2],
-            ops=["insert"],
-            contents=["Line 2"],
-            allow_create=False
+            operations=[EditOperation(line=2, op="insert", content="Line 2")]
         )
 
         # Verify insertion
@@ -268,19 +248,16 @@ class TestDocumentEditor:
             content = f.read()
         assert "Line 1\nLine 2\nLine 3" in content
 
-    def test_edit_insert_at_beginning(self, doc_editor, test_file_path):
+    def test_edit_insert_at_beginning(self, text_editor, test_file_path):
         """Test inserting line at beginning of file."""
         # Create initial file
         with open(test_file_path, 'w') as f:
             f.write("Line 2\nLine 3\n")
 
         # Insert at beginning (line 0)
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[0],
-            ops=["insert"],
-            contents=["Line 1"],
-            allow_create=False
+            operations=[EditOperation(line=0, op="insert", content="Line 1")]
         )
 
         # Verify insertion
@@ -288,19 +265,16 @@ class TestDocumentEditor:
             content = f.read()
         assert content.startswith("Line 1\n")
 
-    def test_edit_insert_at_end(self, doc_editor, test_file_path):
+    def test_edit_insert_at_end(self, text_editor, test_file_path):
         """Test inserting line at end of file."""
         # Create initial file
         with open(test_file_path, 'w') as f:
             f.write("Line 1\nLine 2\n")
 
         # Insert at end (line -1)
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[-1],
-            ops=["insert"],
-            contents=["Line 3"],
-            allow_create=False
+            operations=[EditOperation(line=-1, op="insert", content="Line 3")]
         )
 
         # Verify insertion
@@ -308,19 +282,21 @@ class TestDocumentEditor:
             content = f.read()
         assert content.endswith("Line 3\n")
 
-    def test_edit_multiple_operations(self, doc_editor, test_file_path):
+    def test_edit_multiple_operations(self, text_editor, test_file_path):
         """Test performing multiple operations in one call."""
         # Create initial file
         with open(test_file_path, 'w') as f:
             f.write("Line 1\nOld line 2\nLine 3\nLine 4\n")
 
         # Perform multiple operations
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[4, 2, 0, -1],  # Delete line 4, modify line 2, insert at start, insert at end
-            ops=["delete", "modify", "insert", "insert"],
-            contents=["", "New line 2", "Prologue", "Epilogue"],
-            allow_create=False
+            operations=[
+                EditOperation(line=4, op="delete", content=""),
+                EditOperation(line=2, op="modify", content="New line 2"),
+                EditOperation(line=0, op="insert", content="Prologue"),
+                EditOperation(line=-1, op="insert", content="Epilogue")
+            ]
         )
 
         # Verify all operations
@@ -333,7 +309,7 @@ class TestDocumentEditor:
         assert lines[3] == "Line 3"
         assert lines[4] == "Epilogue"
 
-    def test_edit_with_special_characters(self, doc_editor, test_file_path):
+    def test_edit_with_special_characters(self, text_editor, test_file_path):
         """Test editing with special characters in content."""
         # Create initial file
         with open(test_file_path, 'w') as f:
@@ -341,12 +317,9 @@ class TestDocumentEditor:
 
         # Insert line with special characters
         special_content = "Path: /usr/bin, Text: &symbols, Backslashes: \\"
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[-1],
-            ops=["insert"],
-            contents=[special_content],
-            allow_create=False
+            operations=[EditOperation(line=-1, op="insert", content=special_content)]
         )
 
         # Verify special characters preserved
@@ -354,7 +327,7 @@ class TestDocumentEditor:
             content = f.read()
         assert special_content in content
 
-    def test_edit_multiline_content(self, doc_editor, test_file_path):
+    def test_edit_multiline_content(self, text_editor, test_file_path):
         """Test editing with multiline content."""
         # Create initial file
         with open(test_file_path, 'w') as f:
@@ -362,12 +335,9 @@ class TestDocumentEditor:
 
         # Insert multiline content
         multiline = "Line A\nLine B\nLine C"
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[-1],
-            ops=["insert"],
-            contents=[multiline],
-            allow_create=False
+            operations=[EditOperation(line=-1, op="insert", content=multiline)]
         )
 
         # Verify multiline content preserved
@@ -377,17 +347,17 @@ class TestDocumentEditor:
         assert "Line B" in content
         assert "Line C" in content
 
-    def test_edit_subdirectory_file(self, doc_editor, temp_workspace):
+    def test_edit_subdirectory_file(self, text_editor, temp_workspace):
         """Test editing file in subdirectory."""
         subdir_file = "subdir/nested_file.txt"
 
         # Create file in subdirectory
-        doc_editor.edit(
+        text_editor.edit(
             file_path=subdir_file,
-            lines=[0, -1],
-            ops=["insert", "insert"],
-            contents=["First line", "Last line"],
-            allow_create=True
+            operations=[
+                EditOperation(line=0, op="insert", content="First line"),
+                EditOperation(line=-1, op="insert", content="Last line")
+            ]
         )
 
         # Verify file created in correct location
@@ -399,29 +369,23 @@ class TestDocumentEditor:
         assert "First line" in content
         assert "Last line" in content
 
-    def test_edit_modify_nonexistent_file(self, doc_editor):
+    def test_edit_modify_nonexistent_file(self, text_editor):
         """Test modifying nonexistent file raises error."""
         with pytest.raises(FileNotFoundError):
-            doc_editor.edit(
+            text_editor.edit(
                 file_path="nonexistent.txt",
-                lines=[1],
-                ops=["modify"],
-                contents=["content"],
-                allow_create=True  # Even with create=True, modify should fail
+                operations=[EditOperation(line=1, op="modify", content="content")]
             )
 
-    def test_edit_delete_nonexistent_file(self, doc_editor):
+    def test_edit_delete_nonexistent_file(self, text_editor):
         """Test deleting from nonexistent file raises error."""
         with pytest.raises(FileNotFoundError):
-            doc_editor.edit(
+            text_editor.edit(
                 file_path="nonexistent.txt",
-                lines=[1],
-                ops=["delete"],
-                contents=[""],
-                allow_create=True  # Even with create=True, delete should fail
+                operations=[EditOperation(line=1, op="delete", content="")]
             )
 
-    def test_edit_line_out_of_bounds(self, doc_editor, test_file_path):
+    def test_edit_line_out_of_bounds(self, text_editor, test_file_path):
         """Test editing line beyond file bounds."""
         # Create file with 3 lines
         with open(test_file_path, 'w') as f:
@@ -429,35 +393,26 @@ class TestDocumentEditor:
 
         # Try to modify line 10 should raise RuntimeError
         with pytest.raises(RuntimeError):
-            doc_editor.edit(
+            text_editor.edit(
                 file_path=test_file_path,
-                lines=[10],
-                ops=["modify"],
-                contents=["content"],
-                allow_create=False
+                operations=[EditOperation(line=10, op="modify", content="content")]
             )
 
         # Try to delete line 10 should raise RuntimeError
         with pytest.raises(RuntimeError):
-            doc_editor.edit(
+            text_editor.edit(
                 file_path=test_file_path,
-                lines=[10],
-                ops=["delete"],
-                contents=[""],
-                allow_create=False
+                operations=[EditOperation(line=10, op="delete", content="")]
             )
 
-    def test_edit_with_nested_directory(self, doc_editor, temp_workspace):
+    def test_edit_with_nested_directory(self, text_editor, temp_workspace):
         """Test editing file in deeply nested directory."""
         nested_file = "level1/level2/level3/deep_file.txt"
 
         # Create file with nested directories
-        doc_editor.edit(
+        text_editor.edit(
             file_path=nested_file,
-            lines=[0],
-            ops=["insert"],
-            contents=["Deep content"],
-            allow_create=True
+            operations=[EditOperation(line=0, op="insert", content="Deep content")]
         )
 
         # Verify nested directories were created
@@ -468,7 +423,7 @@ class TestDocumentEditor:
         file_abs = os.path.join(temp_workspace, nested_file)
         assert os.path.exists(file_abs)
 
-    def test_edit_preserves_file_permissions(self, doc_editor, test_file_path):
+    def test_edit_preserves_file_permissions(self, text_editor, test_file_path):
         """Test that editing preserves file permissions."""
         # Create file
         with open(test_file_path, 'w') as f:
@@ -478,19 +433,16 @@ class TestDocumentEditor:
         os.chmod(test_file_path, 0o644)
 
         # Edit file
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[2],
-            ops=["insert"],
-            contents=["New line"],
-            allow_create=False
+            operations=[EditOperation(line=2, op="insert", content="New line")]
         )
 
         # Check permissions are preserved
         stat = os.stat(test_file_path)
         assert oct(stat.st_mode)[-3:] == "644"
 
-    def test_edit_unicode_content(self, doc_editor, test_file_path):
+    def test_edit_unicode_content(self, text_editor, test_file_path):
         """Test editing with unicode content."""
         # Create file
         with open(test_file_path, 'w', encoding='utf-8') as f:
@@ -498,12 +450,9 @@ class TestDocumentEditor:
 
         # Add unicode content
         unicode_content = "中文\nFrançais\nEspañol\n🎉 Emoji"
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[-1],
-            ops=["insert"],
-            contents=[unicode_content],
-            allow_create=False
+            operations=[EditOperation(line=-1, op="insert", content=unicode_content)]
         )
 
         # Verify unicode content is preserved
@@ -514,19 +463,16 @@ class TestDocumentEditor:
         assert "Español" in content
         assert "🎉 Emoji" in content
 
-    def test_edit_empty_line_content(self, doc_editor, test_file_path):
+    def test_edit_empty_line_content(self, text_editor, test_file_path):
         """Test editing with empty lines."""
         # Create file
         with open(test_file_path, 'w') as f:
             f.write("Line 1\n")
 
         # Insert empty line
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[2],
-            ops=["insert"],
-            contents=[""],  # Empty content
-            allow_create=False
+            operations=[EditOperation(line=2, op="insert", content="")]
         )
 
         # Verify empty line is preserved
@@ -535,18 +481,15 @@ class TestDocumentEditor:
         assert len(lines) == 2
         assert lines[1] == "\n"  # Empty line
 
-    def test_edit_large_content(self, doc_editor, test_file_path):
+    def test_edit_large_content(self, text_editor, test_file_path):
         """Test editing with large content."""
         # Create large content (10KB)
         large_content = "A" * 10240
 
         # Edit with large content
-        doc_editor.edit(
+        text_editor.edit(
             file_path=test_file_path,
-            lines=[0],
-            ops=["insert"],
-            contents=[large_content],
-            allow_create=True
+            operations=[EditOperation(line=0, op="insert", content=large_content)]
         )
 
         # Verify large content is preserved
