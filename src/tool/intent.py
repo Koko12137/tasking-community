@@ -9,7 +9,7 @@ def intent_identify(intent: int, kwargs: dict[str, Any] = {}) -> None:
     Example:
         ```python
         from fastmcp.tools import Tool
-        from tasking.tool.intent import intend_identify
+        from tasking.tool.intent import intent_identify
         
         DOCS = ""\"意图识别工具。根据任务的输入内容，识别出用户的意图编号。
         1. 用户的意图是询问天气
@@ -17,12 +17,12 @@ def intent_identify(intent: int, kwargs: dict[str, Any] = {}) -> None:
         3. 用户的意图是查询航班信息
         
         Args:
-            intend: 识别出的意图编号，必须是整数
+            intent: 识别出的意图编号，必须是整数
         ""\"
         
-        intend_tool = Tool.from_function(
-            fn=intend_identify,
-            name="intend_identify",
+        intent_tool = Tool.from_function(
+            fn=intent_identify,
+            name="intent_identify",
             description=DOCS,
             exclude_args=["kwargs"],    # 排除掉 kwargs 参数，这个由框架自动注入
         )
