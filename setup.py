@@ -22,6 +22,7 @@ setup(
     data_files=[
         ("share/tasking/prompt", [
             "prompt/tool/text_edit.md",
+            "prompt/tool/filesystem.md",
             "prompt/task/default.xml",
             "prompt/task/plan_and_exec.xml",
             "prompt/workflow/orchestrate/orchestrating.md",
