@@ -1,9 +1,9 @@
 from .const import MemoryT, DefaultMemory
-from .interface import IMemory
+from .interface import IMemoryBase, IVectorMemory, ISqlMemory, IKVMemory
 
 __all__ = [
     # Constants
     "MemoryT", "DefaultMemory",
     # Interface
-    "IMemory",
+    "IMemoryBase", "IVectorMemory", "ISqlMemory", "IKVMemory",
 ]

@@ -1,3 +1,4 @@
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Generic, TypeVar
 
@@ -55,3 +56,28 @@ class IQueue(ABC, Generic[T]):
         Returns:
             如果队列已满则返回True，否则返回False
         """
+
+
+class AsyncQueue(IQueue[T]):
+    """基于 asyncio.Queue 的异步队列实现"""
+
+    def __init__(self, maxsize: int = 0) -> None:
+        self._queue = asyncio.Queue[T](maxsize)
+
+    async def put(self, item: T) -> None:
+        await self._queue.put(item)
+
+    async def put_nowait(self, item: T) -> None:
+        self._queue.put_nowait(item)
+
+    async def get(self) -> T:
+        return await self._queue.get()
+
+    async def get_nowait(self) -> T:
+        return self._queue.get_nowait()
+
+    async def is_empty(self) -> bool:
+        return self._queue.empty()
+
+    async def is_full(self) -> bool:
+        return self._queue.full()

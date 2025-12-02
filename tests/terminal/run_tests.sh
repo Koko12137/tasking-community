@@ -213,7 +213,7 @@ run_quality_checks() {
     # Run pyright
     print_info "Running pyright type checking..."
     if command -v uv &> /dev/null; then
-        if uv run pyright src/tool/terminal.py src/tool/doc_edit.py; then
+        if uv run pyright src/tool/terminal.py src/tool/text_edit.py; then
             print_success "pyright checks passed"
         else
             print_error "pyright checks failed"
@@ -228,7 +228,7 @@ run_quality_checks() {
     if command -v uv &> /dev/null; then
         # Check if pylint is installed
         if uv run pylint --version &> /dev/null; then
-            if uv run pylint --score=yes src/tool/terminal.py src/tool/doc_edit.py; then
+            if uv run pylint --score=yes src/tool/terminal.py src/tool/text_edit.py; then
                 print_success "pylint checks passed"
             else
                 print_error "pylint checks failed"
@@ -257,22 +257,40 @@ run_basic_tests() {
     # Test terminal initialization
     run_pytest "$TEST_DIR/test_terminal.py::TestSingleThreadTerminal::test_initialization" "Terminal Initialization" ""
 
-    # Test document editor initialization
-    run_pytest "$TEST_DIR/test_doc_edit.py::TestDocumentEditor::test_initialization" "Document Editor Initialization" ""
+    # Test text editor initialization
+    run_pytest "$TEST_DIR/test_doc_edit.py::TestTextEditor::test_initialization" "Text Editor Initialization" ""
 
     # Test basic command execution
     run_pytest "$TEST_DIR/test_terminal.py::TestSingleThreadTerminal::test_run_command_simple" "Basic Command Execution" ""
 
     # Test basic file editing
-    run_pytest "$TEST_DIR/test_doc_edit.py::TestDocumentEditor::test_edit_new_file_with_create" "Basic File Editing" ""
+    run_pytest "$TEST_DIR/test_doc_edit.py::TestTextEditor::test_edit_new_file" "Basic File Editing" ""
 }
 
 # Run security tests
 run_security_tests() {
     print_header "Running Security Tests"
 
-    # Test security constraints
+    # Test overall security constraints
     run_pytest "$TEST_DIR/test_terminal.py::TestTerminalSecurity" "Terminal Security" ""
+
+    # Test new prohibited commands (chmod, package managers)
+    run_pytest "$TEST_DIR/test_terminal.py::TestTerminalSecurity::test_security_new_prohibited_commands" "New Prohibited Commands" ""
+
+    # Test pipe and semicolon escape attempts
+    run_pytest "$TEST_DIR/test_terminal.py::TestTerminalSecurity::test_security_pipe_and_semicolon_escape" "Pipe/Semicolon Escape" ""
+
+    # Test path-sensitive command security
+    run_pytest "$TEST_DIR/test_terminal.py::TestTerminalSecurity::test_security_path_sensitive_commands" "Path-Sensitive Commands" ""
+
+    # Test script file detection
+    run_pytest "$TEST_DIR/test_terminal.py::TestTerminalSecurity::test_security_script_file_detection" "Script File Detection" ""
+
+    # Test complex escape patterns
+    run_pytest "$TEST_DIR/test_terminal.py::TestTerminalSecurity::test_security_complex_escape_patterns" "Complex Escape Patterns" ""
+
+    # Test text editor security integration
+    run_pytest "$TEST_DIR/test_doc_edit.py::TestTextEditor::test_terminal_security_in_text_editor_context" "Text Editor Security" ""
 
     # Test prohibited commands
     run_pytest "$TEST_DIR/test_terminal.py::TestSingleThreadTerminal::test_check_command_prohibited_list" "Prohibited Commands" ""

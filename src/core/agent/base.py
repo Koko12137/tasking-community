@@ -4,11 +4,11 @@ from typing import Any, Callable, Awaitable
 from traceback import format_exc
 
 from fastmcp import Client
-from fastmcp.client.transports import ClientTransport
+from fastmcp.client.transports import ClientTransportT
 from mcp.types import CallToolResult, TextContent
 from asyncer import asyncify
 
-from .interface import IAgent, IHumanClient
+from .interface import IAgent
 from ..state_machine.const import EventT, StateT
 from ..state_machine.task import ITask
 from ..state_machine.workflow import WorkflowEventT, WorkflowStageT, IWorkflow
@@ -16,59 +16,7 @@ from ...model import CompletionConfig, Message, Role, ToolCallRequest, IQueue
 from ...llm import ILLM
 
 
-class BaseHumanClient(IHumanClient):
-    """基础Human in the loop客户端实现：提供IHumanClient接口的基础实现，供具体HumanClient继承与扩展"""
-    
-    def __init__(self) -> None:
-        pass
-
-    async def ask_human(
-        self,
-        context: dict[str, Any],
-        queue: IQueue[Message],
-        message: Message,
-    ) -> Message:
-        """发送消息给人类进行交互
-        
-        参数:
-            context (dict[str, Any]): 当前请求的上下文信息, 包含用户信息、请求元数据等
-            queue (IQueue[Message]): 向人类发送消息的队列
-            message (Message): 发送给人类的消息内容
-            
-        返回:
-            Message: 人类回复的消息
-        """
-        # 发送消息到队列
-        await queue.put(message)
-        
-        # 等待人类回复
-        return await self.retrieve_human_response(context, queue)
-        
-
-    async def retrieve_human_response(
-        self,
-        context: dict[str, Any],
-        queue: IQueue[Message],
-        timeout: float | None = None,
-    ) -> Message:
-        """检索人类的回复消息
-        
-        参数:
-            context (dict[str, Any]): 当前请求的上下文信息, 包含用户信息、请求元数据等
-            queue (IQueue[Message]): 用于向人类发送消息的队列
-            timeout (float | None): 等待人类回复的超时时间，单位为秒。默认为None，表示无限等待
-            
-        返回:
-            Message: 人类回复的消息
-            
-        异常:
-            TimeoutError: 如果在指定的超时时间内没有收到人类的回复
-            HumanInterfere: 如果人类用户介入了流程
-        """
-        raise NotImplementedError("retrieve_human_response method must be implemented by subclasses.")
-
-
-class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
+class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTransportT]):
     """基础Agent实现：提供IAgent接口的基础实现，供具体Agent继承与扩展"""
     _id: str
     _name: str
@@ -78,9 +26,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
     # Workflow
     _workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT] | None
     # Tool Service
-    _tool_service: Client[ClientTransport] | None
-    # Human in the loop client
-    _human_client: IHumanClient | None
+    _tool_service: Client[ClientTransportT] | None
     
     # Run Hooks
     _pre_run_once_hooks: list[Callable[
@@ -156,7 +102,6 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
     """
     
     # Act Hooks
-    
     _pre_act_hooks: list[Callable[
         [dict[str, Any], IQueue[Message], ITask[StateT, EventT]], 
         Awaitable[None] | None
@@ -186,8 +131,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
         name: str,
         agent_type: str,
         llms: dict[WorkflowStageT, ILLM],
-        tool_service: Client[ClientTransport] | None = None,
-        human_client: IHumanClient | None = None,
+        tool_service: Client[ClientTransportT] | None = None,
     ) -> None:
         """初始化基础Agent实例，钩子函数列表为空，等待后续注册
         
@@ -195,8 +139,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
             name (str): Agent的名称
             agent_type (str): Agent的类型
             llms (dict[WorkflowStageT, ILLM]): 智能体的语言模型集合，按工作流阶段映射
-            tool_service (Client[ClientTransport] | None): 工具服务客户端实例，默认为None
-            human_client (IHumanClient | None): Human in the loop客户端实例，默认为None
+            tool_service (Client[ClientTransportT] | None): 工具服务客户端实例，默认为None
         """
         self._id = f"agent_{id(self)}"
         self._name = name
@@ -204,8 +147,6 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
         self._llms = llms
         self._workflow = None
         self._tool_service = tool_service
-        # Human in the loop client
-        self._human_client = human_client
         # Hooks container
         self._pre_run_once_hooks = []
         self._post_run_once_hooks = []
@@ -250,17 +191,6 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
         """
         return self._llms.copy()
     
-    # ********** Human in the loop **********
-    
-    def get_human_client(self) -> IHumanClient | None:
-        """获取Human in the loop客户端
-        
-        Returns:
-            IHumanClient | None:
-                Human in the loop客户端实例，如果未设置则返回None
-        """
-        return self._human_client
-    
     # ********** 工作流管理 **********
     
     def get_workflow(self) -> IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]:
@@ -283,7 +213,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT]):
         """
         self._workflow = workflow
         
-    def get_tool_service(self) -> Client[ClientTransport]:
+    def get_tool_service(self) -> Client[ClientTransportT]:
         if self._tool_service is None:
             raise RuntimeError("Tool service is not set for this agent.")
         return self._tool_service

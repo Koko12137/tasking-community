@@ -1,16 +1,18 @@
+from enum import Enum, auto
 from typing import Any, Callable, Awaitable
 
 from loguru import logger
 from fastmcp import Client
-from fastmcp.client.transports import ClientTransport
+from fastmcp.client.transports import ClientTransportT
 from fastmcp.tools import Tool as FastMcpTool
 
-from .interface import IAgent, IHumanClient
+from .interface import IAgent
 from .base import BaseAgent
+from ..middleware import HumanInterfere
 from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView, DocumentTreeTaskView
-from ..state_machine.workflow import ReActStage, ReActEvent, IWorkflow, BaseWorkflow
+from ..state_machine.workflow import IWorkflow, BaseWorkflow
 from ...llm import OpenAiLLM, ILLM
-from ...model import Message, StopReason, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
+from ...model import Message, StopReason, Role, IQueue, CompletionConfig, get_settings
 from ...utils.io import read_document
 from ...utils.string.extract import extract_by_label
 
@@ -70,6 +72,32 @@ Raises:
 """
 
 
+class ReActStage(str, Enum):
+    """Simple 工作流阶段枚举"""
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+
+    @classmethod
+    def list_stages(cls) -> list['ReActStage']:
+        """列出所有工作流阶段
+        
+        Returns:
+            工作流阶段列表
+        """
+        return [stage for stage in ReActStage]
+
+
+class ReActEvent(Enum):
+    """Simple 工作流事件枚举"""
+    PROCESS = auto()    # 触发处理
+    COMPLETE = auto()   # 触发完成
+
+    @property
+    def name(self) -> str:
+        """获取事件名称"""
+        return self._name_.lower()
+
+
 def get_react_stages() -> set[ReActStage]:
     """获取常用工作流阶段集合
     -  INIT, PROCESSING, COMPLETED
@@ -97,7 +125,7 @@ def get_react_event_chain() -> list[ReActEvent]:
 
 
 def get_react_actions(
-    agent: IAgent[ReActStage, ReActEvent, TaskState, TaskEvent],
+    agent: IAgent[ReActStage, ReActEvent, TaskState, TaskEvent, ClientTransportT],
 ) -> dict[
     ReActStage,
     Callable[
@@ -311,8 +339,7 @@ def get_react_transition() -> dict[
 
 def build_react_agent(
     name: str, 
-    tool_service: Client[ClientTransport] | None = None,
-    human_client: IHumanClient | None = None,
+    tool_service: Client[ClientTransportT] | None = None,
     actions: dict[
         ReActStage, 
         Callable[
@@ -337,13 +364,12 @@ def build_react_agent(
         ReActStage,
         Callable[[ITask[TaskState, TaskEvent], dict[str, Any]], Message]
     ] | None = None,
-) -> IAgent[ReActStage, ReActEvent, TaskState, TaskEvent]:
+) -> IAgent[ReActStage, ReActEvent, TaskState, TaskEvent, ClientTransportT]:
     """构建一个简单的智能体实例
 
     Args:
         name: 智能体名称，必填，用于在 settings 中读取对应的配置
         tool_service: 工具服务客户端，可选，如果未提供则不关联工具服务
-        human_client: 人类客户端接口，可选，如果未提供则不关联人类客户端
         actions: 动作定义，可选，如果未提供则使用默认定义
         transitions: 状态转换规则，可选，如果未提供则使用默认定义
         prompts: 提示词，可选，如果未提供则使用默认定义
@@ -371,12 +397,11 @@ def build_react_agent(
         )
     
     # 构建基础 Agent 实例
-    agent = BaseAgent[ReActStage, ReActEvent, TaskState, TaskEvent](
+    agent = BaseAgent[ReActStage, ReActEvent, TaskState, TaskEvent, ClientTransportT](
         name=name,
         agent_type=agent_cfg.agent_type,
         llms=llms,
         tool_service=tool_service,
-        human_client=human_client,
     )
     # 获取 event chain
     event_chain = get_react_event_chain()

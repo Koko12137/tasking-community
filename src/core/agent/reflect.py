@@ -1,19 +1,49 @@
+from enum import Enum, auto
 from typing import Any, Callable, Awaitable
 
 from loguru import logger
 from fastmcp import Client
-from fastmcp.client.transports import ClientTransport
+from fastmcp.client.transports import ClientTransportT
 from fastmcp.tools import Tool as FastMcpTool
 
-from .interface import IAgent, IHumanClient
+from .interface import IAgent
 from .base import BaseAgent
 from .react import end_workflow, END_WORKFLOW_DOC
-from ..state_machine.workflow import ReflectStage, ReflectEvent, IWorkflow, BaseWorkflow
+from ..middleware import HumanInterfere
+from ..state_machine.workflow import IWorkflow, BaseWorkflow
 from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView
 from ...llm import OpenAiLLM, ILLM
-from ...model import Message, StopReason, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
+from ...model import Message, StopReason, Role, IQueue, CompletionConfig, get_settings
 from ...utils.io import read_markdown
 from ...utils.string.extract import extract_by_label
+
+
+class ReflectStage(str, Enum):
+    """ReAct - Reflect 工作流阶段枚举"""
+    REASONING = "reasoning"
+    REFLECTING = "reflecting"
+    FINISHED = "finished"
+
+    @classmethod
+    def list_stages(cls) -> list['ReflectStage']:
+        """列出所有工作流阶段
+        
+        Returns:
+            工作流阶段列表
+        """
+        return [stage for stage in ReflectStage]
+
+
+class ReflectEvent(Enum):
+    """ReAct - Reflect 工作流事件枚举"""
+    REASON = auto()     # 触发推理
+    REFLECT = auto()    # 触发反思
+    FINISH = auto()     # 触发完成
+
+    @property
+    def name(self) -> str:
+        """获取事件名称"""
+        return self._name_.lower()
 
 
 def get_reflect_transition() -> dict[
@@ -101,7 +131,7 @@ def get_reflect_event_chain() -> list[ReflectEvent]:
 
 
 def get_reflect_actions(
-    agent: IAgent[ReflectStage, ReflectEvent, TaskState, TaskEvent],
+    agent: IAgent[ReflectStage, ReflectEvent, TaskState, TaskEvent, ClientTransportT],
 ) -> dict[
     ReflectStage, 
     Callable[
@@ -350,8 +380,7 @@ def get_reflect_actions(
 
 def build_reflect_agent(
     name: str,
-    tool_service: Client[ClientTransport] | None = None,
-    human_client: IHumanClient | None = None,
+    tool_service: Client[ClientTransportT] | None = None,
     actions: dict[
         ReflectStage, 
         Callable[
@@ -376,13 +405,12 @@ def build_reflect_agent(
         ReflectStage,
         Callable[[ITask[TaskState, TaskEvent], dict[str, Any]], Message]
     ] | None = None,
-) -> IAgent[ReflectStage, ReflectEvent, TaskState, TaskEvent]:
+) -> IAgent[ReflectStage, ReflectEvent, TaskState, TaskEvent, ClientTransportT]:
     """构建一个 `Reason - Act - Reflection` 的智能体实例
 
     Args:
         name: 智能体名称，必填，用于在 settings 中读取对应的配置
         tool_service: 工具服务客户端，可选，如果未提供则不关联工具服务
-        human_client: 人类客户端，可选，如果未提供则不关联人类客户端
         actions: 动作定义，可选，如果未提供则使用默认定义
         transitions: 状态转换规则，可选，如果未提供则使用默认定义
         prompts: 提示词，可选，如果未提供则使用默认定义
@@ -410,12 +438,11 @@ def build_reflect_agent(
         )
     
     # 构建基础 Agent 实例
-    agent = BaseAgent[ReflectStage, ReflectEvent, TaskState, TaskEvent](
+    agent = BaseAgent[ReflectStage, ReflectEvent, TaskState, TaskEvent, ClientTransportT](
         name=name,
         agent_type=agent_cfg.agent_type,
         llms=llms,
         tool_service=tool_service,
-        human_client=human_client,
     )
     # 获取 event chain
     event_chain = get_reflect_event_chain()

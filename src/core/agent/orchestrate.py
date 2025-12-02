@@ -6,10 +6,11 @@ from asyncer import syncify
 from json_repair import repair_json
 from loguru import logger
 from fastmcp import Client
-from fastmcp.client.transports import ClientTransport
+from fastmcp.client.transports import ClientTransportT
 
-from .interface import IAgent, IHumanClient
+from .interface import IAgent
 from .base import BaseAgent
+from ..middleware import HumanInterfere
 from ..state_machine.workflow import IWorkflow, BaseWorkflow
 from ..state_machine.task import (
     ITask,
@@ -22,7 +23,7 @@ from ..state_machine.task import (
 )
 from ...llm import OpenAiLLM, ILLM
 from ...model import (
-    Message, StopReason, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
+    Message, StopReason, Role, IQueue, CompletionConfig, get_settings
 )
 from ...utils.io import read_markdown
 
@@ -114,7 +115,7 @@ def get_orch_event_chain() -> list[OrchestrateEvent]:
 
 
 def get_orch_actions(
-    agent: IAgent[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
+    agent: IAgent[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent, ClientTransportT],
 ) -> dict[
     OrchestrateStage, 
     Callable[
@@ -399,8 +400,7 @@ def get_orch_transition() -> dict[
 def build_orch_agent(
     name: str,
     valid_tasks: set[ITask[TaskState, TaskEvent]],
-    tool_service: Client[ClientTransport] | None = None,
-    human_client: IHumanClient | None = None,
+    tool_service: Client[ClientTransportT] | None = None,
     actions: dict[
         OrchestrateStage, 
         Callable[
@@ -425,14 +425,13 @@ def build_orch_agent(
         OrchestrateStage,
         Callable[[ITask[TaskState, TaskEvent], dict[str, Any]], Message]
     ] | None = None,
-) -> IAgent[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent]:
+) -> IAgent[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent, ClientTransportT]:
     """构建一个 `Orchestrate` 的智能体实例
 
     Args:
         name: 智能体名称，必填，用于在 settings 中读取对应的配置
         valid_tasks: 有效任务集合，必填，用于智能体管理和调度
         tool_service: 工具服务客户端，可选，如果未提供则不关联工具服务
-        human_client: 人类客户端，可选，如果未提供则不关联人类交互
         actions: 动作定义，可选，如果未提供则使用默认定义
         transitions: 状态转换规则，可选，如果未提供则使用默认定义
         prompts: 提示词，可选，如果未提供则使用默认定义
@@ -460,12 +459,11 @@ def build_orch_agent(
         )
     
     # 构建基础 Agent 实例
-    agent = BaseAgent[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent](
+    agent = BaseAgent[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent, ClientTransportT](
         name=name,
         agent_type=agent_cfg.agent_type,
         llms=llms,
         tool_service=tool_service,
-        human_client=human_client,
     )
     # 获取 event chain
     event_chain = get_orch_event_chain()

@@ -3,16 +3,17 @@ from typing import Any, Callable, Awaitable
 
 from loguru import logger
 from fastmcp import Client
-from fastmcp.client.transports import ClientTransport
+from fastmcp.client.transports import ClientTransportT
 from fastmcp.tools import Tool as FastMcpTool
 
-from .interface import IAgent, IHumanClient
+from .interface import IAgent
 from .base import BaseAgent
 from .react import end_workflow, END_WORKFLOW_DOC
+from ..middleware import HumanInterfere
 from ..state_machine.workflow import IWorkflow, BaseWorkflow
 from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView
 from ...llm import OpenAiLLM, ILLM
-from ...model import Message, Role, IQueue, CompletionConfig, HumanInterfere, get_settings
+from ...model import Message, Role, IQueue, CompletionConfig, get_settings
 from ...utils.io import read_markdown
 
 
@@ -106,7 +107,7 @@ def get_supervise_transition() -> dict[
 
 
 def get_supervise_actions(
-    agent: IAgent[SuperviseStage, SuperviseEvent, TaskState, TaskEvent],
+    agent: IAgent[SuperviseStage, SuperviseEvent, TaskState, TaskEvent, ClientTransportT],
 ) -> dict[
     SuperviseStage, 
     Callable[
@@ -204,8 +205,7 @@ def get_supervise_actions(
 
 def build_supervise_agent(
     name: str,
-    tool_service: Client[ClientTransport] | None = None,
-    human_client: IHumanClient | None = None,
+    tool_service: Client[ClientTransportT] | None = None,
     actions: dict[
         SuperviseStage, 
         Callable[
@@ -230,7 +230,7 @@ def build_supervise_agent(
         SuperviseStage,
         Callable[[ITask[TaskState, TaskEvent], dict[str, Any]], Message]
     ] | None = None,
-) -> IAgent[SuperviseStage, SuperviseEvent, TaskState, TaskEvent]:
+) -> IAgent[SuperviseStage, SuperviseEvent, TaskState, TaskEvent, ClientTransportT]:
     """构建一个 `Supervise` 的智能体实例
 
     Args:
@@ -263,12 +263,11 @@ def build_supervise_agent(
         )
     
     # 构建基础 Agent 实例
-    agent = BaseAgent[SuperviseStage, SuperviseEvent, TaskState, TaskEvent](
+    agent = BaseAgent[SuperviseStage, SuperviseEvent, TaskState, TaskEvent, ClientTransportT](
         name=name,
         agent_type=agent_cfg.agent_type,
         llms=llms,
         tool_service=tool_service,
-        human_client=human_client,
     )
     # 获取 event chain
     event_chain = get_supervise_event_chain()

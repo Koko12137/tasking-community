@@ -9,15 +9,25 @@ class MemoryProtocol(Protocol):
     def id(self) -> str:
         """唯一标识符"""
         ...
+        
+    @property
+    def content(self) -> str:
+        """记忆内容"""
+        ...
 
     def to_dict(self) -> dict[str, Any]: 
         """将记忆对象转为字典形式"""
+        ...
+    
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> 'MemoryProtocol':
+        """从字典形式创建记忆对象"""
         ...
 
 
 # 记忆数据类型，允许不同的记忆类型分类自定义
 MemoryT = TypeVar('MemoryT', bound=MemoryProtocol)  
-"""记忆数据类型变量，必须实现MemoryProtocol协议，需要支持 `to_dict` 方法"""
+"""记忆数据类型变量，必须实现MemoryProtocol协议，需要支持 `to_dict` 方法，并包含 `id` 和 `content` 属性"""
 
 
 class DefaultMemory(str, Enum):

@@ -61,11 +61,11 @@ class ILLM(ABC):
         pass
 
 
-class IEmbeddingLLM(ILLM):
-    """EmbeddingLLM 是用于嵌入文本的语言模型协议"""
+class IEmbedModel(ILLM):
+    """IEmbedModel 是用于嵌入文本的语言模型协议"""
     
     @abstractmethod
-    async def embed(self, text: str, dimensions: int, **kwargs: Any) -> list[float]:
+    async def embed(self, text: str, dimensions: int, **kwargs: Any) -> list[float | int]:
         """嵌入文本并返回嵌入向量
         
         参数:
@@ -77,7 +77,30 @@ class IEmbeddingLLM(ILLM):
                 额外参数
                 
         返回:
-            list[float]:
+            list[float | int]:
                 文本的嵌入向量
+        """
+        pass
+
+    @abstractmethod
+    async def embed_batch(
+        self, 
+        texts: list[str], 
+        dimensions: int, 
+        **kwargs: Any
+    ) -> list[list[float | int]]:
+        """批量嵌入文本并返回嵌入向量列表
+        
+        参数:
+            texts (list[str]):
+                要嵌入的文本列表
+            dimensions (int):
+                嵌入维度
+            **kwargs:
+                额外参数
+                
+        返回:
+            list[list[float | int]]:
+                文本的嵌入向量列表
         """
         pass

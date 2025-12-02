@@ -8,7 +8,7 @@ from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.completion_usage import CompletionUsage as OpenAICompletionUsage
 
-from .interface import ILLM, IEmbeddingLLM
+from .interface import ILLM, IEmbedModel
 from ..model import (
     ToolCallRequest, 
     Message, 
@@ -238,7 +238,7 @@ class OpenAiLLM(ILLM):
         return message
 
 
-class OpenAiEmbeddingLLM(IEmbeddingLLM):
+class OpenAiEmbeddingLLM(IEmbedModel):
     _provider: Provider
     _model: str
     _base_url: str
@@ -307,3 +307,27 @@ class OpenAiEmbeddingLLM(IEmbeddingLLM):
             input=text, 
         )
         return response.data[0].embedding[:dimensions]
+
+    async def embed_batch(self, texts: list[str], dimensions: int, **kwargs: Any) -> list[list[float | int]]:
+        """Embedding the batch of texts.
+        
+        Args:
+            texts (list[str]): 
+                The texts to embed.
+            dimensions (int): 
+                The dimensions of the embedding.
+            **kwargs:
+                The additional keyword arguments.
+                
+        Returns:
+            list[list[float | int]]: 
+                The embeddings of the texts.
+        """
+        response = await self._client.embeddings.create(
+            model=self._model, 
+            input=texts, 
+        )
+        embeddings: list[list[float | int]] = []
+        for data in response.data:
+            embeddings.append(data.embedding[:dimensions])
+        return embeddings

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Generic, Any
 
 from .const import MemoryT
-from ..llm import IEmbeddingLLM
+from ..llm import IEmbedModel
 
 
 class IMemoryBase(ABC, Generic[MemoryT]):
@@ -33,8 +33,11 @@ class IVectorMemory(IMemoryBase[MemoryT]):
     """向量记忆接口，定义了向量记忆的基本操作"""
     
     @abstractmethod
-    def get_embedding_llm(self) -> IEmbeddingLLM:
+    def get_embedding_llm(self, model_name: str) -> IEmbedModel:
         """获取用于记忆的嵌入式语言模型
+        
+        Args:
+            model_name: 嵌入式语言模型名称
         
         Returns:
             嵌入式语言模型实例

@@ -13,6 +13,8 @@ from abc import ABC, abstractmethod
 from uuid import uuid4
 from typing import List, Optional
 
+from loguru import logger
+
 # ------------------------------
 # 核心常量定义（私有，避免外部修改）
 # ------------------------------
@@ -20,31 +22,32 @@ from typing import List, Optional
 _COMMAND_DONE_MARKER = "__SINGLE_THREAD_TERMINAL_EXEC_DONE__"
 # 当前目录同步标记（用于获取终端真实状态）
 _CURRENT_DIR_MARKER = "__SINGLE_THREAD_TERMINAL_CURRENT_DIR__"
-# 默认禁止命令列表（系统级危险操作，可通过构造函数覆盖）
+# 默认禁止命令列表（新增chmod+系统安装类命令，含空格避免误判）
 _DEFAULT_PROHIBITED_COMMANDS = [
-    "sudo ", "su ",          # 提权操作（含空格避免误判"sudoers"）
-    "shutdown", "reboot",    # 系统关机/重启
-    "rm -rf /", "dd if=/",   # 磁盘级危险操作
-    "mv /", "cp /",          # 根目录操作
-    "rm -rf *", "rm -rf .*"  # 批量删除当前/隐藏目录
+    "sudo ", "su ",             # 提权命令
+    "shutdown", "reboot",       # 系统重启/关机
+    "rm -rf /", "dd if=/",      # 危险删除/覆盖
+    "mv /", "cp /",             # 系统文件移动/复制
+    "rm -rf *", "rm -rf .*",    # 批量删除操作
+    "chmod ",                   # 修改权限命令
+    "apt ", "apt-get ", "yum ", "dnf ", "brew ", "dpkg ", "rpm "    # 软件包管理命令
 ]
 # 常见脚本解释器列表（用于识别脚本执行命令）
 _SCRIPT_INTERPRETERS = [
-    # Python
-    "python ", "python3 ", "python2 ",
-    # Shell
-    "bash ", "sh ", "zsh ", "ksh ", "csh ",
-    # Go
-    "go run ", "go test ",
-    # Node.js
-    "node ", "npm run ", "yarn run ", "pnpm run ",
-    # 其他脚本
-    "perl ", "ruby ", "php ", "lua ",
-    # 脚本文件执行（如./script.sh、sh script.sh）
-    "./", ".sh ", ".py ", ".go ", ".js "
+    "python ", "python3 ", "python2 ",              # Python
+    "bash ", "sh ", "zsh ", "ksh ", "csh ",         # Shell脚本
+    "go run ", "go test ",                          # Go语言
+    "node ", "npm run ", "yarn run ", "pnpm run ",  # JavaScript/TypeScript
+    "perl ", "ruby ", "php ", "lua ",               # 其他脚本语言
+    "./", ".sh ", ".py ", ".go ", ".js "            # 直接执行脚本文件
 ]
-# 逃逸命令匹配正则（识别嵌套在引号/反引号中的禁止命令）
-_ESCAPED_CMD_PATTERN = re.compile(r'[\'\"`].*?(sudo|rm -rf|shutdown|reboot).*?[\'\"`]', re.IGNORECASE)
+# 逃逸命令匹配正则（新增安装类命令/chmod关键词，防止嵌套逃逸）
+_ESCAPED_CMD_PATTERN = re.compile(
+    r'[\'\"`].*?(sudo|rm -rf|shutdown|reboot|apt|apt-get|yum|dnf|brew|dpkg|rpm|chmod).*?[\'\"`]',
+    re.IGNORECASE
+)
+# 路径类命令清单（需重点校验路径参数的命令，用于强化日志提示）
+_PATH_SENSITIVE_COMMANDS = ["find", "grep", "ls", "cp", "mv", "rm", "cat", "sed"]
 
 
 class ITerminal(ABC):
@@ -55,6 +58,7 @@ class ITerminal(ABC):
     2. 脚本执行检查（若禁用，拒绝所有脚本解释器命令）
     3. 逃逸禁止命令检查（拒绝嵌套在引号/反引号中的禁止命令）
     4. 禁止命令列表检查（拒绝列表内的危险命令）
+    5. 路径范围检查（所有涉及路径的命令，均需在工作空间内）
     """
     
     @abstractmethod
@@ -99,7 +103,7 @@ class ITerminal(ABC):
         - 列表非空时：仅允许包含列表中命令的操作（如允许"ls"则允许"ls -l"）
 
         Returns:
-            List[str]: 允许命令列表（如["ls", "cd", "touch"]）。
+            List[str]: 允许命令列表（如["ls", "cd", "touch", "grep"]）。
         """
         raise NotImplementedError
 
@@ -110,7 +114,7 @@ class ITerminal(ABC):
         无论允许列表是否为空，黑名单命令均会被拒绝。
 
         Returns:
-            List[str]: 禁止命令列表（如["sudo ", "rm -rf /"]）。
+            List[str]: 禁止命令列表（如["sudo ", "chmod ", "apt "]）。
         """
         raise NotImplementedError
 
@@ -139,14 +143,14 @@ class ITerminal(ABC):
         """执行bash命令，返回输出并同步终端状态（含安全校验）。
 
         Args:
-            command: 待执行的bash命令（如"ls -l"、"touch test.txt"）。
+            command: 待执行的bash命令（如"grep 'key' ./file.txt"、"find ./src -name '*.py'"）。
 
         Returns:
             str: 命令标准输出（已过滤空行与标记）。
 
         Raises:
             RuntimeError: 终端未启动或工作空间未初始化。
-            PermissionError: 命令未通过安全校验（如在黑名单、是禁用脚本）。
+            PermissionError: 命令未通过安全校验（如在黑名单、路径越界）。
             subprocess.SubprocessError: 命令执行中发生IO错误。
         """
         raise NotImplementedError
@@ -188,11 +192,12 @@ class SingleThreadTerminal(ITerminal):
     - 允许列表（白名单）与禁止列表（黑名单）双重控制
     - 默认禁用脚本执行，防止通过脚本逃逸工作空间限制
     - 实时同步终端当前目录，支持cd命令在工作空间内自由跳转
+    - 强化路径校验：find/grep等路径类命令均需通过工作空间边界检查
     """
     _terminal_id: str                # 终端唯一标识符
     _workspace: str                  # 强制绑定的工作空间（绝对路径）
     _current_dir: Optional[str]      # 终端当前目录（与bash实时同步）
-    _process: Optional[subprocess.Popen]  # 长期bash进程
+    _process: Optional[subprocess.Popen[str]]  # 长期bash进程
     _allowed_commands: List[str]     # 允许命令列表（白名单）
     _prohibited_commands: List[str]  # 禁止命令列表（黑名单）
     _disable_script_execution: bool  # 是否禁用脚本执行
@@ -225,7 +230,7 @@ class SingleThreadTerminal(ITerminal):
         if not os.path.exists(workspace_abs):
             if create_workspace:
                 os.makedirs(workspace_abs, exist_ok=True)
-                print(f"📁 自动创建工作空间：{workspace_abs}")
+                logger.info(f"📁 自动创建工作空间：{workspace_abs}")
             else:
                 raise FileNotFoundError(
                     f"工作空间不存在：{workspace_abs}，可设置create_workspace=True自动创建"
@@ -272,7 +277,7 @@ class SingleThreadTerminal(ITerminal):
 
     def open(self) -> None:
         # 检查进程是否已运行（避免重复启动）
-        if self._process and self._process.poll() is None:
+        if self._process and self._process.poll() is not None:
             raise RuntimeError(f"终端进程已在运行（PID: {self._process.pid}），无需重复启动")
 
         try:
@@ -287,7 +292,7 @@ class SingleThreadTerminal(ITerminal):
                 shell=False,               # 列表传参，防止命令注入
                 close_fds=True             # 关闭无关文件描述符，减少资源占用
             )
-            print(f"✅ 终端进程启动成功（PID: {self._process.pid}）")
+            logger.info(f"✅ 终端进程启动成功（PID: {self._process.pid}）")
 
         except Exception as e:
             raise RuntimeError(f"终端进程启动失败：{str(e)}") from e
@@ -336,7 +341,7 @@ class SingleThreadTerminal(ITerminal):
             )
 
         self._current_dir = current_dir
-        print(f"🔄 同步终端当前目录：{self._current_dir}")
+        logger.info(f"🔄 同步终端当前目录：{self._current_dir}")
 
     def _is_script_command(self, command: str) -> bool:
         """私有方法：判断命令是否为脚本执行命令（基于_SCRIPT_INTERPRETERS）。
@@ -363,7 +368,7 @@ class SingleThreadTerminal(ITerminal):
     def _has_escaped_prohibited_cmd(self, command: str) -> bool:
         """私有方法：检查命令中是否包含嵌套（逃逸）的禁止命令。
         
-        识别场景：如"bash -c 'sudo ls'"、"python -c 'rm -rf /'"等嵌套命令。
+        识别场景：如"bash -c 'apt install git'"、"sh -c 'chmod 777 test.txt'"等嵌套命令。
         
         Args:
             command: 待检查的bash命令字符串。
@@ -371,26 +376,28 @@ class SingleThreadTerminal(ITerminal):
         Returns:
             bool: True=包含逃逸禁止命令，False=无逃逸命令。
         """
-        # 用正则匹配引号/反引号中的禁止命令
+        # 1. 匹配引号/反引号中的禁止命令（含新增的chmod/安装类命令）
         match = _ESCAPED_CMD_PATTERN.search(command)
         if match:
             escaped_cmd = match.group(1)
-            print(f"❌ 命令包含逃逸禁止命令：{escaped_cmd}（嵌套在引号/反引号中）")
+            logger.error(f"❌ 命令包含逃逸禁止命令：{escaped_cmd}（嵌套在引号/反引号中）")
             return True
-        # 额外检查是否通过管道/分号逃逸（如"echo 1 | sudo ls"）
+        
+        # 2. 检查管道/分号逃逸（如"echo 1 | apt update"、"ls; chmod 777 test.txt"）
         for prohibited in self._prohibited_commands:
             if prohibited in command and ("|" in command or ";" in command):
-                print(f"❌ 命令通过管道/分号逃逸禁止命令：{prohibited}")
+                logger.error(f"❌ 命令通过管道/分号逃逸禁止命令：{prohibited}")
                 return True
+        
         return False
 
     def check_command(self, command: str) -> bool:
-        """按用户指定顺序执行命令安全校验（允许列表→脚本→逃逸→禁止列表）。
+        """按固定顺序执行命令安全校验（允许列表→脚本→逃逸→禁止列表→路径）。
         
-        每步校验失败时打印具体原因，便于调试；所有步骤通过则返回True。
+        重点强化：find/grep等路径类命令的越界拦截，所有路径参数需在工作空间内。
         
         Args:
-            command: 待校验的bash命令字符串（如"ls -l"、"python script.py"）。
+            command: 待校验的bash命令字符串（如"find ./src -name '*.py'"、"grep 'key' ./file.txt"）。
         
         Returns:
             bool: True=命令安全可执行，False=命令不安全。
@@ -405,60 +412,61 @@ class SingleThreadTerminal(ITerminal):
             raise RuntimeError("无法检查命令：终端当前目录未同步")
         command_stripped = command.strip()
         if not command_stripped:
-            print("❌ 空命令，拒绝执行")
+            logger.error("❌ 空命令，拒绝执行")
             return False
 
-        # 1. 第一步：允许命令列表检查（非空时，仅允许包含列表中命令的操作）
+        # 1. 第一步：允许命令列表检查（非空时，仅允许包含列表内命令的操作）
         if self._allowed_commands:
-            # 检查命令是否包含允许列表中的任意命令（支持基础命令+选项，如允许"ls"则允许"ls -l"）
             command_lower = command_stripped.lower()
             is_allowed = any(
                 allowed_cmd.lower() in command_lower
                 for allowed_cmd in self._allowed_commands
             )
             if not is_allowed:
-                print(
+                logger.error(
                     f"❌ 命令不在允许列表内：{command_stripped}\n"
                     f"    允许命令列表：{self._allowed_commands}"
                 )
                 return False
-        print("✅ 第一步：允许列表检查通过")
+        logger.info("✅ 第一步：允许列表检查通过")
 
         # 2. 第二步：脚本执行检查（若禁用，拒绝所有脚本命令）
         if self._disable_script_execution:
             if self._is_script_command(command_stripped):
-                print(
+                logger.error(
                     f"❌ 命令是脚本执行（已禁用）：{command_stripped}\n"
-                    f"    禁用的脚本类型：{_SCRIPT_INTERPRETERS[:10]}..."  # 只显示前10个避免过长
+                    f"    禁用的脚本类型：{_SCRIPT_INTERPRETERS[:10]}..."
                 )
                 return False
-        print("✅ 第二步：脚本执行检查通过")
+        logger.info("✅ 第二步：脚本执行检查通过")
 
         # 3. 第三步：逃逸禁止命令检查（拒绝嵌套/管道逃逸的禁止命令）
         if self._has_escaped_prohibited_cmd(command_stripped):
             return False
-        print("✅ 第三步：逃逸禁止命令检查通过")
+        logger.info("✅ 第三步：逃逸禁止命令检查通过")
 
-        # 4. 第四步：禁止命令列表检查（无论允许列表是否为空，黑名单均生效）
+        # 4. 第四步：禁止命令列表检查（拦截chmod/安装类等新增禁止命令）
         for prohibited in self._prohibited_commands:
             if prohibited in command_stripped:
-                print(
+                logger.error(
                     f"❌ 命令包含禁止操作：{prohibited}\n"
                     f"    完整命令：{command_stripped}"
                 )
                 return False
-        print("✅ 第四步：禁止列表检查通过")
+        logger.info("✅ 第四步：禁止列表检查通过")
 
-        # 5. 第五步：路径范围检查（确保所有操作在工作空间内，基于当前目录）
+        # 5. 第五步：路径范围检查（强化find/grep等命令的路径校验）
         try:
             cmd_parts = shlex.split(command_stripped)
         except ValueError:
-            print(f"❌ 命令语法错误（如未闭合引号）：{command_stripped}")
+            logger.error(f"❌ 命令语法错误（如未闭合引号）：{command_stripped}")
             return False
 
         dynamic_base = self._current_dir  # 基于当前目录解析路径
         workspace_abs = self._workspace
+        cmd_name = cmd_parts[0].lower() if cmd_parts else ""  # 当前执行的命令名
         i = 0
+
         while i < len(cmd_parts):
             part = cmd_parts[i]
 
@@ -467,7 +475,7 @@ class SingleThreadTerminal(ITerminal):
                 cd_target = cmd_parts[i + 1]
                 cd_target_abs = os.path.abspath(os.path.join(dynamic_base, cd_target))
                 if not cd_target_abs.startswith(workspace_abs):
-                    print(
+                    logger.error(
                         f"❌ cd目标超出工作空间：{cd_target_abs}\n"
                         f"    工作空间：{workspace_abs}"
                     )
@@ -476,21 +484,27 @@ class SingleThreadTerminal(ITerminal):
                 i += 2
                 continue
 
-            # 处理非cd命令的路径参数（排除命令选项，如-l、-rf）
+            # 处理路径类命令的参数（find/grep等，跳过选项，校验所有路径参数）
             if not part.startswith("-"):
+                # 解析绝对路径（处理相对路径如"../src"、"./file.txt"）
                 path_abs = os.path.abspath(os.path.join(dynamic_base, part))
-                if not path_abs.startswith(workspace_abs):
-                    print(
-                        f"❌ 操作路径超出工作空间：{path_abs}\n"
-                        f"    工作空间：{workspace_abs}"
-                    )
-                    return False
-
+                
+                # 校验路径是否在工作空间内（排除非路径参数，如grep的关键词）
+                # 逻辑：若为路径敏感命令，且参数是目录/文件，则必须在工作空间内
+                if (cmd_name in _PATH_SENSITIVE_COMMANDS) and (os.path.isdir(path_abs) or os.path.isfile(path_abs)):
+                    if not path_abs.startswith(workspace_abs):
+                        logger.error(
+                            f"❌ {cmd_name.upper()}操作路径超出工作空间：{path_abs}\n"
+                            f"    工作空间：{workspace_abs}"
+                        )
+                        return False
+                # 非路径敏感命令的参数（如grep的关键词），无需校验路径
             i += 1
-        print("✅ 第五步：路径范围检查通过")
+
+        logger.info("✅ 第五步：路径范围检查通过（含find/grep路径校验）")
 
         # 所有校验通过
-        print(f"✅ 命令安全可执行：{command_stripped}")
+        logger.info(f"✅ 命令安全可执行：{command_stripped}")
         return True
 
     def run_command(self, command: str) -> str:
@@ -511,10 +525,10 @@ class SingleThreadTerminal(ITerminal):
             wrapped_cmd = f"{command} && echo '{_COMMAND_DONE_MARKER}'\n"
             self._process.stdin.write(wrapped_cmd)
             self._process.stdin.flush()
-            print(f"📤 已发送命令到终端：{command}")
+            logger.info(f"📤 已发送命令到终端：{command}")
 
             # 4. 读取命令输出（直到遇到完成标记）
-            output = []
+            output: list[str] = []
             while True:
                 line: str = self._process.stdout.readline()
                 # 处理进程意外退出的情况
@@ -537,7 +551,7 @@ class SingleThreadTerminal(ITerminal):
 
             # 6. 返回清理后的输出
             result = "\n".join(output)
-            print(f"📥 命令执行完成，输出长度：{len(result)} 字符")
+            logger.info(f"📥 命令执行完成，输出长度：{len(result)} 字符")
             return result
 
         except OSError as e:
@@ -547,7 +561,7 @@ class SingleThreadTerminal(ITerminal):
 
     def close(self) -> None:
         if not self._process or self._process.poll() is not None:
-            print("ℹ️ 终端进程已关闭或未启动，无需重复操作")
+            logger.info("ℹ️ 终端进程已关闭或未启动，无需重复操作")
             return
 
         pid = self._process.pid  # 保存PID用于日志
@@ -559,7 +573,7 @@ class SingleThreadTerminal(ITerminal):
             # 2. 发送终止信号，等待退出（超时5秒）
             self._process.terminate()
             self._process.wait(timeout=5)
-            print(f"✅ 终端进程（PID: {pid}）优雅关闭成功")
+            logger.info(f"✅ 终端进程（PID: {pid}）优雅关闭成功")
 
         except subprocess.TimeoutExpired:
             # 3. 超时未退出，强制杀死进程
@@ -580,18 +594,17 @@ class SingleThreadTerminal(ITerminal):
 
 
 # ------------------------------
-# 示例用法（验证新增功能）
+# 示例用法（验证新增功能：禁止命令+路径越界防护）
 # ------------------------------
 if __name__ == "__main__":
     try:
-        # 测试配置：允许命令列表=["ls", "cd", "touch"], 禁用脚本执行（默认）
+        # 测试配置：允许基础命令+find/grep，禁用脚本，默认禁止命令
         test_workspace = os.path.join(os.getcwd(), "safe_terminal_test")
         terminal = SingleThreadTerminal(
             workspace=test_workspace,
             create_workspace=True,
-            allowed_commands=["ls", "cd", "touch", "rm"],  # 允许基础文件操作
-            prohibited_commands=["rm -rf", "sudo "],       # 禁止批量删除与提权
-            disable_script_execution=True                  # 默认禁用脚本
+            allowed_commands=["ls", "cd", "touch", "mkdir", "grep", "find", "cat"],  # 允许路径类命令
+            disable_script_execution=True
         )
         print(f"\n📋 初始配置：")
         print(f"   工作空间：{terminal.get_workspace()}")
@@ -599,44 +612,55 @@ if __name__ == "__main__":
         print(f"   禁止命令：{terminal.get_prohibited_commands()}")
         print(f"   禁用脚本：{terminal.is_script_execution_disabled()}\n")
 
-        # 1. 测试允许命令（ls -l：在允许列表内，通过）
-        print("=" * 50)
-        print("1. 测试允许命令：ls -l")
-        output = terminal.run_command("ls -l")
-        print(f"命令输出：\n{output}\n")
+        # 1. 测试正常路径类命令（find/grep在工作空间内）
+        print("=" * 60)
+        print("1. 测试正常路径命令：find ./ -name '*.txt' + grep 'test' ./test.txt")
+        # 创建测试文件
+        terminal.run_command("touch test.txt && echo 'test content' > test.txt")
+        # 执行find（查找工作空间内的txt文件）
+        find_output = terminal.run_command("find ./ -name '*.txt'")
+        print(f"find输出：\n{find_output}")
+        # 执行grep（搜索工作空间内的文件）
+        grep_output = terminal.run_command("grep 'test' ./test.txt")
+        print(f"grep输出：\n{grep_output}\n")
 
-        # 2. 测试cd命令（在允许列表内，同步目录）
-        print("=" * 50)
-        print("2. 测试cd命令：cd subdir（不存在则创建）")
-        terminal.run_command("mkdir -p subdir")  # mkdir不在允许列表？→ 允许列表非空，会失败！
-        # 修正：允许列表添加"mkdir"后重新测试（此处仅演示，实际需调整允许列表）
-        # 临时修改允许列表（仅示例用，实际应在构造函数传入）
-        terminal._allowed_commands.append("mkdir")
-        terminal.run_command("mkdir -p subdir")
-        terminal.run_command("cd subdir")
-        print(f"当前目录：{terminal.get_current_dir()}\n")
-
-        # 3. 测试脚本执行（禁用状态，python命令会失败）
-        print("=" * 50)
-        print("3. 测试禁用脚本：python -c 'print(1)'")
+        # 2. 测试禁止命令（chmod修改权限）
+        print("=" * 60)
+        print("2. 测试禁止命令：chmod 777 test.txt")
         try:
-            terminal.run_command("python -c 'print(1)'")
+            terminal.run_command("chmod 777 test.txt")
         except PermissionError as e:
             print(f"预期错误：{e}\n")
 
-        # 4. 测试逃逸禁止命令（bash -c 'rm -rf test'，rm -rf在禁止列表）
-        print("=" * 50)
-        print("4. 测试逃逸禁止命令：bash -c 'rm -rf test.txt'")
+        # 3. 测试禁止命令（apt安装）
+        print("=" * 60)
+        print("3. 测试禁止命令：apt install git")
         try:
-            terminal.run_command("bash -c 'rm -rf test.txt'")
+            terminal.run_command("apt install git")
         except PermissionError as e:
             print(f"预期错误：{e}\n")
 
-        # 5. 测试禁止命令（rm -rf subdir，在禁止列表内）
-        print("=" * 50)
-        print("5. 测试禁止命令：rm -rf subdir")
+        # 4. 测试路径越界（grep外部文件）
+        print("=" * 60)
+        print("4. 测试路径越界：grep 'key' /home/outside/test.txt")
         try:
-            terminal.run_command("rm -rf subdir")
+            terminal.run_command("grep 'key' /home/outside/test.txt")
+        except PermissionError as e:
+            print(f"预期错误：{e}\n")
+
+        # 5. 测试路径越界（find外部目录）
+        print("=" * 60)
+        print("5. 测试路径越界：find /home/outside -name '*.py'")
+        try:
+            terminal.run_command("find /home/outside -name '*.py'")
+        except PermissionError as e:
+            print(f"预期错误：{e}\n")
+
+        # 6. 测试逃逸禁止命令（bash -c 'apt update'）
+        print("=" * 60)
+        print("6. 测试逃逸禁止命令：bash -c 'apt update'")
+        try:
+            terminal.run_command("bash -c 'apt update'")
         except PermissionError as e:
             print(f"预期错误：{e}\n")
 
@@ -646,5 +670,5 @@ if __name__ == "__main__":
         # 确保终端关闭
         terminal = locals().get('terminal')
         if terminal:
-            print("\n" + "=" * 50)
+            print("\n" + "=" * 60)
             terminal.close()

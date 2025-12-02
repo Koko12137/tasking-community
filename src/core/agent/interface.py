@@ -2,7 +2,7 @@ from abc import abstractmethod, ABC
 from typing import Generic, Any, Callable, Awaitable
 
 from fastmcp import Client
-from fastmcp.client.transports import ClientTransport
+from fastmcp.client.transports import ClientTransportT
 
 from ..state_machine.const import StateT, EventT
 from ..state_machine.workflow import IWorkflow, WorkflowStageT, WorkflowEventT
@@ -11,53 +11,7 @@ from ...model import CompletionConfig, Message, ToolCallRequest, IQueue
 from ...llm import ILLM
 
 
-class IHumanClient(ABC):
-    """Human in the loop接口定义"""
-
-    @abstractmethod
-    async def ask_human(
-        self,
-        context: dict[str, Any],
-        queue: IQueue[Message],
-        message: Message,
-    ) -> Message:
-        """发送消息给人类进行交互
-        
-        参数:
-            context (dict[str, Any]): 当前请求的上下文信息, 包含用户信息、请求元数据等
-            queue (IQueue[Message]): 向人类发送消息的队列
-            message (Message): 发送给人类的消息内容
-            
-        返回:
-            Message: 人类回复的消息
-        """
-        pass
-    
-    @abstractmethod
-    async def retrieve_human_response(
-        self,
-        context: dict[str, Any],
-        queue: IQueue[Message],
-        timeout: float | None = None,
-    ) -> Message:
-        """检索人类的回复消息
-        
-        参数:
-            context (dict[str, Any]): 当前请求的上下文信息, 包含用户信息、请求元数据等
-            queue (IQueue[Message]): 用于向人类发送消息的队列
-            timeout (float | None): 等待人类回复的超时时间，单位为秒。默认为None，表示无限等待
-            
-        返回:
-            Message: 人类回复的消息
-            
-        异常:
-            TimeoutError: 如果在指定的超时时间内没有收到人类的回复
-            HumanInterfere: 如果人类用户介入了流程
-        """
-        pass
-
-
-class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
+class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTransportT]):
     """Agent接口定义"""
     
     # ********** 基础信息 **********
@@ -96,18 +50,6 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
             dict[WorkflowStageT, ILLM]: 智能体的语言模型
         """
         pass
-    
-    # ********** Human in the loop **********
-
-    @abstractmethod
-    def get_human_client(self) -> IHumanClient | None:
-        """获取Human in the loop客户端
-        
-        Returns:
-            IHumanClient | None:
-                Human in the loop客户端实例，如果未设置则返回None
-        """
-        pass
 
     # ********** 工作流与工具管理 **********
     
@@ -132,11 +74,11 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
         pass
 
     @abstractmethod
-    def get_tool_service(self) -> Client[ClientTransport]:
+    def get_tool_service(self) -> Client[ClientTransportT]:
         """获取工具服务,用于调用注册到工具服务的工具
         
         Returns:
-            Client[ClientTransport]:
+            Client[ClientTransportT]:
                 工具服务客户端实例
         """
         pass

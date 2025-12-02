@@ -162,7 +162,7 @@ def build_default_tree_node() -> BaseTreeTaskNode[TaskState, TaskEvent]:
         BaseTreeTaskNode实例
     """
     return build_base_tree_node(
-        protocol=read_document("prompt/task/default.xml"),
+        protocol=read_document("task/default.xml"),
         tags=set[str](),
         task_type="default_tree_task",
         max_depth=5,

@@ -10,9 +10,10 @@ import shlex
 from typing import List, Literal, Optional
 from dataclasses import dataclass
 
+from loguru import logger
+
 from .terminal import ITerminal
 from .terminal import SingleThreadTerminal
-from ..utils.io import read_markdown
 
 
 @dataclass
@@ -69,7 +70,7 @@ class TextEditor:
 
         # 检查脚本执行状态（确保安全性）
         if not terminal.is_script_execution_disabled():
-            print("⚠️ 警告：终端未禁用脚本执行，存在安全风险")
+            logger.warning("⚠️ 警告：终端未禁用脚本执行，存在安全风险")
 
         # 校验 allow_commands 与终端的一致性
         terminal_allowed = terminal.get_allowed_commands()
@@ -166,7 +167,7 @@ class TextEditor:
             parent_dir_rel = os.path.relpath(parent_dir, self._workspace)
             cmd = f"mkdir -p {shlex.quote(parent_dir_rel)}"
             self._terminal.run_command(cmd)
-            print(f"📁 自动创建父目录：{parent_dir}")
+            logger.info(f"📁 自动创建父目录：{parent_dir}")
 
     def edit(self, file_path: str, operations: List[EditOperation]) -> None:
         """行级修改文本：支持删除（delete）、修改（modify）、新增（insert），动态指定文件路径。
@@ -218,7 +219,7 @@ class TextEditor:
             self._ensure_parent_dir(file_abs)
             # 新建空文件（避免 sed 操作空文件报错）
             self._terminal.run_command(f"touch {shlex.quote(file_rel)}")
-            print(f"📄 自动新建文件：{file_abs}")
+            logger.info(f"📄 自动新建文件：{file_abs}")
             file_exists = True
 
         # 5. 校验行号有效性（modify/delete 行号不能超出文件实际行数）
@@ -272,17 +273,11 @@ class TextEditor:
             try:
                 self._terminal.run_command(cmd)
                 content_summary = op.content[:50] + "..." if len(op.content) > 50 else op.content
-                print(f"✅ 执行成功：{op.op} 行 {op.line} → 文件：{file_abs}，内容：{content_summary}")
+                logger.info(f"✅ 执行成功：{op.op} 行 {op.line} → 文件：{file_abs}，内容：{content_summary}")
             except Exception as e:
                 raise RuntimeError(
                     f"执行失败：{op.op} 行 {op.line} → 文件：{file_abs}，错误：{str(e)}"
                 ) from e
-    
-    @classmethod
-    def get_docstring(cls) -> str:
-        """获取工具的文档字符串，供自动化系统使用。"""
-        doc = read_markdown("prompt/tool/text_edit.md")
-        return doc
 
 
 # ------------------------------

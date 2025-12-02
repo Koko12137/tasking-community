@@ -404,12 +404,49 @@ class TestTerminalSecurity:
         term = SingleThreadTerminal(
             workspace=temp_workspace,
             create_workspace=True,
-            allowed_commands=["ls", "cd", "pwd", "echo", "cat"],
-            prohibited_commands=["sudo", "rm", "shutdown", "reboot"],
+            allowed_commands=["ls", "cd", "pwd", "echo", "cat", "find", "grep"],
+            prohibited_commands=["sudo ", "rm -rf /", "shutdown", "reboot", "chmod ", "apt ", "yum ", "brew "],
             disable_script_execution=True
         )
         yield term
         term.close()
+
+    def test_security_new_prohibited_commands(self, temp_workspace):
+        """Test security against newly added prohibited commands (chmod, package managers)."""
+        term = SingleThreadTerminal(
+            workspace=temp_workspace,
+            create_workspace=True,
+            disable_script_execution=True
+        )
+
+        try:
+            # Test chmod commands are blocked
+            chmod_attempts = [
+                "chmod 777 test.txt",
+                "chmod -R 755 /tmp",
+                "chmod +x script.sh",
+                "sudo chmod 777 /etc/passwd",
+            ]
+
+            for cmd in chmod_attempts:
+                assert term.check_command(cmd) is False, f"chmod command should be blocked: {cmd}"
+
+            # Test package manager commands are blocked
+            pkg_attempts = [
+                "apt install git",
+                "apt-get update",
+                "yum install nginx",
+                "dnf upgrade",
+                "brew install python",
+                "dpkg -i package.deb",
+                "rpm -ivh package.rpm",
+            ]
+
+            for cmd in pkg_attempts:
+                assert term.check_command(cmd) is False, f"package manager command should be blocked: {cmd}"
+
+        finally:
+            term.close()
 
     def test_security_escaped_commands(self, restricted_terminal):
         """Test security against escaped prohibited commands."""
@@ -421,10 +458,47 @@ class TestTerminalSecurity:
             "bash <<< 'sudo ls'",
             "$(sudo ls)",
             "`sudo ls`",
+            # Test escapes for new prohibited commands
+            "bash -c 'chmod 777 file.txt'",
+            "sh -c \"apt install git\"",
+            "python -c \"os.system('yum update')\"",
         ]
 
         for cmd in prohibited_attempts:
             assert restricted_terminal.check_command(cmd) is False, f"Command should be blocked: {cmd}"
+
+    def test_security_pipe_and_semicolon_escape(self, temp_workspace):
+        """Test security against pipe and semicolon escape attempts."""
+        term = SingleThreadTerminal(
+            workspace=temp_workspace,
+            create_workspace=True
+        )
+
+        try:
+            # Test pipe escape attempts
+            pipe_attempts = [
+                "echo test | sudo ls",
+                "ls | cat /etc/passwd",
+                "pwd | chmod 777 file.txt",
+                "echo hello | apt update",
+            ]
+
+            for cmd in pipe_attempts:
+                assert term.check_command(cmd) is False, f"pipe escape should be blocked: {cmd}"
+
+            # Test semicolon escape attempts
+            semicolon_attempts = [
+                "ls; sudo rm -rf /",
+                "cd /tmp; chmod 777 *",
+                "pwd; apt install git",
+                "echo test; yum update",
+            ]
+
+            for cmd in semicolon_attempts:
+                assert term.check_command(cmd) is False, f"semicolon escape should be blocked: {cmd}"
+
+        finally:
+            term.close()
 
     def test_security_path_escalation(self, restricted_terminal):
         """Test security against path escalation attempts."""
@@ -440,6 +514,38 @@ class TestTerminalSecurity:
         for cmd in escalation_attempts:
             assert restricted_terminal.check_command(cmd) is False, f"Command should be blocked: {cmd}"
 
+    def test_security_path_sensitive_commands(self, temp_workspace):
+        """Test security for path-sensitive commands (find, grep, ls)."""
+        term = SingleThreadTerminal(
+            workspace=temp_workspace,
+            create_workspace=True
+        )
+
+        try:
+            # Create some test files in workspace
+            term.run_command("touch test.txt")
+            term.run_command("mkdir -p subdir && echo 'secret' > subdir/secret.txt")
+
+            # These should work - paths within workspace
+            assert term.check_command("find . -name '*.txt'") is True
+            assert term.check_command("grep 'secret' ./subdir/secret.txt") is True
+            assert term.check_command("ls -la ./subdir") is True
+
+            # These should be blocked - paths outside workspace
+            outside_attempts = [
+                "find /etc -name 'passwd'",
+                "grep 'root' /etc/passwd",
+                "ls -la /root",
+                "find /usr -name 'python'",
+                "cat /etc/shadow",
+            ]
+
+            for cmd in outside_attempts:
+                assert term.check_command(cmd) is False, f"path-sensitive command outside workspace should be blocked: {cmd}"
+
+        finally:
+            term.close()
+
     def test_security_script_injection(self, restricted_terminal):
         """Test security against script injection attempts."""
         # Script injection attempts should be blocked
@@ -454,6 +560,39 @@ class TestTerminalSecurity:
         for cmd in script_attempts:
             assert restricted_terminal.check_command(cmd) is False, f"Command should be blocked: {cmd}"
 
+    def test_security_script_file_detection(self, temp_workspace):
+        """Test detection of script file execution."""
+        term = SingleThreadTerminal(
+            workspace=temp_workspace,
+            create_workspace=True,
+            disable_script_execution=True
+        )
+
+        try:
+            # Create script files
+            term.run_command("echo 'echo hello' > test.sh")
+            term.run_command("echo 'print(\"hello\")' > test.py")
+            term.run_command("echo 'package main' > test.go")
+            term.run_command("echo 'console.log(\"hello\")' > test.js")
+
+            # Direct script execution should be blocked
+            script_file_attempts = [
+                "./test.sh",
+                "bash test.sh",
+                "python test.py",
+                "python3 test.py",
+                "go run test.go",
+                "node test.js",
+                "sh test.sh",
+                "./test.py",
+            ]
+
+            for cmd in script_file_attempts:
+                assert term.check_command(cmd) is False, f"script file execution should be blocked: {cmd}"
+
+        finally:
+            term.close()
+
     def test_security_command_substitution(self, restricted_terminal):
         """Test security against command substitution."""
         # Command substitution should be blocked if it contains prohibited commands
@@ -465,3 +604,65 @@ class TestTerminalSecurity:
 
         for cmd in substitution_attempts:
             assert restricted_terminal.check_command(cmd) is False, f"Command should be blocked: {cmd}"
+
+    def test_security_complex_escape_patterns(self, temp_workspace):
+        """Test complex escape patterns and nested commands."""
+        term = SingleThreadTerminal(
+            workspace=temp_workspace,
+            create_workspace=True
+        )
+
+        try:
+            # Complex escape patterns
+            complex_attempts = [
+                # Nested quotes
+                "'chmod 777 file.txt'",
+                "\"sudo rm -rf /tmp\"",
+                # Mixed escape techniques
+                "eval \"chmod 777 file.txt\"",
+                "exec 'sudo ls'",
+                # Command chaining with escapes
+                "ls; 'chmod 777 file.txt'",
+                "pwd && \"apt update\"",
+                # Here documents and herestrings
+                "bash <<EOF\nsudo ls\nEOF",
+                "bash <<< 'chmod 777 file.txt'",
+            ]
+
+            for cmd in complex_attempts:
+                assert term.check_command(cmd) is False, f"complex escape pattern should be blocked: {cmd}"
+
+        finally:
+            term.close()
+
+    def test_security_allowed_commands_bypass(self, temp_workspace):
+        """Test that allowed commands list properly restricts execution."""
+        term = SingleThreadTerminal(
+            workspace=temp_workspace,
+            create_workspace=True,
+            allowed_commands=["ls", "cd", "pwd"],  # Very restrictive
+            disable_script_execution=True
+        )
+
+        try:
+            # Allowed commands should work
+            assert term.check_command("ls") is True
+            assert term.check_command("ls -la") is True
+            assert term.check_command("cd /tmp") is True
+            assert term.check_command("pwd") is True
+
+            # Non-allowed commands should be blocked (even if not prohibited)
+            non_allowed_attempts = [
+                "echo hello",
+                "cat file.txt",
+                "mkdir test",
+                "touch file.txt",
+                "find . -name '*.txt'",
+                "grep 'pattern' file.txt",
+            ]
+
+            for cmd in non_allowed_attempts:
+                assert term.check_command(cmd) is False, f"non-allowed command should be blocked: {cmd}"
+
+        finally:
+            term.close()
