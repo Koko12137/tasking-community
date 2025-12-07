@@ -5,7 +5,7 @@ from loguru import logger
 from src.core.agent import build_react_agent
 from src.core.scheduler import build_base_scheduler
 from src.core.state_machine.task import build_default_tree_node
-from src.model import Message, IQueue
+from src.model import Message, IQueue, TextBlock
 from server.utils.queue import AQueue
 
 
@@ -25,7 +25,7 @@ async def run() -> None:
     logger.info(f"Created task node with type: {task_node.get_task_type()}")
     
     # 用户输入任务目标
-    task_node.set_input("介绍一下人工智能技术")
+    task_node.set_input([TextBlock(text="介绍一下人工智能技术")])
 
     # 创建消息队列
     message_queue: IQueue[Message] = AQueue()

@@ -11,10 +11,12 @@ from .base import BaseAgent
 from ..middleware import HumanInterfere
 from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView, DocumentTreeTaskView
 from ..state_machine.workflow import IWorkflow, BaseWorkflow
-from ...llm import OpenAiLLM, ILLM
+from ...llm import ILLM, build_llm
 from ...model import Message, StopReason, Role, IQueue, CompletionConfig, get_settings
+from ...model.message import TextBlock
 from ...utils.io import read_document
 from ...utils.string.extract import extract_by_label
+from ...utils.content import extract_text_from_message
 
 
 NO_OUTPUT_TEMPLATE = """没有从标签 '{label}' 中提取到任何内容，但工作流被请求结束，请确保输出内容被正确包裹在该标签内。
@@ -25,9 +27,9 @@ NO_OUTPUT_TEMPLATE = """没有从标签 '{label}' 中提取到任何内容，但
 
 def end_workflow(kwargs: dict[str, Any] = {}) -> None:
     """结束工作流，会检查最后一个 Message 中是否有最终输出。
-    
+
     Args:
-        kwargs (dict[str, Any], optional): 
+        kwargs (dict[str, Any], optional):
             注入参数字典，必须包含 'task' 键对应的 ITask 实例. Defaults to {}.
 
     Raises:
@@ -37,18 +39,18 @@ def end_workflow(kwargs: dict[str, Any] = {}) -> None:
         raise RuntimeError("结束工作流工具缺少必要的 'task' 注入参数")
     if "message" not in kwargs:
         raise RuntimeError("结束工作流工具缺少必要的 'message' 注入参数")
-    
+
     # 获取注入的 Task
     task: ITask[TaskState, TaskEvent] = kwargs["task"]
     # 获取当前状态
     current_state = task.get_current_state()
-    
+
     # 获取注入的 Message
     message: Message = kwargs['message']
     # 确认发送方是 ASSISTANT
     assert message.role == Role.ASSISTANT, "最后一个 Message 不是 Assistant Message"
     # 从 Message 中获取输出内容
-    output_content = extract_by_label(message.content, "output")
+    output_content = extract_by_label(extract_text_from_message(message), "output")
     if output_content == "":
         # 进入错误处理逻辑
         raise Exception(NO_OUTPUT_TEMPLATE.format(
@@ -80,7 +82,7 @@ class ReActStage(str, Enum):
     @classmethod
     def list_stages(cls) -> list['ReActStage']:
         """列出所有工作流阶段
-        
+
         Returns:
             工作流阶段列表
         """
@@ -192,11 +194,11 @@ def get_react_actions(
         # 获取当前工作流的提示词
         prompt = workflow.get_prompt()
         # 创建新的任务消息
-        message = Message(role=Role.USER, content=prompt)
+        message = Message(role=Role.USER, content=[TextBlock(text=prompt)])
         # 添加 message 到当前任务上下文
         task.get_context().append_context_data(message)
         # 观察 Task
-        observe = await agent.observe(
+        await agent.observe(
             context=context,
             queue=queue,
             task=task,
@@ -208,22 +210,21 @@ def get_react_actions(
             message = await agent.think(
                 context=context,
                 queue=queue,
-                observe=observe,
+                task=task,
                 completion_config=completion_config,
             )
-            # 推理结果反馈到任务
-            task.get_context().append_context_data(message)
         except HumanInterfere as e:
             # 将人类介入信息反馈到任务
             task.get_context().append_context_data(Message(
                 role=Role.USER,
-                content=str(e)
+                content=e.get_messages(),
+                is_error=True,
             ))
             # 重新进入处理流程
             return ReActEvent.PROCESS
 
         # 从 Message 中获取结束工作流的标志内容
-        finish_flag = extract_by_label(message.content, "finish", "finish_flag", "finish_workflow")
+        finish_flag = extract_by_label(extract_text_from_message(message), "finish", "finish_flag", "finish_workflow")
 
         # 允许执行工具标志位
         allow_tool: bool = True
@@ -238,8 +239,10 @@ def get_react_actions(
                         role=Role.TOOL,
                         tool_call_id=tool_call.id,
                         is_error=True,
-                        content="由于前置工具调用出错，后续工具调用被禁止继续执行"
+                        content=[TextBlock(text="由于前置工具调用出错，后续工具调用被禁止继续执行")]
                     )
+                    # 更新到任务上下文
+                    task.get_context().append_context_data(result)
                     continue
 
                 try:
@@ -255,18 +258,16 @@ def get_react_actions(
                     # 将人类介入信息反馈到任务
                     result = Message(
                         role=Role.USER,
-                        content=str(e),
+                        content=e.get_messages(),
                         is_error=True,
                     )
                     # 禁止后续工具调用执行
                     allow_tool = False
-                    
-                # 工具调用结果反馈到任务
-                task.get_context().append_context_data(result)
+
                 # 检查调用错误状态
                 if result.is_error:
                     # 将任务设置为错误状态
-                    task.set_error(result.content)
+                    task.set_error(extract_text_from_message(result))
                     # 停止执行剩余的工具
                     allow_tool = False
 
@@ -338,17 +339,17 @@ def get_react_transition() -> dict[
 
 
 def build_react_agent(
-    name: str, 
+    name: str,
     tool_service: Client[ClientTransportT] | None = None,
     actions: dict[
-        ReActStage, 
+        ReActStage,
         Callable[
             [
                 IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
                 dict[str, Any],
                 IQueue[Message],
                 ITask[TaskState, TaskEvent],
-            ], 
+            ],
             Awaitable[ReActEvent]
         ]
     ] | None = None,
@@ -376,7 +377,7 @@ def build_react_agent(
         observe_funcs: 观察函数，可选，如果未提供则使用默认定义
 
     Returns:
-        IAgent[reactStage, reactEvent, TaskState, TaskEvent]: 智能体实例
+        IAgent: 智能体实例
     """
     # 获取全局设置
     settings = get_settings()
@@ -384,18 +385,16 @@ def build_react_agent(
     agent_cfg = settings.get_agent_config(name)
     if agent_cfg is None:
         raise ValueError(f"未找到名为 '{name}' 的智能体配置")
-    
+
     llms: dict[ReActStage, ILLM] = {}
     for stage in ReActStage:
+        if stage == ReActStage.COMPLETED:
+            continue  # COMPLETED 阶段不需要 LLM
         # LLM 配置
         llm_cfg = agent_cfg.get_llm_config(stage.value)
         # 连接 LLM 服务端
-        llms[stage] = OpenAiLLM(
-            model=llm_cfg.model or "GLM-4.6",
-            base_url=llm_cfg.base_url or "https://open.bigmodel.cn/api/coding/paas/v4",
-            api_key=llm_cfg.api_key
-        )
-    
+        llms[stage] = build_llm(llm_cfg)
+
     # 构建基础 Agent 实例
     agent = BaseAgent[ReActStage, ReActEvent, TaskState, TaskEvent, ClientTransportT](
         name=name,
@@ -422,27 +421,27 @@ def build_react_agent(
         """观察任务并生成消息"""    # TODO: 要根据状态组合观察方法
         view = RequirementTaskView[TaskState, TaskEvent]()
         content = view(task, **kwargs)
-        
+
         # 如果任务已完成，则添加文档树视图，因为没有记忆机制
         if task.is_completed():
             add_content = DocumentTreeTaskView[TaskState, TaskEvent]()(task, **kwargs)
             # 新建 Message
             message = Message(
                 role=Role.USER,
-                multimodal_content=[
-                    {"type": "text", "text": content},
-                    {"type": "text", "text": "\n\n--- 任务已完成，以下是任务文档结果 ---\n\n"},
-                    {"type": "text", "text": add_content},
+                content=[
+                    TextBlock(text=content),
+                    TextBlock(text="\n\n--- 任务已完成，以下是任务文档结果 ---\n\n"),
+                    TextBlock(text=add_content),
                 ]
             )
             return message
 
-        return Message(role=Role.USER, content=content)
+        return Message(role=Role.USER, content=[TextBlock(text=content)])
 
     observe_funcs = observe_funcs if observe_funcs is not None else {
         ReActStage.PROCESSING: observe_task_view,
     }
-    
+
     # 构建结束工作流工具实例
     end_workflow_tool = FastMcpTool.from_function(
         fn= end_workflow,
@@ -450,18 +449,17 @@ def build_react_agent(
         description=END_WORKFLOW_DOC,
         exclude_args=["kwargs"],
     )
-    
+
     # 构建 CompletionConfig 映射
     completion_configs: dict[ReActStage, CompletionConfig] = {}
     for stage in ReActStage:
         # LLM 配置
         llm_cfg = agent_cfg.get_llm_config(stage.value)
         completion_configs[stage] = CompletionConfig(
-            temperature=llm_cfg.temperature,
             max_tokens=llm_cfg.max_tokens,
             tools=[],
         )
-    
+
     # 构建工作流实例
     workflow = BaseWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent](
         valid_states=valid_states,

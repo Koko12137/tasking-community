@@ -13,6 +13,7 @@ from ..state_machine.const import EventT, StateT
 from ..state_machine.task import ITask
 from ..state_machine.workflow import WorkflowEventT, WorkflowStageT, IWorkflow
 from ...model import CompletionConfig, Message, Role, ToolCallRequest, IQueue
+from ...model.message import TextBlock, ImageBlock, VideoBlock
 from ...llm import ILLM
 
 
@@ -27,21 +28,21 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
     _workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT] | None
     # Tool Service
     _tool_service: Client[ClientTransportT] | None
-    
+
     # Run Hooks
     _pre_run_once_hooks: list[Callable[
-        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]], 
+        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
         Awaitable[None] | None
     ]]
     """单次执行前钩子函数列表，会按顺序执行。钩子函数的签名为:
-    
+
     Args:
         context (dict[str, Any]): 任务运行时的上下文信息
         queue (IQueue[Message]): 数据队列，用于输出任务运行过程中产生的数据
         task (ITask[StateT, EventT]): 要运行的任务
     """
     _post_run_once_hooks: list[Callable[
-        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]], 
+        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
         Awaitable[None] | None
     ]]
     """单次执行后钩子函数列表，会按顺序执行。钩子函数的签名为:
@@ -54,7 +55,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
 
     # Observe Hooks
     _pre_observe_hooks: list[Callable[
-        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]], 
+        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
         Awaitable[None] | None
     ]]
     """观察前钩子函数列表，会按顺序执行。钩子函数的签名为:
@@ -65,65 +66,63 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         task (ITask[StateT, EventT]): 要运行的任务
     """
     _post_observe_hooks: list[Callable[
-        [dict[str, Any], IQueue[Message], ITask[StateT, EventT], list[Message]], 
+        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
         Awaitable[None] | None
     ]]
     """观察后钩子函数列表，会按顺序执行。钩子函数的签名为:
-    
+
     Args:
         context (dict[str, Any]): 任务运行时的上下文信息
         queue (IQueue[Message]): 数据队列，用于输出任务运行过程中产生的数据
         task (ITask[StateT, EventT]): 要运行的任务
-        observe_res (list[Message]): 观察结果
     """
 
     # Think Hooks
     _pre_think_hooks: list[Callable[
-        [dict[str, Any], IQueue[Message], list[Message]], 
+        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
         Awaitable[None] | None
     ]]
     """思考前钩子函数列表，会按顺序执行。钩子函数的签名为:
-    
+
     Args:
         context (dict[str, Any]): 任务运行时的上下文信息
         queue (IQueue[Message]): 数据队列，用于输出任务运行过程中产生的数据
-        observe_res (list[Message]): 观察结果
+        task (ITask[StateT, EventT]): 要运行的任务
     """
     _post_think_hooks: list[Callable[
-        [dict[str, Any], IQueue[Message], Message], 
+        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
         Awaitable[None] | None
     ]]
     """思考后钩子函数列表，会按顺序执行。钩子函数的签名为:
-    
+
     Args:
         context (dict[str, Any]): 任务运行时的上下文信息
         queue (IQueue[Message]): 数据队列，用于输出任务运行过程中产生的数据
-        think_result (Message): 思考结果
+        task (ITask[StateT, EventT]): 要运行的任务
     """
-    
+
     # Act Hooks
     _pre_act_hooks: list[Callable[
-        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]], 
+        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
         Awaitable[None] | None
     ]]
     """行动前钩子函数列表，会按顺序执行。钩子函数的签名为:
-    
+
     Args:
         context (dict[str, Any]): 任务运行时的上下文信息
         queue (IQueue[Message]): 数据队列，用于输出任务运行过程中产生的数据
         task (ITask[StateT, EventT]): 要运行的任务
     """
     _post_act_hooks: list[Callable[
-        [dict[str, Any], IQueue[Message], ITask[StateT, EventT], Message], 
+        [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
         Awaitable[None] | None
     ]]
     """行动后钩子函数列表，会按顺序执行。钩子函数的签名为:
-    
+
     Args:
         context (dict[str, Any]): 任务运行时的上下文信息
         queue (IQueue[Message]): 数据队列，用于输出任务运行过程中产生的数据
         task (ITask[StateT, EventT]): 要运行的任务
-        act_result (Message): 行动结果
     """
 
     def __init__(
@@ -134,7 +133,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         tool_service: Client[ClientTransportT] | None = None,
     ) -> None:
         """初始化基础Agent实例，钩子函数列表为空，等待后续注册
-        
+
         Args:
             name (str): Agent的名称
             agent_type (str): Agent的类型
@@ -158,11 +157,11 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         self._post_act_hooks = []
 
     # ********** 基础信息 **********
-    
+
     def get_id(self) -> str:
         """获取Agent的唯一标识"""
         return self._id
-    
+
     def get_name(self) -> str:
         """获取Agent的名称"""
         return self._name
@@ -175,7 +174,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
 
     def get_llm(self) -> ILLM:
         """获取智能体的语言模型
-                
+
         返回:
             ILLM: 智能体的语言模型
         """
@@ -185,17 +184,17 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
 
     def get_llms(self) -> dict[WorkflowStageT, ILLM]:
         """获取智能体的语言模型
-        
+
         返回:
             dict[WorkflowStageT, ILLM]: 智能体的语言模型
         """
         return self._llms.copy()
-    
+
     # ********** 工作流管理 **********
-    
+
     def get_workflow(self) -> IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]:
         """获取Agent关联的工作流
-        
+
         Returns:
             IWorkflow:
                 Agent关联的工作流
@@ -212,7 +211,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
                 要设置的工作流实例
         """
         self._workflow = workflow
-        
+
     def get_tool_service(self) -> Client[ClientTransportT]:
         if self._tool_service is None:
             raise RuntimeError("Tool service is not set for this agent.")
@@ -221,8 +220,8 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
     async def call_tool(
         self,
         context: dict[str, Any],
-        name: str, 
-        task: ITask[StateT, EventT], 
+        name: str,
+        task: ITask[StateT, EventT],
         inject: dict[str, Any],
         kwargs: dict[str, Any]
     ) -> Message:
@@ -243,14 +242,14 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         """
         if self._workflow is None:
             raise RuntimeError("Workflow is not set for this agent.")
-        
+
         # 1. 优先从工作流获取工具（遵循"工作流优先"原则）
         workflow_tool_info = self._workflow.get_tool(name)
 
         if workflow_tool_info is not None:
             # 1.1 解析工作流返回的工具和标签集合
             tool, required_tags = workflow_tool_info
-            
+
             # 1.2 检查任务标签是否满足工具的标签要求（任务标签需包含所有工具必需标签）
             # 假设ITask接口有get_tags()方法获取任务标签集合，若实际接口名不同需调整
             task_tags = task.get_tags() if hasattr(task, "get_tags") else set[str]()
@@ -264,22 +263,23 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
                     inject=inject,
                     kwargs=kwargs
                 )
-                
+
                 # 1.4 准备最终结果
-                content: list[dict[str, Any]] = []
+                # Convert CallToolResult content to Message content blocks
+                content_blocks: list[TextBlock | ImageBlock | VideoBlock] = []
                 for block in result.content:
-                    content.append(block.model_dump())
+                    if block.type == "text":
+                        content_blocks.append(TextBlock(text=block.text))
+                    # TODO: Handle image and video blocks when CallToolResult supports them
                 metadata = result.structuredContent if result.structuredContent else {}
-                message: dict[str, Any] = {
-                    "role": Role.TOOL,
-                    "content": "",
-                    "multimodal_content": content,
-                    "is_error": result.isError,
-                    "metadata": metadata,
-                }
-                
+
                 # 1.5 转换最终结果为 Message 并返回
-                return Message.model_validate(message)
+                return Message(
+                    role=Role.TOOL,
+                    content=content_blocks,
+                    is_error=result.isError,
+                    metadata=metadata,
+                )
             else:
                 # 标签不满足要求
                 raise RuntimeError(f"Tool `{tool.name}` requires tags `{required_tags}`, but task has tags `{task_tags}`.", format_exc())
@@ -288,7 +288,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         elif self._tool_service is not None:
             # 2.1 构造工具服务调用参数
             kwargs.update(context=context)  # 注入上下文信息，如用户ID/TraceID等
-            
+
             try:
                 # 2.2 调用工具服务（假设Client有async_request方法，参数为工具名+参数，若实际接口不同需调整）
                 tool_call_result = await self._tool_service.call_tool(
@@ -308,25 +308,27 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
                 result = CallToolResult(content=[TextContent(type="text", text=str(e))], isError=True)
 
             # 2.4 准备最终结果
-            content = []
+            # Convert CallToolResult content to Message content blocks
+            content_blocks = []
             for block in result.content:
-                content.append(block.model_dump())
+                if block.type == "text":
+                    content_blocks.append(TextBlock(text=block.text))
+                # TODO: Handle image and video blocks when CallToolResult supports them
             metadata = result.structuredContent if result.structuredContent else {}
-            message = {
-                "role": Role.TOOL,
-                "content": "",
-                "multimodal_content": content,
-                "is_error": result.isError,
-                "metadata": metadata,
-            }
+
             # 2.5. 转换最终结果为 Message 并返回
-            return Message.model_validate(message)
-        
+            return Message(
+                role=Role.TOOL,
+                content=content_blocks,
+                is_error=result.isError,
+                metadata=metadata,
+            )
+
         else:
             raise RuntimeError(f"Tool `{name}` not found in workflow and tool service is not set.", format_exc())
 
     # ********** 执行任务接口 **********
-    
+
     async def run_task_stream(
         self,
         context: dict[str, Any],
@@ -334,7 +336,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         task: ITask[StateT, EventT],
     ) -> ITask[StateT, EventT]:
         """以流式方式运行一个任务指定给Agent。
-        
+
         Args:
             context (dict[str, Any]):
                 任务运行时的上下文信息
@@ -342,7 +344,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
                 数据队列，用于输出任务运行过程中产生的数据
             task (ITask):
                 要运行的任务
-        
+
         Returns:
             ITask:
                 包含任务运行结果的任务
@@ -355,34 +357,34 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         # 获取第一个事件
         event_chain = workflow.get_event_chain()
         event = event_chain[0]
-        
+
         # 循环标志位
         condition: bool = True
-        
+
         # 循环直到结束
         while condition:
-                
+
             # 执行单次执行前钩子
             for hook in self._pre_run_once_hooks:
                 if inspect.iscoroutinefunction(hook):
                     await hook(context, queue, task)
                 else:
                     await asyncify(hook)(context, queue, task)
-            
+
             while True:
                 # 触发事件，进行状态转换
-                workflow.handle_event(event)
-                
+                await workflow.handle_event(event)
+
                 # 检查是否为最后一个事件
                 if event == event_chain[-1]:
                     # 结束循环
                     condition = False
                     break
-                
+
                 # 执行动作
                 action = workflow.get_action()
                 event = await action(workflow, context, queue, task)
-                
+
                 # 检查是否重新回到第一个事件
                 if event == event_chain[0]:
                     # 结束一轮循环
@@ -402,7 +404,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加单次执行前钩子函数
-        
+
         Args:
             单次执行前钩子函数，接受上下文信息/输出队列/任务和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
@@ -416,7 +418,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加单次执行后钩子函数
-        
+
         Args:
             单次执行后钩子函数，接受上下文信息/输出队列/任务和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
@@ -436,7 +438,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         **kwargs: Any,
     ) -> list[Message]:
         """观察目标
-        
+
         参数:
             context (dict[str, Any]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等信息
@@ -466,13 +468,13 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         task.append_context(new_observe)
         # 获取历史数据
         observe_res = task.get_context().get_context_data()
-        
+
         # 调用 post observe hooks
         for hook in self._post_observe_hooks:
             if inspect.iscoroutinefunction(hook):
-                await hook(context, queue, task, observe_res)
+                await hook(context, queue, task)
             else:
-                await asyncify(hook)(context, queue, task, observe_res)
+                await asyncify(hook)(context, queue, task)
 
         return observe_res
 
@@ -481,7 +483,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加观察前钩子函数
-        
+
         参数:
             hook (Callable):
                 观察前钩子函数，接受上下文信息/输出队列/任务/观察格式和额外关键字参数，函数签名如下：
@@ -492,18 +494,17 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         self._pre_observe_hooks.append(hook)
 
     def add_post_observe_hook(
-        self, 
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT], list[Message]], Awaitable[None] | None], 
+        self,
+        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加观察后钩子函数
-        
+
         参数:
             hook (Callable):
                 观察后钩子函数，接受上下文信息/输出队列/任务/观察格式/观察结果和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
                 - task: ITask[StateT, EventT]
-                - observe_res: list[Message]
         """
         self._post_observe_hooks.append(hook)
 
@@ -511,24 +512,24 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         self,
         context: dict[str, Any],
         queue: IQueue[Message],
-        observe: list[Message],
+        task: ITask[StateT, EventT],
         completion_config: CompletionConfig,
-        **kwargs: Any, 
+        **kwargs: Any,
     ) -> Message:
         """思考任务或环境的观察结果
-        
+
         参数:
             context (dict[str, Any]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
             queue (IQueue[Message]):
                 数据队列，用于输出任务运行过程中产生的数据
-            observe (list[Message]):
-                从任务或环境观察到的消息
+            task (ITask[StateT, EventT]):
+                要思考的任务
             completion_config (CompletionConfig):
                 Agent的生成配置
             **kwargs:
                 思考任务或环境的额外关键字参数
-                
+
         返回:
             Message:
                 语言模型思考的完成消息
@@ -536,56 +537,58 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         # 调用 pre think hooks
         for hook in self._pre_think_hooks:
             if inspect.iscoroutinefunction(hook):
-                await hook(context, queue, observe)
+                await hook(context, queue, task)
             else:
-                await asyncify(hook)(context, queue, observe)
+                await asyncify(hook)(context, queue, task)
 
         llm = self.get_llm()
         think_result = await llm.completion(
-            messages=observe,
+            messages=task.get_context().get_context_data(),
             completion_config=completion_config,
             **kwargs,
         )
-        
+        # 更新到任务上下文中
+        task.append_context(think_result)
+
         # 调用 post think hooks
         for hook in self._post_think_hooks:
             if inspect.iscoroutinefunction(hook):
-                await hook(context, queue, think_result)
+                await hook(context, queue, task)
             else:
-                await asyncify(hook)(context, queue, think_result)
+                await asyncify(hook)(context, queue, task)
 
         return think_result
 
     def add_pre_think_hook(
-        self, 
-        hook: Callable[[dict[str, Any], IQueue[Message], list[Message]], Awaitable[None] | None], 
+        self,
+        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加思考前钩子函数
-        
+
         参数:
             hook (Callable):
                 思考前钩子函数，接受上下文信息/输出队列/观察结果/生成配置和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
-                - observe_res: list[Message]
+                - task: ITask[StateT, EventT]
         """
         self._pre_think_hooks.append(hook)
 
     def add_post_think_hook(
-        self, 
+        self,
         hook: Callable[
-            [dict[str, Any], IQueue[Message], Message], 
+            [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
             Awaitable[None] | None
-        ], 
+        ],
     ) -> None:
         """添加思考后钩子函数
-        
+
         参数:
             hook (Callable):
                 思考后钩子函数，接受上下文信息/输出队列/观察结果/思考结果/生成配置和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
-                - think_result: Message
+                - task: ITask[StateT, EventT]
         """
         self._post_think_hooks.append(hook)
 
@@ -594,11 +597,11 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         context: dict[str, Any],
         queue: IQueue[Message],
         tool_call: ToolCallRequest,
-        task: ITask[StateT, EventT], 
+        task: ITask[StateT, EventT],
         **kwargs: Any
     ) -> Message:
         """根据工具调用采取行动。其他参数可以通过关键字参数提供给工具调用
-        
+
         参数:
             context (dict[str, Any]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
@@ -610,11 +613,11 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
                 工具调用任务
             **kwargs:
                 调用工具的额外关键字参数
-                
+
         返回:
             Message:
                 Agent在任务上行动后返回的工具调用结果
-            
+
         异常:
             ValueError:
                 如果工具调用名称未注册到工作流/任务/智能体
@@ -634,25 +637,27 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
             inject=kwargs,
             kwargs=tool_call.args,
         )
-        
+        # 更新到任务上下文中
+        task.append_context(act_result)
+
         # 调用 post act hooks
         for hook in self._post_act_hooks:
             if inspect.iscoroutinefunction(hook):
-                await hook(context, queue, task, act_result)
+                await hook(context, queue, task)
             else:
-                await asyncify(hook)(context, queue, task, act_result)
+                await asyncify(hook)(context, queue, task)
 
         return act_result
 
     def add_pre_act_hook(
-        self, 
+        self,
         hook: Callable[
-            [dict[str, Any], IQueue[Message], ITask[StateT, EventT]], 
+            [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
             Awaitable[None] | None
         ],
     ) -> None:
         """添加行动前钩子函数
-        
+
         参数:
             hook (Callable):
                 行动前钩子函数，接受上下文信息/输出队列/任务/工具调用消息和额外关键字参数，函数签名如下：
@@ -661,22 +666,21 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
                 - task: ITask[StateT, EventT]
         """
         self._pre_act_hooks.append(hook)
-    
+
     def add_post_act_hook(
         self,
         hook: Callable[
-            [dict[str, Any], IQueue[Message], ITask[StateT, EventT], Message],
+            [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
             Awaitable[None] | None
         ],
     ) -> None:
         """添加行动后钩子函数
-        
+
         参数:
             hook (Callable):
                 行动后钩子函数，接受上下文信息/输出队列/任务/工具调用消息/行动结果和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
                 - task: ITask[StateT, EventT]
-                - act_result: Message
         """
         self._post_act_hooks.append(hook)

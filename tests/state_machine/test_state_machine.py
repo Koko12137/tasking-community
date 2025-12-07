@@ -34,7 +34,7 @@ from src.model import CompletionConfig, Message
 # ==============================
 # Test Class: BaseStateMachine
 # ==============================
-class TestBaseStateMachine(unittest.TestCase):
+class TestBaseStateMachine(unittest.IsolatedAsyncioTestCase):
     """测试BaseStateMachine核心功能"""
 
     def setUp(self) -> None:
@@ -67,42 +67,42 @@ class TestBaseStateMachine(unittest.TestCase):
         self.assertEqual(self.sm.get_current_state(), TaskState.INITED)
         self.assertTrue(self.sm.is_compiled())
 
-    def test_state_machine_handle_event(self) -> None:
+    async def test_state_machine_handle_event(self) -> None:
         """测试状态转换"""
         # 验证初始状态
         self.assertEqual(self.sm.get_current_state(), TaskState.INITED)
 
         # 执行状态转换
-        self.sm.handle_event(TaskEvent.IDENTIFIED)
+        await self.sm.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.sm.get_current_state(), TaskState.CREATED)
 
-        self.sm.handle_event(TaskEvent.PLANED)
+        await self.sm.handle_event(TaskEvent.PLANED)
         self.assertEqual(self.sm.get_current_state(), TaskState.RUNNING)
 
-        self.sm.handle_event(TaskEvent.DONE)
+        await self.sm.handle_event(TaskEvent.DONE)
         self.assertEqual(self.sm.get_current_state(), TaskState.FINISHED)
 
-    def test_state_machine_reset(self) -> None:
+    async def test_state_machine_reset(self) -> None:
         """测试状态机重置功能"""
         # 状态转换
-        self.sm.handle_event(TaskEvent.IDENTIFIED)
+        await self.sm.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.sm.get_current_state(), TaskState.CREATED)
 
         # 重置状态机
         self.sm.reset()
         self.assertEqual(self.sm.get_current_state(), TaskState.INITED)
 
-    def test_state_machine_invalid_event(self) -> None:
+    async def test_state_machine_invalid_event(self) -> None:
         """测试无效事件处理"""
         # 在INITED状态下触发无效事件
         with self.assertRaises(ValueError):
-            self.sm.handle_event(TaskEvent.DONE)  # 不能从INITED直接到FINISHED
+            await self.sm.handle_event(TaskEvent.DONE)  # 不能从INITED直接到FINISHED
 
 
 # ==============================
 # Test Class: BaseTask
 # ==============================
-class TestBaseTaskStateMachine(unittest.TestCase):
+class TestBaseTaskStateMachine(unittest.IsolatedAsyncioTestCase):
     """测试BaseTask的状态机功能"""
 
     def setUp(self) -> None:
@@ -136,37 +136,37 @@ class TestBaseTaskStateMachine(unittest.TestCase):
         )
 # self.task 在初始化时已自动编译
 
-    def test_task_state_lifecycle(self) -> None:
+    async def test_task_state_lifecycle(self) -> None:
         """测试任务状态生命周期"""
         # 验证初始状态
         self.assertEqual(self.task.get_current_state(), TaskState.INITED)
 
         # 执行状态转换
-        self.task.handle_event(TaskEvent.IDENTIFIED)
+        await self.task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.task.get_current_state(), TaskState.CREATED)
 
-        self.task.handle_event(TaskEvent.PLANED)
+        await self.task.handle_event(TaskEvent.PLANED)
         self.assertEqual(self.task.get_current_state(), TaskState.RUNNING)
 
-        self.task.handle_event(TaskEvent.DONE)
+        await self.task.handle_event(TaskEvent.DONE)
         self.assertEqual(self.task.get_current_state(), TaskState.FINISHED)
 
-    def test_task_state_visit_counting(self) -> None:
+    async def test_task_state_visit_counting(self) -> None:
         """测试状态访问计数"""
         # 初始状态计数
         self.assertEqual(self.task.get_state_visit_count(TaskState.INITED), 1)
 
         # 状态转换后计数
-        self.task.handle_event(TaskEvent.IDENTIFIED)
+        await self.task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.task.get_state_visit_count(TaskState.CREATED), 1)
 
-        self.task.handle_event(TaskEvent.PLANED)
+        await self.task.handle_event(TaskEvent.PLANED)
         self.assertEqual(self.task.get_state_visit_count(TaskState.RUNNING), 1)
 
-    def test_task_reset(self) -> None:
+    async def test_task_reset(self) -> None:
         """测试任务重置功能"""
         # 执行一些状态转换
-        self.task.handle_event(TaskEvent.IDENTIFIED)
+        await self.task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.task.get_current_state(), TaskState.CREATED)
 
         # 重置任务
@@ -176,18 +176,18 @@ class TestBaseTaskStateMachine(unittest.TestCase):
         # 验证访问计数重置
         self.assertEqual(self.task.get_state_visit_count(TaskState.INITED), 1)
 
-    def test_task_max_revisit_limit(self) -> None:
+    async def test_task_max_revisit_limit(self) -> None:
         """测试最大重访限制"""
         self.assertEqual(self.task.get_max_revisit_limit(), 3)
 
         # 测试重访限制检查
         # 由于状态转换规则，我们需要通过reset来重访INITED状态
         for _ in range(2):  # 重访2次（总共3次）
-            self.task.handle_event(TaskEvent.IDENTIFIED)
+            await self.task.handle_event(TaskEvent.IDENTIFIED)
             self.task.reset()
 
         # 第4次重访应该触发限制
-        self.task.handle_event(TaskEvent.IDENTIFIED)
+        await self.task.handle_event(TaskEvent.IDENTIFIED)
         self.task.reset()
 
         # 由于转换规则的限制，我们无法直接测试重访限制
@@ -198,7 +198,7 @@ class TestBaseTaskStateMachine(unittest.TestCase):
 # ==============================
 # Test Class: BaseTreeTaskNode
 # ==============================
-class TestBaseTreeTaskNodeStateMachine(unittest.TestCase):
+class TestBaseTreeTaskNodeStateMachine(unittest.IsolatedAsyncioTestCase):
     """测试BaseTreeTaskNode的状态机功能"""
 
     def setUp(self) -> None:
@@ -229,22 +229,22 @@ class TestBaseTreeTaskNodeStateMachine(unittest.TestCase):
         )
 # self.root_task 在初始化时已自动编译
 
-    def test_tree_task_state_lifecycle(self) -> None:
+    async def test_tree_task_state_lifecycle(self) -> None:
         """测试树任务状态生命周期"""
         # 验证初始状态
         self.assertEqual(self.root_task.get_current_state(), TaskState.INITED)
 
         # 执行状态转换
-        self.root_task.handle_event(TaskEvent.IDENTIFIED)
+        await self.root_task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.root_task.get_current_state(), TaskState.CREATED)
 
-        self.root_task.handle_event(TaskEvent.PLANED)
+        await self.root_task.handle_event(TaskEvent.PLANED)
         self.assertEqual(self.root_task.get_current_state(), TaskState.RUNNING)
 
-        self.root_task.handle_event(TaskEvent.DONE)
+        await self.root_task.handle_event(TaskEvent.DONE)
         self.assertEqual(self.root_task.get_current_state(), TaskState.FINISHED)
 
-    def test_tree_task_with_children(self) -> None:
+    async def test_tree_task_with_children(self) -> None:
         """测试带有子任务的树任务"""
         # 创建子任务
         child_task = BaseTreeTaskNode[TaskState, TaskEvent](
@@ -267,20 +267,20 @@ class TestBaseTreeTaskNodeStateMachine(unittest.TestCase):
         self.assertIn(child_task, self.root_task.get_sub_tasks())
 
         # 验证状态机功能仍然正常
-        self.root_task.handle_event(TaskEvent.IDENTIFIED)
+        await self.root_task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.root_task.get_current_state(), TaskState.CREATED)
 
-        child_task.handle_event(TaskEvent.IDENTIFIED)
+        await child_task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(child_task.get_current_state(), TaskState.CREATED)
 
 
 # ==============================
 # Test Class: State Machine Integration
 # ==============================
-class TestStateMachineIntegration(unittest.TestCase):
+class TestStateMachineIntegration(unittest.IsolatedAsyncioTestCase):
     """状态机集成测试"""
 
-    def test_complete_task_lifecycle(self) -> None:
+    async def test_complete_task_lifecycle(self) -> None:
         """测试完整任务生命周期"""
         # 定义状态转换
         transitions: dict[tuple[TaskState, TaskEvent], tuple[TaskState, Callable[[ITask[TaskState, TaskEvent]], Awaitable[None] | None] | None]] = {
@@ -307,19 +307,19 @@ class TestStateMachineIntegration(unittest.TestCase):
         # 执行完整生命周期
         self.assertEqual(task.get_current_state(), TaskState.INITED)
 
-        task.handle_event(TaskEvent.IDENTIFIED)
+        await task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(task.get_current_state(), TaskState.CREATED)
         self.assertEqual(task.get_state_visit_count(TaskState.CREATED), 1)
 
-        task.handle_event(TaskEvent.PLANED)
+        await task.handle_event(TaskEvent.PLANED)
         self.assertEqual(task.get_current_state(), TaskState.RUNNING)
         self.assertEqual(task.get_state_visit_count(TaskState.RUNNING), 1)
 
-        task.handle_event(TaskEvent.DONE)
+        await task.handle_event(TaskEvent.DONE)
         self.assertEqual(task.get_current_state(), TaskState.FINISHED)
         self.assertEqual(task.get_state_visit_count(TaskState.FINISHED), 1)
 
-    def test_tree_task_node_hierarchy(self) -> None:
+    async def test_tree_task_node_hierarchy(self) -> None:
         """测试树任务节点层次结构"""
         # 定义状态转换
         transitions: dict[tuple[TaskState, TaskEvent], tuple[TaskState, Callable[[ITreeTaskNode[TaskState, TaskEvent]], Awaitable[None] | None] | None]] = {
@@ -389,16 +389,16 @@ class TestStateMachineIntegration(unittest.TestCase):
         self.assertEqual(grandchild_node.get_current_depth(), 2)
 
         # 验证每个节点的状态机功能
-        root_node.handle_event(TaskEvent.IDENTIFIED)
+        await root_node.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(root_node.get_current_state(), TaskState.CREATED)
 
-        child_node.handle_event(TaskEvent.IDENTIFIED)
+        await child_node.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(child_node.get_current_state(), TaskState.CREATED)
 
-        grandchild_node.handle_event(TaskEvent.IDENTIFIED)
+        await grandchild_node.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(grandchild_node.get_current_state(), TaskState.CREATED)
 
-    def test_error_handling_and_recovery(self) -> None:
+    async def test_error_handling_and_recovery(self) -> None:
         """测试错误处理和恢复"""
         # 定义包含错误状态的状态转换
         transitions: dict[tuple[TaskState, TaskEvent], tuple[TaskState, Callable[[ITask[TaskState, TaskEvent]], Awaitable[None] | None] | None]] = {
@@ -424,12 +424,12 @@ class TestStateMachineIntegration(unittest.TestCase):
 # task 在初始化时已自动编译
 
         # 执行到错误状态
-        task.handle_event(TaskEvent.IDENTIFIED)
-        task.handle_event(TaskEvent.PLANED)
+        await task.handle_event(TaskEvent.IDENTIFIED)
+        await task.handle_event(TaskEvent.PLANED)
         self.assertEqual(task.get_current_state(), TaskState.RUNNING)
 
         # 触发错误
-        task.handle_event(TaskEvent.ERROR)
+        await task.handle_event(TaskEvent.ERROR)
         self.assertEqual(task.get_current_state(), TaskState.FAILED)
 
         # 设置错误信息
@@ -438,7 +438,7 @@ class TestStateMachineIntegration(unittest.TestCase):
         self.assertEqual(task.get_error_info(), "Test error occurred")
 
         # 重试恢复
-        task.handle_event(TaskEvent.RETRY)
+        await task.handle_event(TaskEvent.RETRY)
         self.assertEqual(task.get_current_state(), TaskState.CREATED)
 
         # 清除错误信息

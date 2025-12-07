@@ -13,14 +13,14 @@ from ...llm import ILLM
 
 class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTransportT]):
     """Agent接口定义"""
-    
+
     # ********** 基础信息 **********
-    
+
     @abstractmethod
     def get_id(self) -> str:
         """获取Agent的唯一标识"""
         pass
-    
+
     @abstractmethod
     def get_name(self) -> str:
         """获取Agent的名称"""
@@ -36,37 +36,37 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     @abstractmethod
     def get_llm(self) -> ILLM:
         """获取智能体工作流当前状态的语言模型
-                
+
         返回:
             ILLM: 智能体的语言模型
         """
         pass
-    
+
     @abstractmethod
     def get_llms(self) -> dict[WorkflowStageT, ILLM]:
         """获取智能体的语言模型
-        
+
         返回:
             dict[WorkflowStageT, ILLM]: 智能体的语言模型
         """
         pass
 
     # ********** 工作流与工具管理 **********
-    
+
     @abstractmethod
     def get_workflow(self) -> IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]:
         """获取Agent关联的工作流
-        
+
         Returns:
             IWorkflow:
                 Agent关联的工作流
         """
         pass
-    
+
     @abstractmethod
     def set_workflow(self, workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]) -> None:
         """设置Agent关联的工作流
-        
+
         Args:
             workflow (IWorkflow):
                 要设置的工作流实例
@@ -76,7 +76,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     @abstractmethod
     def get_tool_service(self) -> Client[ClientTransportT]:
         """获取工具服务,用于调用注册到工具服务的工具
-        
+
         Returns:
             Client[ClientTransportT]:
                 工具服务客户端实例
@@ -108,9 +108,9 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
             RuntimeError: 如果工作流未设置，或者工具标签错误
         """
         pass
-    
+
     # ********** 执行任务接口 **********
-    
+
     @abstractmethod
     async def run_task_stream(
         self,
@@ -119,7 +119,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         task: ITask[StateT, EventT],
     ) -> ITask[StateT, EventT]:
         """以流式方式运行一个任务指定给Agent。
-        
+
         Args:
             context (dict[str, Any]):
                 任务运行时的上下文信息
@@ -127,7 +127,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
                 数据队列，用于输出任务运行过程中产生的数据
             task (ITask):
                 要运行的任务
-        
+
         Returns:
             ITask:
                 包含任务运行结果的任务
@@ -140,7 +140,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加单次执行前钩子函数
-        
+
         Args:
             单次执行前钩子函数，接受上下文信息/输出队列/任务参数，函数签名如下：
                 - context: dict[str, Any]
@@ -148,14 +148,14 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
                 - task: ITask[StateT, EventT]
         """
         pass
-        
+
     @abstractmethod
     def add_post_run_once_hook(
         self,
         hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加单次执行后钩子函数
-        
+
         Args:
             单次执行后钩子函数，接受上下文信息/输出队列/任务参数，函数签名如下：
                 - context: dict[str, Any]
@@ -165,7 +165,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         pass
 
     # ********** 运行时能力 **********
-    
+
     @abstractmethod
     async def observe(
         self,
@@ -176,7 +176,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         **kwargs: Any,
     ) -> list[Message]:
         """观察目标
-        
+
         参数:
             context (dict[str, Any]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等信息
@@ -194,14 +194,14 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
                 从目标观察到的最新信息
         """
         pass
-        
+
     @abstractmethod
     def add_pre_observe_hook(
-        self, 
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None], 
+        self,
+        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加观察前钩子函数
-        
+
         参数:
             hook (Callable):
                 观察前钩子函数，接受上下文信息/输出队列/任务参数，函数签名如下：
@@ -213,18 +213,17 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
 
     @abstractmethod
     def add_post_observe_hook(
-        self, 
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT], list[Message]], Awaitable[None] | None], 
+        self,
+        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加观察后钩子函数
-        
+
         参数:
             hook (Callable):
                 观察后钩子函数，接受上下文信息/输出队列/任务/观察格式/观察结果和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
                 - task: ITask[StateT, EventT]
-                - observe_res: list[Message]
         """
         pass
 
@@ -233,62 +232,62 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         self,
         context: dict[str, Any],
         queue: IQueue[Message],
-        observe: list[Message],
+        task: ITask[StateT, EventT],
         completion_config: CompletionConfig,
-        **kwargs: Any, 
+        **kwargs: Any,
     ) -> Message:
         """思考任务或环境的观察结果
-        
+
         参数:
             context (dict[str, Any]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
             queue (IQueue[Message]):
                 数据队列，用于输出任务运行过程中产生的数据
-            observe (list[Message]):
-                从任务或环境观察到的消息
+            task (ITask[StateT, EventT]):
+                要思考的任务
             completion_config (CompletionConfig):
                 Agent的生成配置
             **kwargs:
                 思考任务或环境的额外关键字参数
-                
+
         返回:
             Message:
                 语言模型思考的完成消息
         """
         pass
-        
+
     @abstractmethod
     def add_pre_think_hook(
-        self, 
-        hook: Callable[[dict[str, Any], IQueue[Message], list[Message]], Awaitable[None] | None], 
+        self,
+        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加思考前钩子函数
-        
+
         参数:
             hook (Callable):
                 思考前钩子函数，接受上下文信息/输出队列/观察结果/生成配置和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
-                - observe_res: list[Message]
+                - task: ITask[StateT, EventT]
         """
         pass
-    
+
     @abstractmethod
     def add_post_think_hook(
-        self, 
+        self,
         hook: Callable[
-            [dict[str, Any], IQueue[Message], Message], 
+            [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
             Awaitable[None] | None
-        ], 
+        ],
     ) -> None:
         """添加思考后钩子函数
-        
+
         参数:
             hook (Callable):
                 思考后钩子函数，接受上下文信息/输出队列/观察结果/思考结果/生成配置和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
-                - think_result: Message
+                - task: ITask[StateT, EventT]
         """
         pass
 
@@ -298,11 +297,11 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         context: dict[str, Any],
         queue: IQueue[Message],
         tool_call: ToolCallRequest,
-        task: ITask[StateT, EventT], 
+        task: ITask[StateT, EventT],
         **kwargs: Any
     ) -> Message:
         """根据工具调用采取行动。其他参数可以通过关键字参数提供给工具调用
-        
+
         参数:
             context (dict[str, Any]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
@@ -314,27 +313,27 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
                 工具调用任务
             **kwargs:
                 调用工具的额外关键字参数
-                
+
         返回:
             Message:
                 Agent在任务上行动后返回的工具调用结果
-            
+
         异常:
             ValueError:
                 如果工具调用名称未注册到工作流/任务/智能体
         """
         pass
-        
+
     @abstractmethod
     def add_pre_act_hook(
-        self, 
+        self,
         hook: Callable[
-            [dict[str, Any], IQueue[Message], ITask[StateT, EventT]], 
+            [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
             Awaitable[None] | None
-        ], 
+        ],
     ) -> None:
         """添加行动前钩子函数
-        
+
         参数:
             hook (Callable):
                 行动前钩子函数，接受上下文信息/输出队列/任务/工具调用消息和额外关键字参数，函数签名如下：
@@ -343,20 +342,19 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
                 - task: ITask[StateT, EventT]
         """
         pass
-    
+
     @abstractmethod
     def add_post_act_hook(
-        self, 
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT], Message], Awaitable[None] | None], 
+        self,
+        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加行动后钩子函数
-        
+
         参数:
             hook (Callable):
                 行动后钩子函数，接受上下文信息/输出队列/任务/工具调用消息/行动结果和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
                 - task: ITask[StateT, EventT]
-                - act_result: Message
         """
         pass

@@ -4,14 +4,15 @@ from typing import Any, Awaitable, Callable, override, cast
 
 from .interface import ITask, ITreeTaskNode, ITaskView
 from .base import (
-    BaseTask, 
-    TodoTaskView, 
-    DocumentTaskView, 
-    RequirementTaskView, 
+    BaseTask,
+    TodoTaskView,
+    DocumentTaskView,
+    RequirementTaskView,
     JsonTaskView
 )
 from ..const import StateT, EventT
 from ...context import IContext, BaseContext
+from ....model.message import MultimodalContent
 
 
 class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
@@ -24,7 +25,7 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
     # *** 父子节点管理 ***
     _parent: ITreeTaskNode[StateT, EventT] | None
     _sub_tasks: list[ITreeTaskNode[StateT, EventT]]
-    
+
     def __init__(
         self,
         valid_states: set[StateT],
@@ -33,7 +34,7 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
             tuple[StateT, EventT],
             tuple[StateT, Callable[[ITreeTaskNode[StateT, EventT]], Awaitable[None] | None] | None],
         ],
-        protocol: str,
+        protocol: list[MultimodalContent],
         tags: set[str],
         task_type: str,
         max_depth: int,
@@ -49,10 +50,10 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
         # 初始化深度（延迟计算）
         self._current_depth = 0  # 将在父子关系建立后重新计算
         self._max_depth = max_depth
-        
+
         # 需要转换 transitions 中的回调函数类型，从 ITreeTaskNode 转为 ITask
         converted_transitions: dict[
-            tuple[StateT, EventT], 
+            tuple[StateT, EventT],
             tuple[StateT, Callable[[ITask[StateT, EventT]], Awaitable[None] | None] | None]
         ] = {}
         for (state, event), (next_state, callback) in transitions.items():
@@ -87,7 +88,7 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
                 parent.add_sub_task(self)
 
     # ********** 基础信息 **********
-    
+
     def is_leaf(self) -> bool:
         """
         检查当前节点是否为叶子节点（无子节点）
@@ -96,7 +97,7 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
             如果是叶子节点则返回True，否则返回False
         """
         return len(self._sub_tasks) == 0
-    
+
     def is_root(self) -> bool:
         """
         检查当前节点是否为根节点（无父节点），并且 current_depth 为 0
@@ -105,20 +106,20 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
             如果是根节点则返回True，否则返回False
         """
         return self._parent is None and self._current_depth == 0
-    
+
     def get_current_depth(self) -> int:
         """
         获取当前节点在树中的深度（根节点深度为0）
-        
+
         Returns:
             当前节点的深度值
         """
         return self._current_depth
-    
+
     def get_max_depth(self) -> int:
         """
         获取以当前节点为根节点的子树的最大深度
-        
+
         Returns:
             子树的最大深度值
         """
@@ -129,12 +130,12 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
     def get_parent(self) -> ITreeTaskNode[StateT, EventT] | None:
         """
         获取父节点
-        
+
         Returns:
             父节点对象
         """
         return self._parent
-    
+
     def set_parent(self, parent: ITreeTaskNode[StateT, EventT]) -> None:
         """
         设置父节点
@@ -172,21 +173,21 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
 
             # 设置新深度
             self._current_depth = new_depth
-        
+
     def remove_parent(self) -> None:
         self._parent = None
         # 当前深度重置为0
         self._current_depth = 0
-        
+
     def get_sub_tasks(self) -> list[ITreeTaskNode[StateT, EventT]]:
         """
         获取所有子任务节点
-        
+
         Returns:
             子任务节点列表
         """
         return self._sub_tasks.copy()
-    
+
     def add_sub_task(self, sub_task: ITreeTaskNode[StateT, EventT]) -> None:
         """
         添加子任务节点
@@ -227,23 +228,23 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
 class RequirementTreeTaskView(ITaskView[StateT, EventT]):
     """将树形任务可视化为需求格式的字符串表示，格式化内容可用于任务需求描述，递归包含所有子任务。
     由于父任务需在子任务全部完成后才执行，因此该视图的子任务直接输出结果。
-    
+
     Example:
     ```markdown
-    
+
     ## 子任务1标题
     子任务1输出内容
 
     ## 子任务2标题
     子任务2输出内容
-    
+
     # 任务标题: 主任务
     - 类型: 主任务类型
     - 标签: 标签1, 标签2
 
     ## 任务执行协议
     主任务协议内容
-    
+
     ## 任务输入
     主任务输入内容
     ```
@@ -258,7 +259,7 @@ class RequirementTreeTaskView(ITaskView[StateT, EventT]):
             **kwargs: 其他参数
         """
         assert isinstance(task, ITreeTaskNode), "RequirementTreeTaskView 只能用于 ITreeTaskNode 实例"
-        
+
         # 格式化当前任务信息
         task_view: str = RequirementTaskView()(task, **kwargs)
 
@@ -276,19 +277,19 @@ class RequirementTreeTaskView(ITaskView[StateT, EventT]):
 
 class DocumentTreeTaskView(ITaskView[StateT, EventT]):
     """将任务可视化为文档格式的字符串表示，格式化结果仅包含标题和输出内容
-    
+
     Example:
     ```markdown
     # 主任务标题
     任务输出内容
-    
+
     ## 子任务1标题
     子任务1输出内容
 
     ## 子任务2标题
     子任务2输出内容
     """
-    
+
     @override
     def __call__(self, task: ITask[StateT, EventT], **kwargs: Any) -> str:
         """返回任务的需求事项字符串表示
@@ -298,7 +299,7 @@ class DocumentTreeTaskView(ITaskView[StateT, EventT]):
             **kwargs: 其他参数
         """
         assert isinstance(task, ITreeTaskNode), "DocumentTreeTaskView 只能用于 ITreeTaskNode 实例"
-        
+
         # 获取递归限制（-1表示无限制，0表示不递归，正数表示递归层数）
         recursive_limit: int = kwargs.get("recursive_limit", -1)
         # 格式化当前任务信息
@@ -309,7 +310,7 @@ class DocumentTreeTaskView(ITaskView[StateT, EventT]):
         # 更新下一层的递归限制
         if recursive_limit > 0:
             kwargs["recursive_limit"] = recursive_limit - 1
-        
+
         # 递归格式化子任务
         sub_tasks_views: list[str] = []
         for sub_task in task.get_sub_tasks():
@@ -318,7 +319,7 @@ class DocumentTreeTaskView(ITaskView[StateT, EventT]):
             # 降级子任务标题：将任意连续的 '#' 增加一个
             sub_task_view = re.sub(r'(?m)(#+)(\s)', lambda m: '#' * (len(m.group(1)) + 1) + m.group(2), sub_task_view)
             sub_tasks_views.append(sub_task_view)
-            
+
         return task_view + "\n\n" + "\n\n".join(sub_tasks_views)
 
 
@@ -332,7 +333,7 @@ class TodoTreeTaskView(ITaskView[StateT, EventT]):
         - [ ] 子任务2标题
     ```
     """
-    
+
     @override
     def __call__(self, task: ITask[StateT, EventT], **kwargs: Any) -> str:
         """返回任务的需求事项字符串表示
@@ -342,7 +343,7 @@ class TodoTreeTaskView(ITaskView[StateT, EventT]):
             **kwargs: 其他参数
         """
         assert isinstance(task, ITreeTaskNode), "TodoTreeTaskView 只能用于 ITreeTaskNode 实例"
-        
+
         # 获取递归限制（-1表示无限制，0表示不递归，正数表示递归层数）
         recursive_limit: int = kwargs.get("recursive_limit", -1)
         # 格式化当前任务信息
@@ -362,13 +363,13 @@ class TodoTreeTaskView(ITaskView[StateT, EventT]):
             # 增加子任务缩进
             sub_task_view = re.sub(r'(?m)^', '\t', sub_task_view)
             sub_tasks_views.append(sub_task_view)
-            
+
         return task_view + "\n" + "\n".join(sub_tasks_views)
 
 
 class JsonTreeTaskView(ITaskView[StateT, EventT]):
     """将任务可视化为JSON格式的字符串表示，格式化结果可用于结构化检查
-    
+
     Example:
     ```json
     {
@@ -401,7 +402,7 @@ class JsonTreeTaskView(ITaskView[StateT, EventT]):
             **kwargs: 其他参数
         """
         assert isinstance(task, ITreeTaskNode), "JsonTreeTaskView 只能用于 ITreeTaskNode 实例"
-        
+
         # 获取递归限制（-1表示无限制，0表示不递归，正数表示递归层数）
         recursive_limit: int = kwargs.get("recursive_limit", -1)
         # 格式化当前任务信息

@@ -1,33 +1,57 @@
+"""IO utility functions for reading files from different sources."""
+
 from pathlib import Path
 from typing import Union
+import sys
 
 
 def get_prompt_file_path(prompt_rel_path: str) -> Path:
     """动态获取 prompt 文件绝对路径（兼容开发/安装环境）"""
     # 1. 开发环境：项目根目录下的 prompt
-    project_root = Path(__file__).parent.parent.parent.parent.parent  # 适配你的目录层级
+    project_root = Path(__file__).parent.parent.parent  # src/utils/io.py -> 项目根目录
     dev_prompt_path = project_root / "prompt" / prompt_rel_path
     if dev_prompt_path.exists():
         return dev_prompt_path
 
-    # 2. 安装环境：share/tasking/prompt 目录
-    try:
-        from pkg_resources import resource_filename, Requirement
-        install_prompt_dir = Path(resource_filename(Requirement.parse("tasking"), "share/tasking/prompt"))
-    except ImportError:
-        import importlib.util
-        spec = importlib.util.find_spec("tasking")
-        if spec and spec.submodule_search_locations:
-            pkg_dir = Path(spec.submodule_search_locations[0])
-        else:
-            pkg_dir = Path(__file__).resolve().parent.parent
-        install_prompt_dir = pkg_dir.parent.parent / "share" / "tasking" / "prompt"
+    # 检查当前 Python 路径中是否有包含 prompts 目录的项目根目录
+    for path_entry in sys.path:
+        potential_root = Path(path_entry)
+        # 检查是否包含 prompts 目录和该文件（src 项目结构）
+        potential_file = potential_root / "prompts" / prompt_rel_path
+        if potential_file.exists():
+            return potential_file
+        # 也检查上级目录（项目根目录）
+        potential_file = potential_root.parent / "prompts" / prompt_rel_path
+        if potential_file.exists():
+            return potential_file
 
-    install_prompt_path = install_prompt_dir / prompt_rel_path
-    if install_prompt_path.exists():
-        return install_prompt_path
+    # 2. 安装环境：share/tasking/prompt 目录（多种路径方案）
 
-    raise FileNotFoundError(f"Prompt 文件不存在：{prompt_rel_path}")
+    # 方案A: 通过 sys.prefix 构造路径（通用且可靠）
+    # 标准环境：/usr/local -> /usr/local/share/tasking/prompt
+    # venv环境：/path/to/.venv -> /path/to/.venv/share/tasking/prompt
+    # conda环境：/path/to/envs/name -> /path/to/envs/name/share/tasking/prompt
+    candidate_paths = [
+        Path(sys.prefix) / "share" / "tasking" / "prompt" / prompt_rel_path,
+        # 方案B: lib64 环境（WSL等）
+        Path(sys.prefix).parent / "share" / "tasking" / "prompt" / prompt_rel_path,
+        # 方案C: 通过包位置推导（兼容性方案）
+        Path(__file__).resolve().parent.parent.parent / "share" \
+        / "tasking" / "prompt" / prompt_rel_path,
+    ]
+
+    for candidate in candidate_paths:
+        if candidate.exists():
+            return candidate
+
+    raise FileNotFoundError(
+        f"Prompt 文件不存在：{prompt_rel_path}\n"
+        f"已搜索路径：\n"
+        f"  - tasking包开发环境: {dev_prompt_path}\n"
+        f"  - 外部项目prompts目录（自动检测）\n"
+        f"  - 安装环境: {candidate_paths[0]}\n"
+        f"请确保文件存在且路径正确。"
+    )
 
 
 def read_document(

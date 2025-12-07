@@ -196,7 +196,7 @@ class TestTreeCircularReference(unittest.IsolatedAsyncioTestCase):
 # ==============================
 # Test Class: 深度测试
 # ==============================
-class TestTreeDepthValidation(unittest.TestCase):
+class TestTreeDepthValidation(unittest.IsolatedAsyncioTestCase):
     """测试树形结构的深度边界"""
 
     def setUp(self) -> None:
@@ -347,7 +347,7 @@ class TestTreeDepthValidation(unittest.TestCase):
 # ==============================
 # Test Class: 状态访问计数
 # ==============================
-class TestStateVisitCounting(unittest.TestCase):
+class TestStateVisitCounting(unittest.IsolatedAsyncioTestCase):
     """测试状态访问计数功能"""
 
     def setUp(self) -> None:
@@ -373,24 +373,24 @@ class TestStateVisitCounting(unittest.TestCase):
         self.assertEqual(self.task.get_state_visit_count(TaskState.CREATED), 0)
         self.assertEqual(self.task.get_state_visit_count(TaskState.RUNNING), 0)
 
-    def test_visit_count_increments(self) -> None:
+    async def test_visit_count_increments(self) -> None:
         """测试访问计数的递增"""
         # 转换到CREATED状态
-        self.task.handle_event(TaskEvent.IDENTIFIED)
+        await self.task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.task.get_state_visit_count(TaskState.CREATED), 1)
 
         # 再转换到RUNNING状态（通过错误和重试）
-        self.task.handle_event(TaskEvent.PLANED)  # -> RUNNING
+        await self.task.handle_event(TaskEvent.PLANED)  # -> RUNNING
         self.assertEqual(self.task.get_state_visit_count(TaskState.RUNNING), 1)
 
         # 再次到达RUNNING状态
-        self.task.handle_event(TaskEvent.ERROR)    # -> FAILED
-        self.task.handle_event(TaskEvent.RETRY)    # -> RUNNING
+        await self.task.handle_event(TaskEvent.ERROR)    # -> FAILED
+        await self.task.handle_event(TaskEvent.RETRY)    # -> RUNNING
 
         # RUNNING的计数应该为2
         self.assertEqual(self.task.get_state_visit_count(TaskState.RUNNING), 2)
 
-    def test_revisit_limit_enforcement(self) -> None:
+    async def test_revisit_limit_enforcement(self) -> None:
         """测试重访限制的强制执行"""
         max_revisit = 3  # 增加限制，允许初始访问 + 2次重访
 
@@ -404,33 +404,33 @@ class TestStateVisitCounting(unittest.TestCase):
         )
 
         # 首先到达CREATED状态
-        task.handle_event(TaskEvent.IDENTIFIED)  # -> CREATED
+        await task.handle_event(TaskEvent.IDENTIFIED)  # -> CREATED
 
         # 访问同一状态，测试重访限制
         # 第一次访问RUNNING状态
-        task.handle_event(TaskEvent.PLANED)   # -> RUNNING
+        await task.handle_event(TaskEvent.PLANED)   # -> RUNNING
         self.assertEqual(task.get_state_visit_count(TaskState.RUNNING), 1)
 
         # 第二次访问RUNNING状态（通过失败和重试）
-        task.handle_event(TaskEvent.ERROR)    # -> FAILED
-        task.handle_event(TaskEvent.RETRY)    # -> RUNNING
+        await task.handle_event(TaskEvent.ERROR)    # -> FAILED
+        await task.handle_event(TaskEvent.RETRY)    # -> RUNNING
         self.assertEqual(task.get_state_visit_count(TaskState.RUNNING), 2)
 
         # 第三次访问RUNNING状态
-        task.handle_event(TaskEvent.ERROR)    # -> FAILED
-        task.handle_event(TaskEvent.RETRY)    # -> RUNNING
+        await task.handle_event(TaskEvent.ERROR)    # -> FAILED
+        await task.handle_event(TaskEvent.RETRY)    # -> RUNNING
         self.assertEqual(task.get_state_visit_count(TaskState.RUNNING), 3)
 
         # 第四次访问应该失败（超过限制）
-        task.handle_event(TaskEvent.ERROR)    # -> FAILED
+        await task.handle_event(TaskEvent.ERROR)    # -> FAILED
         with self.assertRaises(RuntimeError):
-            task.handle_event(TaskEvent.RETRY)    # 这会第四次访问RUNNING，应该失败
+            await task.handle_event(TaskEvent.RETRY)    # 这会第四次访问RUNNING，应该失败
 
-    def test_visit_count_reset(self) -> None:
+    async def test_visit_count_reset(self) -> None:
         """测试重置后的访问计数"""
         # 先执行一些转换
-        self.task.handle_event(TaskEvent.IDENTIFIED)
-        self.task.handle_event(TaskEvent.PLANED)
+        await self.task.handle_event(TaskEvent.IDENTIFIED)
+        await self.task.handle_event(TaskEvent.PLANED)
 
         # 检查计数
         self.assertEqual(self.task.get_state_visit_count(TaskState.INITED), 1)
@@ -449,7 +449,7 @@ class TestStateVisitCounting(unittest.TestCase):
 # ==============================
 # Test Class: 类型安全
 # ==============================
-class TestTypeSafety(unittest.TestCase):
+class TestTypeSafety(unittest.IsolatedAsyncioTestCase):
     """测试类型安全保证"""
 
     def test_generic_type_parameters(self) -> None:
@@ -470,7 +470,7 @@ class TestTypeSafety(unittest.TestCase):
         state: TaskState = task.get_current_state()
         self.assertIsInstance(state, TaskState)
 
-    def test_state_event_compatibility(self) -> None:
+    async def test_state_event_compatibility(self) -> None:
         """测试状态和事件的兼容性"""
         # 使用create_base_task辅助函数
         task = create_base_task(
@@ -481,10 +481,10 @@ class TestTypeSafety(unittest.TestCase):
         )
 
         # 正确的事件应该可以处理
-        task.handle_event(TaskEvent.IDENTIFIED)
+        await task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(task.get_current_state(), TaskState.CREATED)
 
-    def test_invalid_event_rejection(self) -> None:
+    async def test_invalid_event_rejection(self) -> None:
         """测试无效事件的拒绝"""
         task = create_base_task(
             protocol="invalid_event_test",
@@ -495,13 +495,13 @@ class TestTypeSafety(unittest.TestCase):
 
         # 尝试处理未定义的事件
         with self.assertRaises(ValueError):
-            task.handle_event(TaskEvent.CANCEL)  # 在CREATED状态下未定义
+            await task.handle_event(TaskEvent.CANCEL)  # 在CREATED状态下未定义
 
 
 # ==============================
 # Test Class: 错误恢复
 # ==============================
-class TestErrorRecovery(unittest.TestCase):
+class TestErrorRecovery(unittest.IsolatedAsyncioTestCase):
     """测试错误恢复机制"""
 
     def setUp(self) -> None:
@@ -511,7 +511,7 @@ class TestErrorRecovery(unittest.TestCase):
             max_tokens=1000
         )
 
-    def test_error_state_recovery(self) -> None:
+    async def test_error_state_recovery(self) -> None:
         """测试错误状态的恢复"""
         # 直接创建任务，使用默认的transitions
         task = create_base_task(
@@ -522,12 +522,12 @@ class TestErrorRecovery(unittest.TestCase):
         )
 
         # 正常执行
-        task.handle_event(TaskEvent.IDENTIFIED)
-        task.handle_event(TaskEvent.PLANED)
+        await task.handle_event(TaskEvent.IDENTIFIED)
+        await task.handle_event(TaskEvent.PLANED)
         self.assertEqual(task.get_current_state(), TaskState.RUNNING)
 
         # 发生错误
-        task.handle_event(TaskEvent.ERROR)
+        await task.handle_event(TaskEvent.ERROR)
         self.assertEqual(task.get_current_state(), TaskState.FAILED)
 
         # 在builder.py中，on_error回调没有自动设置is_error
@@ -542,7 +542,7 @@ class TestErrorRecovery(unittest.TestCase):
         self.assertEqual(task.get_error_info(), error_msg)
 
         # 恢复重试（测试使用的是简化的transitions，没有on_retry回调）
-        task.handle_event(TaskEvent.RETRY)
+        await task.handle_event(TaskEvent.RETRY)
         self.assertEqual(task.get_current_state(), TaskState.RUNNING)
 
         # 测试使用的是get_base_task_transitions()，没有回调函数，需要手动清除错误状态
@@ -552,10 +552,10 @@ class TestErrorRecovery(unittest.TestCase):
         self.assertEqual(task.get_error_info(), "")  # 错误信息应该被清除
 
         # 完成任务
-        task.handle_event(TaskEvent.DONE)
+        await task.handle_event(TaskEvent.DONE)
         self.assertEqual(task.get_current_state(), TaskState.FINISHED)
 
-    def test_partial_state_recovery(self) -> None:
+    async def test_partial_state_recovery(self) -> None:
         """测试部分状态恢复"""
         task = create_base_task(
             protocol="partial_recovery_test",
@@ -565,7 +565,7 @@ class TestErrorRecovery(unittest.TestCase):
         )
 
         # 执行一些操作
-        task.handle_event(TaskEvent.IDENTIFIED)
+        await task.handle_event(TaskEvent.IDENTIFIED)
         task.set_title("Test Title")
         task.set_input("Test Input")
 

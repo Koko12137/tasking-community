@@ -136,7 +136,7 @@ class MockTask(ITask):
     def is_compiled(self) -> bool:
         return self._is_compiled
 
-    def handle_event(self, event: TestEvent) -> None:
+    async def handle_event(self, event: TestEvent) -> None:
         # Simple mock implementation
         pass
 
@@ -256,7 +256,7 @@ class MockWorkflow(IWorkflow):
     def is_compiled(self) -> bool:
         return self._is_compiled
 
-    def handle_event(self, event: ReActEvent) -> None:
+    async def handle_event(self, event: ReActEvent) -> None:
         # Simple mock implementation - just update current state
         pass
 

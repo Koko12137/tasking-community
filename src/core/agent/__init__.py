@@ -3,7 +3,6 @@ from .base import BaseAgent
 from .react import build_react_agent, ReActStage, ReActEvent
 from .reflect import build_reflect_agent, ReflectStage, ReflectEvent
 from .orchestrate import OrchestrateStage, OrchestrateEvent, build_orch_agent
-from .supervisor import SuperviseStage, SuperviseEvent, build_supervise_agent
 
 
 __all__ = [
@@ -17,6 +16,4 @@ __all__ = [
     "ReflectStage", "ReflectEvent", "build_reflect_agent",
     # Orchestrate Agent
     "OrchestrateStage", "OrchestrateEvent", "build_orch_agent",
-    # Supervise Agent
-    "SuperviseStage", "SuperviseEvent", "build_supervise_agent",
 ]

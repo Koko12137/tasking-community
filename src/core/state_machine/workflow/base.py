@@ -37,21 +37,21 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         valid_states: set[WorkflowStageT],
         init_state: WorkflowStageT,
         transitions: dict[
-            tuple[WorkflowStageT, WorkflowEventT], 
+            tuple[WorkflowStageT, WorkflowEventT],
             tuple[WorkflowStageT, Callable[[IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]], Awaitable[None] | None] | None]
         ],
         # Workflow 基本属性
         name: str,
         completion_configs: dict[WorkflowStageT, CompletionConfig],
         actions: dict[
-            WorkflowStageT, 
+            WorkflowStageT,
             Callable[
                 [
-                    IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], 
-                    dict[str, Any], 
-                    IQueue[Message], 
+                    IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT],
+                    dict[str, Any],
+                    IQueue[Message],
                     ITask[StateT, EventT]
-                ], 
+                ],
                 Awaitable[WorkflowEventT]
             ]
         ],
@@ -90,7 +90,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
 
         # 需要转换 transitions 中的回调函数类型，从 IWorkflow 转为 IStateMachine
         converted_transitions: dict[
-            tuple[WorkflowStageT, WorkflowEventT], 
+            tuple[WorkflowStageT, WorkflowEventT],
             tuple[WorkflowStageT, Callable[[IStateMachine[WorkflowStageT, WorkflowEventT]], Awaitable[None] | None] | None]
         ] = {}
         for (state, event), (next_state, callback) in transitions.items():
@@ -109,7 +109,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         )
 
     # ********** 基础属性信息 **********
-    
+
     def get_name(self) -> str:
         """获取工作流的名称"""
         return self._name
@@ -117,7 +117,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
     def get_completion_config(self) -> CompletionConfig:
         """
         获取工作流当前阶段的LLM推理配置信息
-        
+
         Returns:
             LLM推理配置信息实例
         """
@@ -137,10 +137,10 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
             bool: 如果包含则返回 True，否则返回 False
         """
         return stage in self._valid_states if self._valid_states else False
-    
+
     def get_event_chain(self) -> list[WorkflowEventT]:
         """获取工作流的事件链的副本，第一个为初始事件，最后一个为结束事件
-        
+
         Returns:
             list[WorkflowEventT]: 工作流的事件链的副本
         """
@@ -152,11 +152,11 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
             dict[str, Any],  # context
             IQueue[Message],  # queue
             ITask[StateT, EventT],  # task
-        ], 
+        ],
         Awaitable[WorkflowEventT]
     ]]:
         """获取工作流的所有动作的副本
-        
+
         Returns:
             dict[WorkflowStageT, Callable[workflow, context, queue, task]]: 工作流的所有动作函数。签名：
                 - workflow (IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]): 工作流实例
@@ -172,11 +172,11 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
             dict[str, Any],  # context
             IQueue[Message],  # queue
             ITask[StateT, EventT],  # task
-        ], 
+        ],
         Awaitable[WorkflowEventT]
     ]:
         """获取工作流当前阶段的动作
-    
+
         Returns:
             指定阶段的动作动作函数。签名：
                 - workflow (IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]): 工作流实例
@@ -187,7 +187,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         # 获取当前状态
         stage = self.get_current_state()
         return self._actions[stage]
-    
+
     def get_prompts(self) -> dict[WorkflowStageT, str]:
         """获取工作流的所有阶段提示模板
 
@@ -195,7 +195,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
             dict[WorkflowStageT, str]: 工作流的所有阶段提示模板
         """
         return self._prompts.copy()
-    
+
     def get_prompt(self) -> str:
         """获取工作流当前阶段的提示模板
 
@@ -223,12 +223,12 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         # 获取当前状态
         stage = self.get_current_state()
         return self._observe_funcs[stage]
-        
+
     # ********** 工作流工具与推理配置 **********
 
     def add_tool(self, tool: Callable[..., Any], name: str, tags: set[str], dependencies: list[str]) -> None:
         """添加工具
-        
+
         Args:
             tool (Callable): 工具函数，必须接受关键字参数 kwargs（用于注入依赖）
             name (str): 工具名称
@@ -237,8 +237,8 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         """
         # 转为 FastMcpTool 并添加到工具集合
         fastmcp_tool = FastMcpTool.from_function(
-            fn=tool, 
-            name=name, 
+            fn=tool,
+            name=name,
             tags=tags,
             exclude_args=["task", "workflow", *dependencies],  # 排除 task/workflow 参数以及其他依赖注入参数
         )
@@ -255,7 +255,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
             tuple[FastMcpTool, set[str]] | None: 指定名称的工具和标签集合，如果未找到则返回None
         """
         return self._tools[name] if name in self._tools else None
-    
+
     def get_tools(self) -> dict[str, tuple[FastMcpTool, set[str]]]:
         """获取工作流的所有工具的副本
 
@@ -265,10 +265,10 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         return self._tools.copy()
 
     async def call_tool(
-        self, 
-        name: str, 
-        task: ITask[StateT, EventT], 
-        inject: dict[str, Any], 
+        self,
+        name: str,
+        task: ITask[StateT, EventT],
+        inject: dict[str, Any],
         kwargs: dict[str, Any]
     ) -> CallToolResult:
         """调用指定名称的工具
@@ -288,7 +288,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         tool_entry = self.get_tool(name)
         if tool_entry is None:
             raise ValueError(f"Tool '{name}' is not registered in the workflow")
-        
+
         tool, _ = tool_entry
         # 更新 kwargs，注入 workflow 实例和 task 实例，以及其他依赖参数
         kwargs.update({"kwargs": {"workflow": self, "task": task, **inject}})
@@ -309,11 +309,11 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         return result
 
     # ********** 重写编译方法，初始化上下文 **********
-    
+
     def compile(self) -> None:
         """
         编译状态机，完成初始化及全状态可达性检查
-        
+
         编译时必须满足以下所有条件：
         1. 已设置有效状态集合（非空）
         2. 已设置初始状态（且在有效状态集合中）
@@ -324,7 +324,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
             ValueError: 若上述条件不满足则抛出对应异常
         """
         super().compile()
-        
+
         # 检查 event chain 是否设置
         if self._event_chain == []:
             self._is_compiled = False  # 回滚编译状态

@@ -403,14 +403,14 @@ Tasking通过清晰的职责分离和标准化接口实现了以下关键优势�
 **任务管理核心**：
 - [x] 完整的任务状态机（INITED → CREATED → RUNNING → FINISHED/FAILED/CANCELED）
 - [x] 任务级上下文隔离和权限控制
-- [ ] 层次化任务组织（任务树结构）
+- [x] 层次化任务组织（任务树结构）
 
 **AI执行引擎**：
 - [x] 智能体执行器（Agent）- 无状态的高质量执行
 - [x] 任务调度器（Scheduler）- 基础调度和系统保护
 - [ ] 工作流程序（Workflow）- 多种执行模式
   - [x] ReAct
-  - [ ] Orchestrate
+  - [x] Orchestrate
   - [ ] Plan and Execute
 
 **开发基础设施**：

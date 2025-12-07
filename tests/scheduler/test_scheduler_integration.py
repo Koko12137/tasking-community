@@ -34,7 +34,7 @@ class SimpleTask:
         self._current_state = state
         self._state_visit_counts[state] = self._state_visit_counts.get(state, 0) + 1
 
-    def handle_event(self, event: TaskEvent) -> None:
+    async def handle_event(self, event: TaskEvent) -> None:
         self._event_log.append((self._current_state, event))
 
         # Simple state machine
@@ -75,15 +75,15 @@ class TestSimpleSchedulerIntegration(unittest.IsolatedAsyncioTestCase):
         """Test a complete workflow from start to finish."""
         # Create a simple scheduler
         async def on_inited(scheduler, context, queue, fsm):
-            fsm.handle_event(TaskEvent.IDENTIFIED)
+            await fsm.handle_event(TaskEvent.IDENTIFIED)
             return TaskEvent.IDENTIFIED
 
         async def on_created(scheduler, context, queue, fsm):
-            fsm.handle_event(TaskEvent.PLANED)
+            await fsm.handle_event(TaskEvent.PLANED)
             return TaskEvent.PLANED
 
         async def on_running(scheduler, context, queue, fsm):
-            fsm.handle_event(TaskEvent.DONE)
+            await fsm.handle_event(TaskEvent.DONE)
             return TaskEvent.DONE
 
         scheduler = BaseScheduler(
@@ -128,11 +128,11 @@ class TestSchedulerErrorHandling(unittest.IsolatedAsyncioTestCase):
             return TaskEvent.ERROR
 
         async def on_inited(scheduler, context, queue, fsm):
-            fsm.handle_event(TaskEvent.IDENTIFIED)
+            await fsm.handle_event(TaskEvent.IDENTIFIED)
             return TaskEvent.IDENTIFIED
 
         async def on_created(scheduler, context, queue, fsm):
-            fsm.handle_event(TaskEvent.PLANED)
+            await fsm.handle_event(TaskEvent.PLANED)
             return TaskEvent.PLANED
 
         scheduler = BaseScheduler(

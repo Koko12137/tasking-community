@@ -44,7 +44,7 @@ class ProblematicTask:
         self._current_state = state
         self._state_visit_counts[state] = self._state_visit_counts.get(state, 0) + 1
 
-    def handle_event(self, event: TaskEvent) -> None:
+    async def handle_event(self, event: TaskEvent) -> None:
         """Handle event and update state."""
         self._call_count += 1
         self._event_log.append((self._current_state, event))
@@ -154,7 +154,7 @@ class TestSchedulerCornerCases(unittest.IsolatedAsyncioTestCase):
                 # Simulate task processing that might encounter errors
                 if task.get_id() == "exception_task":
                     raise RuntimeError("Task execution error")
-                task.handle_event(TaskEvent.DONE)
+                await task.handle_event(TaskEvent.DONE)
             except Exception:
                 task.set_error_info("Executor caught error")
 

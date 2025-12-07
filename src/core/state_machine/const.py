@@ -3,11 +3,11 @@ from typing import TypeVar, Protocol
 
 class StateProtocol(Protocol):
     """状态类型协议定义，要求实现名称属性"""
-    
+
     @property
     def name(self) -> str:
         ...
-        
+
 
 class EventProtocol(Protocol):
     """事件类型协议定义, 可根据需要扩展"""

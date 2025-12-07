@@ -18,19 +18,30 @@ setup(
         "tasking": ["*", "py.typed"],
         "tasking.core": ["*"],
     },
-    # 资源文件（prompt 目录）
+    # 资源文件（prompt 目录）- 按子路径组织
     data_files=[
-        ("share/tasking/prompt", [
+        ("share/tasking/prompt/tool", [
             "prompt/tool/text_edit.md",
             "prompt/tool/filesystem.md",
+            "prompt/tool/human_interfere.md",
+        ]),
+        ("share/tasking/prompt/memory", [
+            "prompt/memory/episode.md",
+        ]),
+        ("share/tasking/prompt/task", [
             "prompt/task/default.xml",
             "prompt/task/plan_and_exec.xml",
+        ]),
+        ("share/tasking/prompt/workflow/orchestrate", [
             "prompt/workflow/orchestrate/orchestrating.md",
             "prompt/workflow/orchestrate/thinking.md",
+        ]),
+        ("share/tasking/prompt/workflow/react", [
             "prompt/workflow/react/processing.md",
+        ]),
+        ("share/tasking/prompt/workflow/reflect", [
             "prompt/workflow/reflect/reasoning.md",
             "prompt/workflow/reflect/reflecting.md",
-            "prompt/workflow/supervise/system.md",
-        ])
+        ]),
     ],
 )

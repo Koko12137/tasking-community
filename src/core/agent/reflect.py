@@ -12,10 +12,12 @@ from .react import end_workflow, END_WORKFLOW_DOC
 from ..middleware import HumanInterfere
 from ..state_machine.workflow import IWorkflow, BaseWorkflow
 from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView
-from ...llm import OpenAiLLM, ILLM
+from ...llm import ILLM, build_llm
 from ...model import Message, StopReason, Role, IQueue, CompletionConfig, get_settings
+from ...model.message import TextBlock
 from ...utils.io import read_markdown
 from ...utils.string.extract import extract_by_label
+from ...utils.content import extract_text_from_message
 
 
 class ReflectStage(str, Enum):
@@ -27,7 +29,7 @@ class ReflectStage(str, Enum):
     @classmethod
     def list_stages(cls) -> list['ReflectStage']:
         """列出所有工作流阶段
-        
+
         Returns:
             工作流阶段列表
         """
@@ -68,14 +70,14 @@ def get_reflect_transition() -> dict[
             Callable[[IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent]], Awaitable[None] | None] | None
         ]
     ] = {}
-    
+
     # 1. REASONING -> REFLECTION (事件： REFLECT)
     async def on_reasoning_to_reflection(
         workflow: IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
     ) -> None:
         """从 REASONING 到 REFLECTION 的转换回调函数"""
         logger.debug(f"Workflow {workflow.get_id()} Transition: {ReflectStage.REASONING} -> {ReflectStage.REFLECTING}.")
-        
+
     # 添加转换规则
     transition[(ReflectStage.REASONING, ReflectEvent.REFLECT)] = (ReflectStage.REFLECTING, on_reasoning_to_reflection)
 
@@ -85,17 +87,17 @@ def get_reflect_transition() -> dict[
     ) -> None:
         """从 REFLECTION 到 FINISHED 的转换回调函数"""
         logger.debug(f"Workflow {workflow.get_id()} Transition: {ReflectStage.REFLECTING} -> {ReflectStage.FINISHED}.")
-        
+
     # 添加转换规则
     transition[(ReflectStage.REFLECTING, ReflectEvent.FINISH)] = (ReflectStage.FINISHED, on_reflection_to_finished)
-    
+
     # 3. REFLECTION -> REASONING (事件： REASON)
     async def on_reflection_to_reasoning(
         workflow: IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
     ) -> None:
         """从 REFLECTION 到 REASONING 的转换回调函数"""
         logger.debug(f"Workflow {workflow.get_id()} Transition: {ReflectStage.REFLECTING} -> {ReflectStage.REASONING}.")
-        
+
     # 添加转换规则
     transition[(ReflectStage.REFLECTING, ReflectEvent.REASON)] = (ReflectStage.REASONING, on_reflection_to_reasoning)
 
@@ -105,7 +107,7 @@ def get_reflect_transition() -> dict[
 def get_reflect_stages() -> set[ReflectStage]:
     """获取 Reason - Act -Reflect 工作流的阶段
     - REASONING, REFLECTING, FINISHED
-    
+
     Returns:
         reflect 工作流的阶段集合
     """
@@ -114,7 +116,7 @@ def get_reflect_stages() -> set[ReflectStage]:
         ReflectStage.REFLECTING,
         ReflectStage.FINISHED,
     }
-    
+
 
 def get_reflect_event_chain() -> list[ReflectEvent]:
     """获取常用工作流事件链
@@ -133,14 +135,14 @@ def get_reflect_event_chain() -> list[ReflectEvent]:
 def get_reflect_actions(
     agent: IAgent[ReflectStage, ReflectEvent, TaskState, TaskEvent, ClientTransportT],
 ) -> dict[
-    ReflectStage, 
+    ReflectStage,
     Callable[
         [
             IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
             dict[str, Any],
             IQueue[Message],
             ITask[TaskState, TaskEvent],
-        ], 
+        ],
         Awaitable[ReflectEvent]
     ]
 ]:
@@ -161,10 +163,10 @@ def get_reflect_actions(
             dict[str, Any],
             IQueue[Message],
             ITask[TaskState, TaskEvent],
-        ], 
+        ],
         Awaitable[ReflectEvent]]
     ] = {}
-    
+
     # REASONING 阶段动作定义
     async def reason(
         workflow: IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
@@ -173,7 +175,7 @@ def get_reflect_actions(
         task: ITask[TaskState, TaskEvent],
     ) -> ReflectEvent:
         """REASONING 阶段动作函数
-        
+
         Args:
             context (dict[str, Any]): 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
             queue (IQueue[Message]): 数据队列，用于输出数据
@@ -191,11 +193,11 @@ def get_reflect_actions(
         # 获取当前工作流的提示词
         prompt = workflow.get_prompt()
         # 创建新的任务消息
-        message = Message(role=Role.USER, content=prompt)
+        message = Message(role=Role.USER, content=[TextBlock(text=prompt)])
         # 添加 message 到当前任务上下文
         task.get_context().append_context_data(message)
         # 观察 Task
-        observe = await agent.observe(
+        await agent.observe(
             context=context,
             queue=queue,
             task=task,
@@ -206,16 +208,15 @@ def get_reflect_actions(
             message = await agent.think(
                 context=context,
                 queue=queue,
-                observe=observe,
+                task=task,
                 completion_config=workflow.get_completion_config(),
             )
-            # 推理结果反馈到任务
-            task.get_context().append_context_data(message)
         except HumanInterfere as e:
             # 将人类介入信息反馈到任务
             task.get_context().append_context_data(Message(
                 role=Role.USER,
-                content=str(e)
+                content=e.get_messages(),
+                is_error=True,
             ))
             # 重新进入处理流程
             return ReflectEvent.REASON
@@ -233,8 +234,10 @@ def get_reflect_actions(
                         role=Role.TOOL,
                         tool_call_id=tool_call.id,
                         is_error=True,
-                        content="由于前置工具调用出错，后续工具调用被禁止继续执行"
+                        content=[TextBlock(text="由于前置工具调用出错，后续工具调用被禁止继续执行")]
                     )
+                    # 更新到任务上下文
+                    task.get_context().append_context_data(result)
                     continue
 
                 try:
@@ -250,26 +253,24 @@ def get_reflect_actions(
                     # 将人类介入信息反馈到任务
                     result = Message(
                         role=Role.USER,
-                        content=str(e),
+                        content=e.get_messages(),
                         is_error=True,
                     )
                     # 禁止后续工具调用执行
                     allow_tool = False
 
-                # 工具调用结果反馈到任务
-                task.get_context().append_context_data(result)
                 # 检查调用错误状态
                 if result.is_error:
                     # 将任务设置为错误状态
-                    task.set_error(result.content)
+                    task.set_error(extract_text_from_message(result))
                     # 停止执行剩余的工具
                     allow_tool = False
-                    
+
         return ReflectEvent.REFLECT
-    
+
     # 添加到动作定义字典
     actions[ReflectStage.REASONING] = reason
-    
+
     # REFLECTION 阶段动作定义
     async def reflect(
         workflow: IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
@@ -278,7 +279,7 @@ def get_reflect_actions(
         task: ITask[TaskState, TaskEvent],
     ) -> ReflectEvent:
         """REFLECTION 阶段动作函数
-        
+
         Args:
             context (dict[str, Any]): 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
             queue (IQueue[Message]): 数据队列，用于输出数据
@@ -303,11 +304,11 @@ def get_reflect_actions(
         # 获取当前工作流的提示词
         prompt = workflow.get_prompt()
         # 创建新的任务消息
-        message = Message(role=Role.USER, content=prompt)
+        message = Message(role=Role.USER, content=[TextBlock(text=prompt)])
         # 添加 message 到当前任务上下文
         task.get_context().append_context_data(message)
         # 观察 Task
-        observe = await agent.observe(
+        await agent.observe(
             context=context,
             queue=queue,
             task=task,
@@ -317,13 +318,13 @@ def get_reflect_actions(
         message = await agent.think(
             context=context,
             queue=queue,
-            observe=observe,
+            task=task,
             completion_config=completion_config,
         )
         # 推理结果反馈到任务
         task.get_context().append_context_data(message)
         # 从 Message 中获取结束工作流的标志内容
-        finish_flag = extract_by_label(message.content, "finish", "finish_flag", "finish_workflow")
+        finish_flag = extract_by_label(extract_text_from_message(message), "finish", "finish_flag", "finish_workflow")
 
         # 允许执行工具标志位
         allow_tool: bool = True
@@ -338,8 +339,10 @@ def get_reflect_actions(
                         role=Role.TOOL,
                         tool_call_id=tool_call.id,
                         is_error=True,
-                        content="由于前置工具调用出错，后续工具调用被禁止继续执行"
+                        content=[TextBlock(text="由于前置工具调用出错，后续工具调用被禁止继续执行")]
                     )
+                    # 更新到任务上下文
+                    task.get_context().append_context_data(result)
                     continue
 
                 # 注入 Task 和 Workflow，并开始执行工具
@@ -350,12 +353,10 @@ def get_reflect_actions(
                     task=task,
                     workflow=workflow,
                 )
-                # 工具调用结果反馈到任务
-                task.get_context().append_context_data(result)
                 # 检查调用错误状态
                 if result.is_error:
                     # 将任务设置为错误状态
-                    task.set_error(result.content)
+                    task.set_error(extract_text_from_message(result))
                     # 停止执行剩余的工具
                     allow_tool = False
 
@@ -363,7 +364,7 @@ def get_reflect_actions(
         elif finish_flag.upper() == "TRUE":
             # 手动调用结束工作流
             end_workflow(kwargs={
-                "task": task, 
+                "task": task,
                 "message": task.get_context().get_context_data()[-3]
             })
 
@@ -382,14 +383,14 @@ def build_reflect_agent(
     name: str,
     tool_service: Client[ClientTransportT] | None = None,
     actions: dict[
-        ReflectStage, 
+        ReflectStage,
         Callable[
             [
                 IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
                 dict[str, Any],
                 IQueue[Message],
                 ITask[TaskState, TaskEvent],
-            ], 
+            ],
             Awaitable[ReflectEvent]
         ]
     ] | None = None,
@@ -425,18 +426,16 @@ def build_reflect_agent(
     agent_cfg = settings.get_agent_config(name)
     if agent_cfg is None:
         raise ValueError(f"未找到名为 '{name}' 的智能体配置")
-    
+
     llms: dict[ReflectStage, ILLM] = {}
     for stage in ReflectStage:
+        if stage == ReflectStage.FINISHED:
+            continue  # FINISHED 阶段不需要 LLM
         # LLM 配置
         llm_cfg = agent_cfg.get_llm_config(stage.value)
         # 连接 LLM 服务端
-        llms[stage] = OpenAiLLM(
-            model=llm_cfg.model or "GLM-4.6",
-            base_url=llm_cfg.base_url or "https://open.bigmodel.cn/api/coding/paas/v4",
-            api_key=llm_cfg.api_key
-        )
-    
+        llms[stage] = build_llm(llm_cfg)
+
     # 构建基础 Agent 实例
     agent = BaseAgent[ReflectStage, ReflectEvent, TaskState, TaskEvent, ClientTransportT](
         name=name,
@@ -463,13 +462,13 @@ def build_reflect_agent(
         """观察任务并生成消息"""    # TODO: 要根据状态组合观察方法
         view = RequirementTaskView[TaskState, TaskEvent]()
         content = view(task, **kwargs)
-        return Message(role=Role.USER, content=content)
+        return Message(role=Role.USER, content=[TextBlock(text=content)])
 
     observe_funcs = observe_funcs if observe_funcs is not None else {
         ReflectStage.REASONING: observe_task_view,
         ReflectStage.REFLECTING: observe_task_view,
     }
-    
+
     # 构建结束工作流工具实例
     end_workflow_tool = FastMcpTool.from_function(
         fn= end_workflow,
@@ -477,18 +476,17 @@ def build_reflect_agent(
         description=END_WORKFLOW_DOC,
         exclude_args=["workflow", "task"],
     )
-    
+
     # 构建 CompletionConfig 映射
     completion_configs: dict[ReflectStage, CompletionConfig] = {}
     for stage in ReflectStage:
         # LLM 配置
         llm_cfg = agent_cfg.get_llm_config(stage.value)
         completion_configs[stage] = CompletionConfig(
-            temperature=llm_cfg.temperature,
             max_tokens=llm_cfg.max_tokens,
             tools=[],
         )
-    
+
     # 构建工作流实例
     workflow = BaseWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent](
         valid_states=valid_states,

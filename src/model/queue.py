@@ -16,7 +16,7 @@ class IQueue(ABC, Generic[T]):
         Args:
             item: 要添加到队列的项目
         """
-        
+
     @abstractmethod
     async def put_nowait(self, item: T) -> None:
         """将项目添加到队列中（非阻塞）
@@ -32,7 +32,7 @@ class IQueue(ABC, Generic[T]):
         Returns:
             从队列中移除的项目
         """
-        
+
     @abstractmethod
     async def get_nowait(self) -> T:
         """从队列中移除并返回项目（非阻塞）

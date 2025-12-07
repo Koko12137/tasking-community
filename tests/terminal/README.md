@@ -35,11 +35,15 @@ The terminal and document editor test suite validates:
 
 ```
 tests/terminal/
-├── README.md                    # This documentation
-├── run_tests.sh                # Test runner script
-├── test_terminal.py            # Terminal implementation tests
-├── test_doc_edit.py            # Document editor tests
-└── test_helpers.py             # Test utility functions
+├── 📄 README.md                    # 本文档
+├── 📄 run_tests.sh                # Shell 测试运行脚本
+├── 📄 __init__.py                  # 测试模块初始化
+├── 📄 test_terminal.py            # Terminal 实现测试
+├── 📄 test_doc_edit.py            # 文档编辑器测试
+├── 📄 test_helpers.py             # 测试辅助函数
+└── 📁 test_results/                # 测试结果目录
+    ├── 📁 htmlcov/                 # HTML 覆盖率报告
+    └── 📄 coverage.xml             # XML 覆盖率报告
 ```
 
 ### Test Files

@@ -13,7 +13,7 @@ from src.core.state_machine.task.const import TaskState, TaskEvent
 from src.model import CompletionConfig, Message, Role
 
 
-class TestBaseTask(unittest.TestCase):
+class TestBaseTask(unittest.IsolatedAsyncioTestCase):
     """测试BaseTask的核心功能"""
 
     def setUp(self) -> None:
@@ -117,41 +117,41 @@ class TestBaseTask(unittest.TestCase):
         self.assertIsInstance(self.task.get_output(), str)
         self.assertTrue(self.task.is_completed())
 
-    def test_task_state_visit_counting(self) -> None:
+    async def test_task_state_visit_counting(self) -> None:
         """测试状态访问计数功能"""
         # 初始状态计数
         initial_count = self.task.get_state_visit_count(TaskState.INITED)
         self.assertEqual(initial_count, 1)
 
         # 状态转换后计数
-        self.task.handle_event(TaskEvent.IDENTIFIED)
+        await self.task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.task.get_current_state(), TaskState.CREATED)
 
         created_count = self.task.get_state_visit_count(TaskState.CREATED)
         self.assertEqual(created_count, 1)
 
         # 再次转换
-        self.task.handle_event(TaskEvent.PLANED)
+        await self.task.handle_event(TaskEvent.PLANED)
         self.assertEqual(self.task.get_current_state(), TaskState.RUNNING)
 
         running_count = self.task.get_state_visit_count(TaskState.RUNNING)
         self.assertEqual(running_count, 1)
 
-    def test_task_max_revisit_limit(self) -> None:
+    async def test_task_max_revisit_limit(self) -> None:
         """测试最大重访限制"""
         self.assertEqual(self.task.get_max_revisit_limit(), 3)
 
         # 测试多次访问同一状态
         # 先返回到初始状态
-        self.task.handle_event(TaskEvent.IDENTIFIED)  # INITED -> CREATED
-        self.task.handle_event(TaskEvent.CANCEL)  # CREATED -> CANCELED
+        await self.task.handle_event(TaskEvent.IDENTIFIED)  # INITED -> CREATED
+        await self.task.handle_event(TaskEvent.CANCEL)  # CREATED -> CANCELED
 
         # 重置任务
         self.task.reset()
 
         # 模拟多次访问同一状态（通过在RUNNING状态之间循环）
-        self.task.handle_event(TaskEvent.IDENTIFIED)  # INITED -> CREATED
-        self.task.handle_event(TaskEvent.PLANED)  # CREATED -> RUNNING
+        await self.task.handle_event(TaskEvent.IDENTIFIED)  # INITED -> CREATED
+        await self.task.handle_event(TaskEvent.PLANED)  # CREATED -> RUNNING
 
         # 继续触发事件会增加RUNNING状态的访问计数
         # 由于没有从RUNNING到RUNNING的转换，我们需要测试其他场景
@@ -200,10 +200,10 @@ class TestBaseTask(unittest.TestCase):
         self.assertIsNotNone(updated_context)
         self.assertEqual(len(updated_context.get_context_data()), 2)
 
-    def test_task_reset(self) -> None:
+    async def test_task_reset(self) -> None:
         """测试任务重置功能"""
         # 执行一些状态转换
-        self.task.handle_event(TaskEvent.IDENTIFIED)
+        await self.task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.task.get_current_state(), TaskState.CREATED)
 
         # 设置一些数据
@@ -260,7 +260,7 @@ class TestBaseTask(unittest.TestCase):
         self.assertIsInstance(task1.get_id(), str)
 
 
-class TestTaskStateMachineIntegration(unittest.TestCase):
+class TestTaskStateMachineIntegration(unittest.IsolatedAsyncioTestCase):
     """测试Task与StateMachine的集成"""
 
     def setUp(self) -> None:
@@ -304,19 +304,19 @@ class TestTaskStateMachineIntegration(unittest.TestCase):
             method = getattr(self.task, method_name)
             self.assertTrue(callable(method))
 
-    def test_task_state_lifecycle(self) -> None:
+    async def test_task_state_lifecycle(self) -> None:
         """测试任务状态生命周期"""
         # 验证初始状态
         self.assertEqual(self.task.get_current_state(), TaskState.INITED)
 
         # 执行状态转换
-        self.task.handle_event(TaskEvent.IDENTIFIED)
+        await self.task.handle_event(TaskEvent.IDENTIFIED)
         self.assertEqual(self.task.get_current_state(), TaskState.CREATED)
 
-        self.task.handle_event(TaskEvent.PLANED)
+        await self.task.handle_event(TaskEvent.PLANED)
         self.assertEqual(self.task.get_current_state(), TaskState.RUNNING)
 
-        self.task.handle_event(TaskEvent.DONE)
+        await self.task.handle_event(TaskEvent.DONE)
         self.assertEqual(self.task.get_current_state(), TaskState.FINISHED)
 
 

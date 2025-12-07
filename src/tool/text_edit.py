@@ -119,11 +119,11 @@ class TextEditor:
 
     def _resolve_file_path(self, file_path: str) -> tuple[str, str]:
         """解析文件路径：返回（绝对路径，相对于 workspace 的相对路径）。
-        
+
         路径规则：
         - 绝对路径：必须在终端 workspace 内（由 Terminal 安全校验保障）；
         - 相对路径：基于终端当前目录解析，最终仍需在 workspace 内。
-        
+
         Returns:
             tuple[str, str]: (文件绝对路径, 相对于 workspace 的相对路径)
         """
@@ -143,10 +143,10 @@ class TextEditor:
 
     def _get_file_line_count(self, file_rel: str) -> int:
         """获取文件的总行数（用于校验行号有效性）。
-        
+
         Args:
             file_rel: 相对于 workspace 的文件路径（终端内可直接访问）
-        
+
         Returns:
             int: 文件总行数（文件不存在返回 0）
         """

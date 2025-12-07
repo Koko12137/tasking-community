@@ -38,7 +38,7 @@ class MockTask:
         self._current_state = state
         self._state_visit_counts[state] = self._state_visit_counts.get(state, 0) + 1
 
-    def handle_event(self, event: TaskEvent) -> bool:
+    async def handle_event(self, event: TaskEvent) -> None:
         """Handle event and update state."""
         self._event_log.append((self._current_state, event))
 
@@ -55,9 +55,6 @@ class MockTask:
         key = (self._current_state, event)
         if key in state_transition_map:
             self.set_current_state(state_transition_map[key])
-            return True
-
-        return False
 
     @property
     def data(self) -> dict:
@@ -215,15 +212,15 @@ class TestBaseScheduler(unittest.IsolatedAsyncioTestCase):
     async def test_simple_workflow_execution(self) -> None:
         """Test execution of a simple workflow."""
         async def init_fn(_scheduler, _context, _queue, fsm):
-            fsm.handle_event(TaskEvent.IDENTIFIED)
+            await fsm.handle_event(TaskEvent.IDENTIFIED)
             return TaskEvent.IDENTIFIED
 
         async def created_fn(_scheduler, _context, _queue, fsm):
-            fsm.handle_event(TaskEvent.PLANED)
+            await fsm.handle_event(TaskEvent.PLANED)
             return TaskEvent.PLANED
 
         async def running_fn(_scheduler, _context, _queue, fsm):
-            fsm.handle_event(TaskEvent.DONE)
+            await fsm.handle_event(TaskEvent.DONE)
             return TaskEvent.DONE
 
         async def transition_fn(_scheduler, _context, _queue, _fsm):

@@ -19,12 +19,12 @@ class BaseScheduler(IScheduler[StateT, EventT]):
     _end_states: set[StateT] = set()
     # 状态调用函数
     _on_state_fn: dict[StateT, Callable[
-        [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]], 
+        [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
         Awaitable[EventT]
     ]] = {}
     # 状态转换到任务的映射表
     _on_state_changed_fn: dict[tuple[StateT, StateT], Callable[
-        [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]], 
+        [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
         Awaitable[None]
     ]] = {}
     # 编译状态
@@ -159,7 +159,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
             event = await task(self, context, queue, fsm)
         else:
             event = await asyncify(task)(self, context, queue, fsm)
-            
+
         if event is not None:
             return cast(EventT, event)
         else:
@@ -195,7 +195,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
             return # 无事件返回，直接结束
         else:
             # 处理事件
-            fsm.handle_event(event)
+            await fsm.handle_event(event)
 
     async def on_state_changed(
         self,
@@ -253,7 +253,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         if current_state in self._end_states:
             logger.info(f"[调度器] 任务已处于结束状态：{current_state.name}，无需调度")
             return None
-        
+
         # 设置任务的最大重访次数
         fsm.set_max_revisit_count(self._max_revisit_count)
 

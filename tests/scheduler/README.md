@@ -2,16 +2,44 @@
 
 This directory contains comprehensive tests for the scheduler module.
 
-## Test Files
+## 📁 Test Structure
 
-### Core Test Files
+```
+tests/scheduler/
+├── 📄 README.md                    # 本文档
+├── 📄 run_scheduler_tests.py       # Python 测试运行器
+├── 📄 run_scheduler_tests.sh       # Shell 测试运行器
+├── 📄 __init__.py                  # 测试模块初始化
+├── 📄 test_scheduler_basic.py      # 基础调度器功能测试
+├── 📄 test_scheduler_builder.py    # 调度器构建器测试
+├── 📄 test_scheduler_corner_cases.py # 边界情况测试
+├── 📄 test_scheduler_integration.py # 集成测试
+└── 📄 test_helpers.py              # 测试辅助工具
+```
 
-1. **test_scheduler_basic.py** - Core functionality tests
-   - Tests BaseScheduler initialization and configuration
-   - Tests compilation logic and validation
-   - Tests Builder functions (create_simple_scheduler, create_tree_scheduler)
-   - Tests basic workflow execution
-   - Tests error handling for edge cases
+### 🧪 Core Test Files
+
+#### 1. test_scheduler_basic.py - Core functionality tests
+- **BaseScheduler 初始化和配置测试**
+  - 测试默认参数和自定义参数初始化
+  - 测试无效参数的错误处理
+  - 测试结束状态配置
+- **编译逻辑和验证测试**
+  - 测试状态机编译规则
+  - 测试循环检测和限制
+  - 测试状态转换规则验证
+- **Builder 函数测试**
+  - 测试 `create_simple_scheduler` 函数
+  - 测试 `create_tree_scheduler` 函数
+  - 测试 Builder 参数传递
+- **基础工作流执行测试**
+  - 测试简单的状态转换流程
+  - 测试事件处理机制
+  - 测试回调函数执行
+- **边界情况错误处理测试**
+  - 测试无效状态转换
+  - 测试未配置的状态处理
+  - 测试异常情况下的错误恢复
 
 ## Test Script
 
