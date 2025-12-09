@@ -103,11 +103,11 @@
 #### 3.1.2 文本内容搜索（grep）
 1. **简单搜索**：执行 `grep "localhost" code.conf`（搜索包含“localhost”的行），输出：`host=localhost`；
 2. **带行号搜索**：执行 `grep -n "debug" code.conf`（搜索“debug”并显示行号），输出：`3:debug=false`；
-3. **递归搜索目录**：执行 `mkdir src && touch src/main.py`，在`src/main.py`中写入`print("hello")`，再执行 `grep -r "hello" ./`（递归搜索当前目录下含“hello”的文件），输出：`./src/main.py:print("hello")`。
+3. **递归搜索目录**：执行 `mkdir src && touch tasking/main.py`，在`tasking/main.py`中写入`print("hello")`，再执行 `grep -r "hello" ./`（递归搜索当前目录下含“hello”的文件），输出：`./tasking/main.py:print("hello")`。
 
 #### 3.1.3 代码版本控制（git）
 1. **初始化仓库**：执行 `git init`（在工作空间内初始化git仓库）；
-2. **添加文件到暂存区**：执行 `git add code.conf src/main.py`；
+2. **添加文件到暂存区**：执行 `git add code.conf tasking/main.py`；
 3. **提交代码**：执行 `git commit -m "init: add config and main.py"`；
 4. **查看状态/日志**：
    - 执行 `git status`，输出“nothing to commit, working tree clean”；

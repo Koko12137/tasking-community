@@ -14,7 +14,7 @@
 
 ### 项目与模块文档
 - 📗 **[项目总览与架构](./README.md)** - 系统介绍、核心特性、快速开始
-- 📕 **[开发者详细指南](./src/README.md)** - 模块架构、API文档、最佳实践
+- 📕 **[开发者详细指南](./tasking/README.md)** - 模块架构、API文档、最佳实践
 
 ---
 
@@ -61,11 +61,11 @@ uv run python tests/state_machine/test_state_machine.py
 uv run python main.py
 
 # 运行所有测试
-uv run pytest tests/ -v --cov=src --cov-report=term-missing
+uv run pytest tests/ -v --cov=tasking --cov-report=term-missing
 
 # 代码质量检查（必须在所有代码编辑后执行）
-uv run pyright src/
-uv run pylint src/
+uv run pyright tasking/
+uv run pylint tasking/
 ```
 
 ### 核心设计原则
@@ -148,13 +148,13 @@ uv run pylint src/
 1. **pyright 检查**: 确保类型正确性和现代 Python 特性的正确使用
 
    ```bash
-   uv run pyright src/
+   uv run pyright tasking/
    ```
 
 2. **pylint 检查**: 确保代码风格、结构和最佳实践
 
    ```bash
-   uv run pylint src/
+   uv run pylint tasking/
    ```
 
 ### 检查标准

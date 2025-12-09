@@ -238,8 +238,8 @@ uv run python main.py
 # ✅ 正确方式 - 使用 uv
 uv run python main.py
 uv run pytest tests/
-uv run python -m pylint src/
-uv run python -m pyright src/
+uv run python -m pylint tasking/
+uv run python -m pyright tasking/
 
 # ❌ 错误方式 - 直接使用系统 Python
 python3 main.py          # 禁止
@@ -274,10 +274,10 @@ import asyncio
 from loguru import logger
 from fastmcp import Client
 
-from src.core.agent import build_simple_agent
-from src.core.scheduler import create_simple_scheduler
-from src.core.state_machine.task import build_default_tree_node
-from src.model import Message, IQueue
+from tasking.core.agent import build_simple_agent
+from tasking.core.scheduler import create_simple_scheduler
+from tasking.core.state_machine.task import build_default_tree_node
+from tasking.model import Message, IQueue
 from server.utils.queue import AQueue
 
 async def main():
@@ -336,8 +336,8 @@ if __name__ == "__main__":
 uv run python main.py
 
 # 运行代码质量检查（确保系统稳定性）
-uv run pyright src/
-uv run pylint src/
+uv run pyright tasking/
+uv run pylint tasking/
 
 # 运行测试套件（验证所有功能）
 uv run pytest tests/ -v
@@ -395,7 +395,7 @@ Tasking通过清晰的职责分离和标准化接口实现了以下关键优势�
 ## 开发者资源
 
 ### 📚 核心文档
-- **[开发者文档](src/README.md)** - 完整的架构说明、API文档和最佳实践
+- **[开发者文档](tasking/README.md)** - 完整的架构说明、API文档和最佳实践
 - **[CLAUDE.md](CLAUDE.md)** - AI辅助开发规范和代码质量要求
 
 ### 🔧 核心能力 Road Map

@@ -10,7 +10,7 @@ def test_agents_llm_mapping(monkeypatch):
     monkeypatch.setenv("AGENTS__executor_agent__llm__default__api_key", "sk-test-executor")
 
     # Reload settings to pick up env vars
-    from src.model.setting import reload_settings
+    from tasking.model.setting import reload_settings
 
     settings = reload_settings()
 
@@ -44,7 +44,7 @@ def test_multiple_agents_and_llms(monkeypatch):
     monkeypatch.setenv("AGENTS__executor_agent__llm__secondary__model", "gpt-4o")
     monkeypatch.setenv("AGENTS__executor_agent__llm__secondary__api_key", "sk-test-secondary")
 
-    from src.model.setting import reload_settings
+    from tasking.model.setting import reload_settings
 
     settings = reload_settings()
 

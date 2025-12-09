@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "任务驱动智能体系统，基于状态机的AI智能体框架"
 readme = "README.md"
 requires-python = ">=3.12"
+authors = [
+    {name = "koko", email = "koko.working0523@outlook.com"}
+]
 dependencies = [
     "anthropic>=0.72.0",
     "asyncer>=0.0.10",
@@ -33,7 +36,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["tasking"]
 testpaths = ["tests"]
 filterwarnings = [
     "ignore:pkg_resources is deprecated:UserWarning:milvus_lite",
