@@ -5,8 +5,7 @@ from loguru import logger
 from tasking.core.agent import build_react_agent
 from tasking.core.scheduler import build_base_scheduler
 from tasking.core.state_machine.task import DefaultTreeNode
-from tasking.model import Message, IQueue, TextBlock
-from server.utils.queue import AQueue
+from tasking.model import Message, IQueue, AsyncQueue, TextBlock
 
 
 async def run() -> None:
@@ -28,7 +27,7 @@ async def run() -> None:
     task_node.set_input([TextBlock(text="介绍一下人工智能技术")])
 
     # 创建消息队列
-    message_queue: IQueue[Message] = AQueue()
+    message_queue: IQueue[Message] = AsyncQueue()
     
     # 启动调度器
     await scheduler.schedule(dict[str, str](), message_queue, task_node)
