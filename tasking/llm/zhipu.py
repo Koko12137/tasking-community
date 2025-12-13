@@ -4,6 +4,7 @@ import getpass
 import json
 from typing import Any, cast
 
+from loguru import logger
 from pydantic import SecretStr
 from mcp import Tool as McpTool
 from fastmcp.tools import Tool as FastMcpTool
@@ -196,10 +197,10 @@ def to_zhipu_messages(messages: list[Message]) -> list[dict[str, Any]]:
         list[dict[str, Any]]:
             The Zhipu AI compatible messages dictionaries.
     """
-    history: list[dict[str, Any]] = []
+    history: list[dict[str, str | list[dict[str, Any]]]] = []
 
     for message in messages:
-        message_dict: dict[str, Any] = {}
+        message_dict: dict[str, str | list[dict[str, Any]]] = {}
 
         if not message.content:
             raise ValueError("Message content cannot be empty")
@@ -212,26 +213,35 @@ def to_zhipu_messages(messages: list[Message]) -> list[dict[str, Any]]:
             if len(history) > 0:
                 # Modify message_dict role to user for system messages after first
                 message_dict['role'] = Role.USER.value
-            # For system messages, use text content
+            # For system messages, use text content with block wrapper
             text_content = _extract_text_from_content(message.content)
-            message_dict['content'] = text_content
+            message_dict['content'] = f"<block>{text_content}</block>"
 
         elif message.role == Role.USER:
-            # Convert content to Zhipu AI format (no block wrappers)
+            # Extract text for block wrapping
+            text_content = _extract_text_from_content(message.content)
+
+            # Convert to Zhipu AI format with block wrappers
             if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
                 # Pure text message
-                message_dict['content'] = message.content[0].text
+                message_dict['content'] = f"<block>{text_content}</block>"
             else:
-                # Multimodal message - use standard format
-                message_dict['content'] = _convert_content_to_zhipu_format(message.content)
+                # Multimodal message with block wrappers
+                zhipu_blocks = _convert_content_to_zhipu_format(message.content)
+                # Add block markers
+                message_dict['content'] = [
+                    {'type': 'text', 'text': "<block>"},
+                    *zhipu_blocks,
+                    {'type': 'text', 'text': "</block>"},
+                ]
 
         elif message.role == Role.ASSISTANT:
             if len(history) > 0 and history[-1]['role'] != Role.USER.value:
                 raise ValueError("Assistant message must be followed by a user message.")
 
-            # Extract text content for assistant message
+            # Extract text content for assistant message with block wrapper
             text_content = _extract_text_from_content(message.content)
-            message_dict['content'] = text_content
+            message_dict['content'] = f"<block>{text_content}</block>"
 
             # If the message is a tool call, add the tool call to the history
             if message.tool_calls:
@@ -257,8 +267,33 @@ def to_zhipu_messages(messages: list[Message]) -> list[dict[str, Any]]:
         else:
             raise ValueError(f"Unsupported message role: {message.role}")
 
-        # Add message to history
-        history.append(message_dict)
+        # Check if we can merge with previous message (same role, not TOOL/ASSISTANT)
+        last_role: str | None = None
+        if history:
+            role_val = history[-1].get('role')
+            if isinstance(role_val, str):
+                last_role = role_val
+
+        if (
+            last_role == message.role.value and
+            message.role not in {Role.TOOL, Role.ASSISTANT} and
+            history[-1].get('content')
+        ):
+            # Merge with previous message by adding block wrapper
+            last_content = history[-1]['content']
+            text_content = _extract_text_from_content(message.content)
+
+            if isinstance(last_content, str):
+                history[-1]['content'] = last_content + f"<block>{text_content}</block>"
+            elif isinstance(last_content, list): # pyright: ignore[reportUnnecessaryIsInstance]
+                # Last content is multimodal, create new list with block markers
+                updated_content = last_content + [
+                    {'type': 'text', 'text': f"<block>{text_content}</block>"}
+                ]
+                history[-1]['content'] = updated_content
+        else:
+            # Add message to history
+            history.append(message_dict)
 
     return history
 
@@ -328,7 +363,7 @@ class ZhipuLLM(ILLM):
 
         Raises:
             ValueError:
-                The value error raised by the unsupported message type.
+                The value error raised by the unsupported message type or API errors.
 
         Returns:
             Message:
@@ -346,13 +381,18 @@ class ZhipuLLM(ILLM):
         # Convert messages to Zhipu AI format
         history = to_zhipu_messages(messages)
 
-        # Call Zhipu AI API using asyncify for better sync-to-async conversion
-        create_completion = asyncify(self._client.chat.completions.create)
-        response = await create_completion(
-            model=self._model,
-            messages=history,
-            **zhipu_kwargs,
-        )
+        try:
+            # Call Zhipu AI API using asyncify for better sync-to-async conversion
+            create_completion = asyncify(self._client.chat.completions.create)
+            response = await create_completion(
+                model=self._model,
+                messages=history,
+                **zhipu_kwargs,
+            )
+
+        except Exception as e:
+            logger.error(e)
+            raise e
 
         # Extract content from response using proper types
         content_text: str = ""
@@ -508,16 +548,21 @@ class ZhipuEmbeddingLLM(IEmbedModel):
         if dimensions != 1024:  # Only add if not default
             embed_kwargs["dimensions"] = dimensions
 
-        response = await asyncio.to_thread(
-            self._client.embeddings.create,
-            model=self._model,
-            input=text,
-            **embed_kwargs,
-        )
+        try:
+            response = await asyncio.to_thread(
+                self._client.embeddings.create,
+                model=self._model,
+                input=text,
+                **embed_kwargs,
+            )
 
-        # Return the embedding vector, truncated to requested dimensions if necessary
-        embedding = response.data[0].embedding
-        return embedding[:dimensions] if len(embedding) > dimensions else embedding
+            # Return the embedding vector, truncated to requested dimensions if necessary
+            embedding = response.data[0].embedding
+            return embedding[:dimensions] if len(embedding) > dimensions else embedding
+
+        except Exception as e:
+            logger.error(e)
+            raise e
 
     async def embed_batch(
         self,
@@ -560,22 +605,27 @@ class ZhipuEmbeddingLLM(IEmbedModel):
         if dimensions != 1024:  # Only add if not default
             embed_kwargs["dimensions"] = dimensions
 
-        response = await asyncio.to_thread(
-            self._client.embeddings.create,
-            model=self._model,
-            input=texts,
-            **embed_kwargs,
-        )
+        try:
+            response = await asyncio.to_thread(
+                self._client.embeddings.create,
+                model=self._model,
+                input=texts,
+                **embed_kwargs,
+            )
 
-        # Process embeddings and ensure correct dimensions
-        embeddings: list[list[float | int]] = []
-        for data in response.data:
-            embedding = data.embedding
-            # Truncate to requested dimensions if necessary
-            if len(embedding) > dimensions:
-                processed_embedding = embedding[:dimensions]
-            else:
-                processed_embedding = embedding
-            embeddings.append(processed_embedding)
+            # Process embeddings and ensure correct dimensions
+            embeddings: list[list[float | int]] = []
+            for data in response.data:
+                embedding = data.embedding
+                # Truncate to requested dimensions if necessary
+                if len(embedding) > dimensions:
+                    processed_embedding = embedding[:dimensions]
+                else:
+                    processed_embedding = embedding
+                embeddings.append(processed_embedding)
+
+        except Exception as e:
+            logger.error(e)
+            raise e
 
         return embeddings

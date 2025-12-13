@@ -6,11 +6,11 @@
 
 Scheduler 是一个**灵活的调度系统**，具有以下特点：
 
-- **状态驱动**：默认监听 Task 的状态变化，根据状态触发相应的处理逻辑
-- **Task 状态管理**：Scheduler 负责推进 Task 的生命周期，从 INITED 到最终状态
-- **事件分发**：Scheduler 通过发送 Event 给 Task 来驱动状态转换
-- **灵活调度**：可以根据任务的**状态/标签/类别/协议**等属性进行自定义调度
-- **有限状态机**：Task 是一个必须能达到终点的图数据结构，Scheduler 确保状态可达性
+- **纯状态驱动**：只关心 Task 的状态机状态，根据状态变化触发相应的处理逻辑
+- **状态管理职责**：Scheduler 负责 Task 的生命周期推进，根据状态进行任务调度
+- **状态感知后处理**：在任务状态改变时执行相应的后处理操作
+- **灵活调度策略**：可以根据任务的**状态/标签/类别/协议**等属性进行自定义调度
+- **状态可达性保证**：Task 是一个必须能达到终点的图数据结构，Scheduler 确保状态可达性
 
 ## Scheduler vs Workflow 的区别
 
@@ -49,59 +49,41 @@ graph TB
 ```
 
 **关键区别**：
-- **Scheduler**：关心 Task 的状态，根据 Task 状态变化进行调度和后续处理
-- **Workflow**：不关心 Task 状态，按照自己的 event_chain 自主执行各个阶段
+- **Scheduler**：只关心 Task 的状态机状态，根据状态变化进行调度，并在状态改变时执行后处理
+- **Workflow**：不关心 Task 的状态，只关心任务运行期间的推进情况，并依此驱动自身的状态变化
+- **Agent**：不关心 Task 的状态，专注于任务内容的正确执行和推进
 
 ## 核心功能
 
 ### 调度器类型
 
-#### create_simple_scheduler
+#### build_base_scheduler
 
-单层任务调度器，适合简单的任务执行场景：
+基础任务调度器，支持树形任务调度：
 
 ```python
-from tasking.core.scheduler.simple import create_simple_scheduler
-from tasking.core.agent.simple import BaseAgent
-# 注意：ReAct 相关功能正在开发中 [WIP]
-
-# 定义一个快捷的函数用于读取你的提示词
-from your.read.util import read_prompt
+from tasking.core.scheduler import build_base_scheduler
+from tasking.core.agent import IAgent
+from tasking.core.state_machine.task.const import TaskState, TaskEvent
 
 # 需要先配置 executor Agent
-executor = BaseAgent[name="executor", agent_type="EXECUTOR", llms={}]  # 配置 LLM
+executor: IAgent[...]  # 配置实际的执行器 Agent
+orchestrator: IAgent[...] | None = None  # 可选的规划器 Agent
 
-# 创建简单调度器
-scheduler = create_simple_scheduler(
+# 创建基础调度器
+scheduler = build_base_scheduler(
     executor=executor,
+    orchestrator=orchestrator,
     max_error_retry=3
 )
 ```
 
-#### create_tree_scheduler
+**注意**：`build_base_scheduler` 已经内置了对树形任务的支持，包括：
+- 自动调度子任务
+- 处理子任务取消
+- 递归执行父子任务关系
 
-支持树形任务的递归调度，适合复杂工作流：
-
-```python
-from tasking.core.scheduler.tree import create_tree_scheduler
-# 注意：ReAct 相关功能正在开发中 [WIP]
-
-# 定义一个快捷的函数用于读取你的提示词
-from your.read.util import read_prompt
-
-# 需要配置不同角色的 Agent
-supervisor = BaseAgent[name="supervisor", agent_type="SUPERVISOR", llms={}]
-planner = BaseAgent[name="planner", agent_type="PLANNER", llms={}]
-executor = BaseAgent[name="executor", agent_type="EXECUTOR", llms={}]
-
-# 创建树形调度器
-scheduler = create_tree_scheduler(
-    supervisor=supervisor,
-    planner=planner,
-    executor=executor,
-    max_error_retry=3
-)
-```
+无需单独的 `create_tree_scheduler` 函数。
 
 ## 自定义调度策略
 
@@ -198,7 +180,7 @@ class ProtocolBasedScheduler:
 #     # 验证输入是否符合协议
 #     if "text" not in input_data:
 #         task.set_error_info("缺少必需的 text 字段")
-#         return TaskEvent.ERROR
+#         return TaskEvent.DONE  # 错误时返回DONE事件，让调度器处理错误状态
 #
 #     # 执行文本分析
 #     # ...
@@ -322,7 +304,7 @@ class LoadBalancedScheduler:
                 # 减少执行器负载计数
                 self.executor_loads[executor] -= 1
 
-        return TaskEvent.FAILED
+        return TaskEvent.DONE
 
 # 使用示例（注释掉的部分需要用户实现）
 # load_balancer = LoadBalancedScheduler()
@@ -335,13 +317,18 @@ class LoadBalancedScheduler:
 
 ## 状态回调机制
 
-### On State 回调
+### on_state_fn：状态监听与任务调度
 
-当任务进入特定状态时触发：
+`on_state_fn` 是调度的核心机制，用于监听任务状态并执行相应的业务逻辑：
+
+**关键特性**：
+- **触发时机**：当任务进入特定状态时立即触发
+- **返回要求**：必须返回一个 TaskEvent 来驱动任务状态变化
+- **调度职责**：负责任务的具体执行和调度
 
 ```python
 from queue import Queue
-from tasking.model.message import Message
+from tasking.model.message import Message, Role
 from typing import Any
 
 async def on_created_state(
@@ -350,48 +337,101 @@ async def on_created_state(
     queue: Queue[Message],
     task: ITask[TaskState, TaskEvent]
 ) -> TaskEvent:
-    """进入 CREATED 状态的处理逻辑"""
+    """进入 CREATED 状态的处理逻辑
+
+    必须返回一个 TaskEvent 来驱动任务状态变化
+    """
     print(f"任务 {task.get_id()[:8]} 已创建")
 
     # 设置任务属性
     task.set_title("已创建的任务")
 
-    # 返回下一个事件
-    return TaskEvent.PLANED
+    # 执行具体的业务逻辑（如调用 Agent 进行规划）
+    # await orchestrator.run_task_stream(...)
 
-# 注册状态回调
+    # 必须返回事件来驱动状态转换
+    return TaskEvent.PLANED  # 驱动任务从 CREATED -> RUNNING
+
+# 注册状态监听函数
 scheduler.set_on_state_fn(TaskState.CREATED, on_created_state)
 ```
 
-### On State Changed 回调
+**重要**：`on_state_fn` 的返回值直接影响任务的状态转换，是驱动任务生命周期的核心。
 
-当任务状态发生转换时触发：
+### on_state_changed_fn：状态变化的后处理
+
+`on_state_changed_fn` 用于处理任务状态变化后的清理和后处理工作：
+
+**关键特性**：
+- **触发时机**：在任务状态实际发生转换后触发
+- **无返回值**：不返回任何值，不会驱动新的状态变化
+- **后处理职责**：负责清理、记录、通知等后处理工作
 
 ```python
-async def on_transition_handler(
+async def on_running_to_finished(
     scheduler: BaseScheduler[TaskState, TaskEvent],
     context: dict[str, Any],
     queue: Queue[Message],
     task: ITask[TaskState, TaskEvent]
-) -> TaskEvent | None:
-    """状态转换处理"""
-    current_state = task.get_current_state()
+) -> None:
+    """任务从 RUNNING 变为 FINISHED 的后处理
 
-    # 发送通知
+    不返回任何值，仅执行后处理逻辑
+    """
+    print(f"任务 {task.get_id()} 已完成")
+
+    # 清理错误信息
+    task.clean_error_info()
+
+    # 清理子任务（对于树形任务）
+    if isinstance(task, ITreeTaskNode):
+        # 移除已完成的子任务引用
+        for sub_task in task.get_sub_tasks():
+            if sub_task.get_current_state() == TaskState.FINISHED:
+                sub_task.remove_parent()
+
+    # 发送完成通知
     message = Message(
         role=Role.SYSTEM,
-        content=f"任务状态变更为: {current_state.name}"
+        content=[TextBlock(text=f"任务 {task.get_title()} 执行完成")]
     )
-    queue.put(message)
+    await queue.put(message)
 
-    # 返回 None 表示不触发新事件
-    return None
+    # 注意：不返回任何值，不会触发新的状态转换
 
-# 注册状态转换回调
-scheduler.set_change_callback(
-    task=on_transition_handler,
-    state_transition=(TaskState.CREATED, TaskState.RUNNING)
+# 注册状态变化后处理函数
+scheduler.set_on_state_changed_fn(
+    (TaskState.RUNNING, TaskState.FINISHED),
+    on_running_to_finished
 )
+```
+
+**重要**：`on_state_changed_fn` 只负责后处理，不能驱动状态转换，避免无限循环。
+
+### 两者的协作关系
+
+```mermaid
+sequenceDiagram
+    participant Task as Task
+    participant Scheduler as Scheduler
+    participant on_state as on_state_fn
+    participant on_changed as on_state_changed_fn
+
+    Note over Scheduler: 监听任务状态
+    Task->>Scheduler: 进入状态 S1
+
+    Note over on_state: 执行调度逻辑
+    Scheduler->>on_state: 调用 on_state_fn(S1)
+    on_state->>Scheduler: 返回 TaskEvent
+    Scheduler->>Task: handle_event(TaskEvent)
+    Task->>Task: 状态转换 S1 -> S2
+
+    Note over on_changed: 执行后处理
+    Scheduler->>on_changed: 调用 on_state_changed_fn(S1->S2)
+    on_changed->>Scheduler: 执行清理/通知等（无返回）
+
+    Note over Scheduler: 继续监听新状态
+    Scheduler->>Scheduler: 检查 S2 是否为结束状态
 ```
 
 ## 状态机特性
@@ -401,7 +441,7 @@ scheduler.set_change_callback(
 所有状态机（包括 Task 和 Workflow）都必须是能够到达终点的图数据结构：
 
 1. **Task 状态机**：
-   - 必须有明确的结束状态（FINISHED、FAILED、CANCELED）
+   - 必须有明确的结束状态（FINISHED、CANCELED）
    - 每个状态都必须有到达终点的路径
    - 通过 `max_revisit_count` 防止无限循环
 
@@ -418,9 +458,9 @@ scheduler.set_change_callback(
 # max_revisit_count ≤ 0：无环模式，禁止状态重访
 # max_revisit_count > 0：允许有限重访，超过次数则判定为非法循环
 
-from tasking.core.scheduler.simple import create_simple_scheduler
+from tasking.core.scheduler import build_base_scheduler
 
-scheduler = create_simple_scheduler(
+scheduler = build_base_scheduler(
     executor=executor,
     max_error_retry=3
 )
@@ -476,11 +516,15 @@ stateDiagram-v2
 
 调度器在创建时可以通过参数设置最大状态重访次数（max_revisit_count），并在初始化时自动进行编译检查。
 
-示例（通过 builder 创建调度器时传入 max_error_retry 或者通过相应的参数在 builder 中传递 max_revisit_count）：
+示例（通过 build_base_scheduler 创建调度器时传入 max_error_retry）：
 
 ```python
-# 通过 builder 创建调度器时，在内部会把 max_revisit_count 传递给 BaseScheduler
-scheduler = create_simple_scheduler(executor=executor, max_error_retry=3)
+# 通过 build_base_scheduler 创建调度器时，内部会处理错误重试
+scheduler = build_base_scheduler(
+    executor=executor,
+    orchestrator=orchestrator,
+    max_error_retry=3  # 内部转换为 max_revisit_count
+)
 
 # 直接调度任务时，如果检测到状态重访次数超过允许值，调度器会抛出 RuntimeError
 try:
@@ -493,63 +537,107 @@ except RuntimeError as e:
 ### 错误重试机制
 
 ```python
-# create_tree_scheduler 自动支持错误重试
+# build_base_scheduler 自动支持错误重试
 # max_error_retry 控制重试次数
-scheduler = create_tree_scheduler(
-    supervisor=supervisor,
-    planner=planner,
+scheduler = build_base_scheduler(
     executor=executor,
+    orchestrator=orchestrator,
     max_error_retry=3  # 最多重试3次
 )
 ```
 
 ## 使用示例
 
-### 完整的调度流程
+### 完整的调度流程配置
 
 ```python
 import asyncio
 from queue import Queue
-from tasking.core.scheduler.simple import create_simple_scheduler
+from tasking.core.scheduler import build_base_scheduler
 from tasking.core.state_machine.task import build_base_tree_node
 from tasking.core.state_machine.task.const import TaskState, TaskEvent
-from tasking.core.agent.simple import BaseAgent
+from tasking.core.agent import IAgent
 from tasking.model.llm import CompletionConfig
-from tasking.model.message import Message
+from tasking.model.message import Message, Role, TextBlock
 
 async def main():
-    # 定义一个快捷的函数用于读取你的提示词
-    from your.read.util import read_prompt
-
     # 1. 创建任务
     task = build_base_tree_node(
-        protocol=read_prompt("example_v1.0"),  # 该任务遵循 example_v1.0 定义的任务执行规范
+        protocol="example_v1.0",
         tags={"example"},
         task_type="demo_task",
         max_depth=3,
         completion_config=CompletionConfig(),
     )
+    task.compile(max_revisit_count=3)
+    task.set_title("示例任务")
 
-    # 2. 创建 Executor Agent（需要配置实际 LLM）
-    # executor = BaseAgent(...)
+    # 2. 创建 Executor Agent（需要实现 IAgent 接口）
+    executor: IAgent[...]  # 配置实际的执行器 Agent
+    orchestrator: IAgent[...] | None = None  # 可选的规划器 Agent
 
     # 3. 创建调度器
-    # scheduler = create_simple_scheduler(executor=executor, max_error_retry=3)
+    # 注意：build_base_scheduler 已经内置了状态处理函数
+    # on_state_fn 和 on_state_changed_fn 可以通过 scheduler.set_on_state_fn
+    # 和 scheduler.set_on_state_changed_fn 单独设置
+    scheduler = build_base_scheduler(
+        executor=executor,
+        orchestrator=orchestrator,
+        max_error_retry=3
+    )
 
-    # 4. 配置状态回调
-    async def on_running_state(scheduler, context, queue, task):
-        print(f"任务开始执行: {task.get_title()}")
-        return None
+    # 4. 自定义状态处理（可选，覆盖默认行为）
+    async def custom_on_created(
+        scheduler,
+        context,
+        queue,
+        task
+    ) -> TaskEvent:
+        """自定义 CREATED 状态处理"""
+        print(f"任务创建: {task.get_title()}")
 
-    # scheduler.set_on_state_fn(TaskState.RUNNING, on_running_state)
+        # 执行自定义逻辑
+        # ...
 
-    # 5. 执行调度
+        # 必须返回事件驱动状态转换
+        return TaskEvent.PLANED
+
+    # 覆盖默认的状态处理函数
+    scheduler.set_on_state_fn(TaskState.CREATED, custom_on_created)
+
+    # 5. 配置自定义状态变化后处理（可选）
+    async def custom_on_finished(
+        scheduler,
+        context,
+        queue,
+        task
+    ) -> None:
+        """自定义任务完成后的处理"""
+        print(f"任务完成: {task.get_title()}")
+
+        # 清理错误信息
+        task.clean_error_info()
+
+        # 发送完成通知
+        message = Message(
+            role=Role.SYSTEM,
+            content=[TextBlock(text=f"任务 '{task.get_title()}' 已完成")]
+        )
+        await queue.put(message)
+
+    # 注册状态变化后处理函数
+    scheduler.set_on_state_changed_fn(
+        (TaskState.RUNNING, TaskState.FINISHED),
+        custom_on_finished
+    )
+
+    # 6. 执行调度
     context = {"user_id": "user123", "session_id": "abc"}
     queue = Queue[Message]()
 
-    # await scheduler.schedule(context=context, queue=queue, fsm=task)
+    await scheduler.schedule(context=context, queue=queue, fsm=task)
 
-    # 6. 处理队列消息
+    # 7. 处理队列消息
     while not queue.empty():
         message = queue.get()
         print(f"收到消息: {message.content}")
@@ -558,6 +646,116 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
+
+### 最佳实践
+
+#### 1. on_state_fn 最佳实践
+
+```python
+async def best_practice_on_state(
+    scheduler,
+    context,
+    queue,
+    task
+) -> TaskEvent:
+    """on_state_fn 的最佳实践示例"""
+
+    # ✅ DO: 记录状态进入
+    logger.info(f"Task {task.get_id()} entered {task.get_current_state()}")
+
+    # ✅ DO: 执行业务逻辑
+    try:
+        # 执行具体逻辑
+        if task.get_current_state() == TaskState.CREATED:
+            # 规划阶段
+            result = await plan_task(task, context)
+            return TaskEvent.PLANED
+
+        elif task.get_current_state() == TaskState.RUNNING:
+            # 执行阶段
+            result = await execute_task(task, context)
+            if result.success:
+                return TaskEvent.DONE
+            else:
+                task.set_error_info(result.error)
+                return TaskEvent.PLANED  # 重试
+
+    except Exception as e:
+        # ❌ DON'T: 不返回事件
+        # ✅ DO: 异常时也要返回事件
+        task.set_error_info(str(e))
+        return TaskEvent.PLANED  # 返回重试事件
+
+    # ❌ NEVER: 不要返回 None
+```
+
+#### 2. on_state_changed_fn 最佳实践
+
+```python
+async def best_practice_on_state_changed(
+    scheduler,
+    context,
+    queue,
+    task
+) -> None:
+    """on_state_changed_fn 的最佳实践示例"""
+
+    # ✅ DO: 执行清理工作
+    if task.get_current_state() == TaskState.FINISHED:
+        task.clean_error_info()
+
+        # 清理子任务引用（如果是树形任务）
+        if isinstance(task, ITreeTaskNode):
+            for sub_task in task.get_sub_tasks():
+                if sub_task.get_current_state() == TaskState.FINISHED:
+                    sub_task.remove_parent()
+
+    # ✅ DO: 发送通知和日志
+    message = Message(
+        role=Role.SYSTEM,
+        content=[TextBlock(text=f"Task {task.get_title()} is now {task.get_current_state()}")]
+    )
+    await queue.put(message)
+
+    # ❌ NEVER: 不要返回任何值
+    # ❌ NEVER: 不要试图驱动状态转换
+    # return TaskEvent.SOME_EVENT  # 错误！
+```
+
+#### 3. 错误处理模式
+
+```python
+# ✅ 正确的错误处理：在 on_state_fn 中处理
+async def robust_on_state(
+    scheduler,
+    context,
+    queue,
+    task
+) -> TaskEvent:
+    try:
+        # 执行业务逻辑
+        await do_work(task)
+        return TaskEvent.DONE
+    except TemporaryError as e:
+        # 临时错误，可以重试
+        task.set_error_info(str(e))
+        return TaskEvent.PLANED  # 触发重试
+    except FatalError as e:
+        # 致命错误，取消任务
+        task.set_error_info(str(e))
+        return TaskEvent.CANCEL
+
+# ✅ 在 on_state_changed_fn 中只做日志记录
+async def log_error(
+    scheduler,
+    context,
+    queue,
+    task
+) -> None:
+    if task.is_error():
+        logger.error(f"Task {task.get_id()} failed: {task.get_error_info()}")
+        # 只记录，不处理
 ```
 
 ### 递归调度树形任务
@@ -611,11 +809,12 @@ scheduler.set_on_state_fn(TaskState.CREATED, handle_root_task)
 调度器的结束状态在初始化时通过 builder 函数自动设置：
 
 ```python
-# 调度器通过 builder 创建时自动配置结束状态
-scheduler = create_simple_scheduler(
+# 调度器通过 build_base_scheduler 创建时自动配置结束状态
+scheduler = build_base_scheduler(
     executor=executor,
+    orchestrator=orchestrator,
     max_error_retry=3
-    # 结束状态 (FINISHED, FAILED, CANCELED) 已在 builder 中预配置
+    # 结束状态 (FINISHED, CANCELED) 已在函数内部预配置
 )
 
 # 获取结束状态
@@ -629,8 +828,9 @@ print(f"结束状态: {end_states}")
 
 ```python
 # 创建调度器时自动编译
-scheduler = create_simple_scheduler(
+scheduler = build_base_scheduler(
     executor=executor,
+    orchestrator=orchestrator,
     max_error_retry=3
 )
 
@@ -643,12 +843,33 @@ if scheduler.is_compiled():
 await scheduler.schedule(context=context, queue=queue, fsm=task)
 ```
 
+## 核心原则总结
+
+### on_state_fn vs on_state_changed_fn 的关键区别
+
+| 特性 | on_state_fn | on_state_changed_fn |
+|------|------------|-------------------|
+| **触发时机** | 进入状态时 | 状态变化后 |
+| **返回值** | 必须 TaskEvent | 必须无返回 |
+| **作用** | 驱动状态转换 | 执行后处理 |
+| **副作用** | 会触发新状态 | 不会触发新状态 |
+| **用途** | 业务执行逻辑 | 清理/通知/日志 |
+
+**记忆口诀**：
+- `on_state_fn`：**驱动者** - 返回事件推动任务前进
+- `on_state_changed_fn`：**清理者** - 无返值善后不留痕迹
+
 ## 最佳实践
 
 1. **合理设置重试次数**：避免无限重试消耗资源，max_error_retry 通过 builder 函数传入
-2. **使用状态回调**：在状态变更时执行必要的业务逻辑
-3. **监控队列消息**：及时处理调度过程中的消息
-4. **理解循环检测**：调度器自动检测非法循环，通过 max_revisit_count 控制（在初始化时设置）
-5. **选择合适的调度器类型**：简单任务用 create_simple_scheduler，复杂工作流用 create_tree_scheduler
+2. **职责分离**：
+   - 在 `on_state_fn` 中执行业务逻辑，返回事件
+   - 在 `on_state_changed_fn` 中执行清理，不返回值
+3. **错误处理**：
+   - 业务逻辑错误在 `on_state_fn` 中处理并返回相应事件
+   - `on_state_changed_fn` 只做日志记录，不处理错误
+4. **监控队列消息**：及时处理调度过程中的消息
+5. **理解循环检测**：调度器自动检测非法循环，通过 max_revisit_count 控制（在初始化时设置）
+6. **选择合适的调度器类型**：简单任务用 create_simple_scheduler，复杂工作流用 create_tree_scheduler
 
 **最后更新**: 2025-11-11

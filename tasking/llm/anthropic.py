@@ -2,9 +2,9 @@
 import getpass
 from typing import Any, cast
 
+from loguru import logger
 from mcp import Tool as McpTool
 from fastmcp.tools import Tool as FastMcpTool
-
 from anthropic import AsyncAnthropic
 from anthropic.types import (
     Message as AnthropicMessage,
@@ -15,7 +15,6 @@ from anthropic.types import (
     ToolResultBlockParam,
     ContentBlockParam,
 )
-
 from pydantic import SecretStr
 
 from .const import Provider
@@ -47,7 +46,7 @@ def tool_schema(
             The schema of the tool.
     """
     # Anthropic schema
-    description = {
+    description: dict[str, Any] = {
         "name": tool.name,
         "description": tool.description,
     }
@@ -329,7 +328,7 @@ class AnthropicLLM(ILLM):
 
         Raises:
             ValueError:
-                The value error raised by the unsupported message type.
+                The value error raised by the unsupported message type or API errors.
 
         Returns:
             Message:
@@ -338,11 +337,18 @@ class AnthropicLLM(ILLM):
         kwargs = to_anthropic(completion_config)
         history = to_anthropic_messages(messages)
 
-        response: AnthropicMessage = await self._client.messages.create(
-            model=self._model,
-            messages=history,
-            **kwargs,
-        )
+        try:
+            response: AnthropicMessage = cast(
+                AnthropicMessage,
+                await self._client.messages.create(
+                    model=self._model,
+                    messages=history,
+                    **kwargs,
+            ))
+
+        except Exception as e:
+            logger.error(e)
+            raise e
 
         content, tool_calls = _extract_response_content(response)
         usage = _create_usage(response.usage)

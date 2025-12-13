@@ -98,7 +98,7 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
         return self.__str__()
 
     def __str__(self) -> str:
-        return f"BaseTask(id={self._id}, tags={self._tags}, is_completed={self._is_completed})"
+        return f"BaseTask(title={self._title}, tags={self._tags}, is_completed={self._is_completed})"
 
     # ********** 实现ITask接口：状态机属性增强 **********
 

@@ -10,12 +10,13 @@ class IDatabase(ABC, Generic[MemoryT]):
     """所有数据库存储的通用父接口，定义基础CRUD行为"""
 
     @abstractmethod
-    async def add(self, context: dict[str, Any], memory: MemoryT) -> None:
+    async def add(self, context: dict[str, Any], memory: MemoryT, timeout: float = 1800.0) -> None:
         """添加记忆
-        
+
         Args:
             context: 上下文信息，用于配置或选择数据库实例
             memory: 记忆对象，必须实现MemoryProtocol协议
+            timeout: 超时时间（秒），默认1800秒
         """
         pass
 
@@ -177,13 +178,14 @@ class IKVDatabase(ABC, Generic[MemoryT]):
     """键值数据库接口，定义了键值数据库的基本操作"""
 
     @abstractmethod
-    async def add(self, context: dict[str, Any], key: str, value: MemoryT) -> None:
+    async def add(self, context: dict[str, Any], key: str, value: MemoryT, timeout: float = 1800.0) -> None:
         """添加新的记忆条目
 
         Args:
             context: 上下文信息，用于配置或选择数据库实例
             key: 记忆的键
             value: 记忆对象，必须实现MemoryProtocol协议
+            timeout: 超时时间（秒），默认1800秒
 
         Raises:
             KeyError: 如果键已存在

@@ -265,7 +265,10 @@ def get_reflect_actions(
                     task.set_error(extract_text_from_message(result))
                     # 停止执行剩余的工具
                     allow_tool = False
+                    # 返回 FINISH 事件，结束工作流
+                    return ReflectEvent.FINISH
 
+        # 正常进入下一个工作流阶段
         return ReflectEvent.REFLECT
 
     # 添加到动作定义字典

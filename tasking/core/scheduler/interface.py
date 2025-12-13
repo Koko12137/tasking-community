@@ -73,7 +73,7 @@ class IScheduler(ABC, Generic[StateT, EventT]):
         self,
         context: dict[str, Any],
         queue: IQueue[Message],
-        fsm: ITask[StateT, EventT],
+        task: ITask[StateT, EventT],
         current_state: StateT,
     ) -> None:
         """状态变更回调接口，状态机状态变化时被调用
@@ -81,7 +81,7 @@ class IScheduler(ABC, Generic[StateT, EventT]):
         Args:
             context: 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
             queue: 数据队列，用于输出调度过程中产生的数据
-            fsm: 任务状态机实例
+            task: 任务状态机实例
             current_state: 当前状态
 
         Raises:
@@ -94,7 +94,7 @@ class IScheduler(ABC, Generic[StateT, EventT]):
         self,
         context: dict[str, Any],
         queue: IQueue[Message],
-        fsm: ITask[StateT, EventT],
+        task: ITask[StateT, EventT],
         prev_state: StateT,
         current_state: StateT,
     ) -> None:
@@ -103,7 +103,7 @@ class IScheduler(ABC, Generic[StateT, EventT]):
         Args:
             context: 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
             queue: 数据队列，用于输出调度过程中产生的数据
-            fsm: 任务状态机实例
+            task: 任务状态机实例
             prev_state: 变更前的状态
             current_state: 变更后的状态
 
@@ -113,13 +113,13 @@ class IScheduler(ABC, Generic[StateT, EventT]):
         """
 
     @abstractmethod
-    async def schedule(self, context: dict[str, Any], queue: IQueue[Message], fsm: ITask[StateT, EventT]) -> None:
+    async def schedule(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[StateT, EventT]) -> None:
         """调度任务状态机，根据其当前状态执行相应任务，直到进入结束状态
 
         Args:
             context: 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
             queue: 数据队列，用于输出调度过程中产生的数据
-            fsm: 任务状态机实例
+            task: 任务状态机实例
 
         Raises:
             RuntimeError: 如果调度器未编译则抛出该异常

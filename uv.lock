@@ -108,6 +108,15 @@ wheels = [
 ]
 
 [[package]]
+name = "bashlex"
+version = "0.18"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/60/aae0bb54f9af5e0128ba90eb83d8d0d506ee8f0475c4fdda3deeda20b1d2/bashlex-0.18.tar.gz", hash = "sha256:5bb03a01c6d5676338c36fd1028009c8ad07e7d61d8a1ce3f513b7fff52796ee", size = 68742, upload-time = "2023-01-18T15:21:26.402Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f4/be/6985abb1011fda8a523cfe21ed9629e397d6e06fb5bae99750402b25c95b/bashlex-0.18-py2.py3-none-any.whl", hash = "sha256:91d73a23a3e51711919c1c899083890cdecffc91d8c088942725ac13e9dcfffa", size = 69539, upload-time = "2023-01-18T15:21:24.167Z" },
+]
+
+[[package]]
 name = "beartype"
 version = "0.22.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1805,6 +1814,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "anthropic" },
     { name = "asyncer" },
+    { name = "bashlex" },
     { name = "fastapi" },
     { name = "fastmcp" },
     { name = "json-repair" },
@@ -1834,6 +1844,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0" },
     { name = "anthropic", specifier = ">=0.72.0" },
     { name = "asyncer", specifier = ">=0.0.10" },
+    { name = "bashlex", specifier = ">=0.17" },
     { name = "fastapi", specifier = ">=0.121.3" },
     { name = "fastmcp", specifier = ">=2.13.0.2" },
     { name = "json-repair", specifier = ">=0.54" },

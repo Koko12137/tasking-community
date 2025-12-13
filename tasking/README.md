@@ -288,19 +288,18 @@ graph TB
 ### Task 模块
 
 **任务生命周期管理**
-- 基于状态机的任务生命周期：INITED → CREATED → RUNNING → FINISHED/FAILED/CANCELED
+- 基于状态机的任务生命周期：CREATED → RUNNING → FINISHED/CANCELED
 - 支持树形层次结构，任务可分解为子任务
 - 每个状态维护独立的上下文数据
 
 ```mermaid
 stateDiagram-v2
-    [*] --> INITED: 初始化
-    INITED --> CREATED: IDENTIFIED
+    [*] --> CREATED: 任务创建
     CREATED --> RUNNING: PLANED
     RUNNING --> FINISHED: DONE
-    RUNNING --> FAILED: ERROR
-    FAILED --> RUNNING: RETRY
-    FAILED --> CANCELED: CANCEL
+    RUNNING --> RUNNING: PLANED (错误重试)
+    RUNNING --> CREATED: INIT (子任务取消重置)
+    RUNNING --> CANCELED: CANCEL
     FINISHED --> [*]
     CANCELED --> [*]
 ```
@@ -344,9 +343,10 @@ task.set_completed(output='{"result": "success"}')
 | 特性 | Scheduler | Workflow |
 |------|-----------|----------|
 | **驱动方式** | 状态驱动（监听 Task 状态） | 事件驱动（按 event_chain） |
-| **关注点** | Task 的生命周期管理 | 阶段化执行流程 |
-| **状态转换** | 发送 Event 给 Task | 自主进行阶段转换 |
-| **依赖关系** | 可调度 Workflow（通过 Agent 的 `run_task_stream` 接口） | 被 Scheduler 调用 |
+| **关注点** | Task 的状态管理 | 任务推进情况 |
+| **状态转换** | 发送 Task Event 给 Task | 自主进行 Workflow 状态转换 |
+| **依赖关系** | 调用 Agent 执行任务 | 被 Agent 调用 |
+| **职责** | 调度任务并处理状态变更 | 推进执行流程 |
 
 ```mermaid
 graph TD
@@ -362,7 +362,8 @@ graph TD
         W3 --> W4[阶段2执行]
     end
 
-    S4 -.->|调用| W1
+    S3 -.->|调用| W1
+    W4 -.->|返回| S4
 
     style S1 fill:#fff3e0
     style S4 fill:#fff3e0
@@ -380,10 +381,28 @@ graph TD
 ---
 
 #### 职责划分
-- 工作流（Workflow）本身“不感知任务状态”。Workflow 的职责是按动作序列运行并产生“工作流事件”（workflow events），驱动工作流内部的自驱动流转与动作输出。为保证执行语义一致，所有 Workflow 的 action 应通过 Agent 的 observe/think/act 接口唤起对应阶段行为并返回工作流事件；若无法构成完整动作循环，请使用 Agent hooks 进行拦截或补充。
-- 调度器的 ***调度函数*** 必须返回用于驱动任务状态变化的“任务事件”（task events）。调度器负责将该任务事件交给 Task（task.handle_event），并在 Task 状态变化后执行调度器的后处理逻辑（on_state_changed）。
+**Scheduler（调度器）**：
+- ✅ 只关心 Task 的状态机状态
+- ✅ 根据状态进行任务调度
+- ✅ 在状态改变时执行后处理
+- ✅ 产生并消费 Task events
+- ❌ 不关心任务具体如何执行
 
-> 简言之：Workflow 产生 workflow events；Scheduler 产生并消费 task events；只有 Scheduler 感知并控制 Task 的状态流转。
+**Workflow（工作流）**：
+- ✅ 不感知 Task 的状态
+- ✅ 只关心任务运行期间的推进情况
+- ✅ 依推进情况驱动自身状态变化
+- ✅ 产生 workflow events
+- ❌ 不负责任务的生命周期管理
+
+**Agent（智能体）**：
+- ✅ 不关心 Task 的状态
+- ✅ 专注任务内容的正确执行
+- ✅ 确保任务按预期推进
+- ✅ 通过 observe/think/act 接口执行任务
+- ❌ 不管理状态转换
+
+> 核心原则：Scheduler 负责状态管理，Workflow/Agent 负责任务推进。
 
 
 ### 开发规范

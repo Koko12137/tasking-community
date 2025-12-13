@@ -12,7 +12,7 @@ async def run() -> None:
     """入口函数，演示任务状态机与简单Agent的集成使用"""
 
     # 创建简单Agent
-    agent = build_react_agent(name="demo")
+    agent = build_react_agent(name="executor")
     logger.info("react Agent created.")
 
     # 创建默认的简单调度器

@@ -28,8 +28,7 @@
 ### 2. 构建器功能测试 (test_scheduler_builder.py)
 
 #### 构建器模式测试
-- **create_simple_scheduler**: 简单调度器创建函数
-- **create_tree_scheduler**: 树形调度器创建函数
+- **build_base_scheduler**: 基础调度器创建函数
 - **配置验证**: 调度器参数配置正确性
 - **默认值测试**: 默认参数和可选参数处理
 
@@ -177,8 +176,7 @@ python run_scheduler_tests.py single TestName  # 运行单个测试
 - ✅ 错误处理机制 (异常捕获、状态恢复)
 
 ### 构建器功能测试 (test_scheduler_builder.py)
-- ✅ 简单调度器创建 (create_simple_scheduler函数)
-- ✅ 树形调度器创建 (create_tree_scheduler函数)
+- ✅ 基础调度器创建 (build_base_scheduler函数)
 - ✅ 参数配置验证 (必需参数、可选参数)
 - ✅ 默认值处理 (默认配置、参数覆盖)
 - ✅ 类型安全检查 (参数类型验证)

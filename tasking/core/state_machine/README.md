@@ -100,20 +100,46 @@ ITreeTaskNode[StateT, EventT]
 from tasking.core.state_machine.task.const import TaskState, TaskEvent
 
 # 任务状态
-TaskState.INITED    # 初始化
 TaskState.CREATED   # 创建
 TaskState.RUNNING   # 执行中
 TaskState.FINISHED  # 完成
-TaskState.FAILED    # 失败
 TaskState.CANCELED  # 取消
 
 # 任务事件
-TaskEvent.IDENTIFIED  # 目标已确认
-TaskEvent.PLANED      # 完成规划
-TaskEvent.DONE        # 执行完成
-TaskEvent.ERROR       # 执行错误
-TaskEvent.RETRY       # 重试
-TaskEvent.CANCEL      # 取消
+TaskEvent.INIT      # 初始化
+TaskEvent.PLANED    # 完成规划
+TaskEvent.DONE      # 执行完成
+TaskEvent.CANCEL    # 取消
+```
+
+### 状态转换流程
+
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED: 任务创建
+
+    CREATED --> RUNNING: PLANED事件
+    note right of CREATED: 调度器触发任务规划
+
+    RUNNING --> FINISHED: DONE事件
+    note right of RUNNING: 任务成功完成
+
+    RUNNING --> RUNNING: PLANED事件
+    note right of RUNNING: 错误重试
+
+    RUNNING --> CREATED: INIT事件
+    note right of RUNNING: 子任务取消重置
+
+    RUNNING --> CANCELED: CANCEL事件
+    note right of RUNNING: 任务被取消
+
+    FINISHED --> [*]
+    CANCELED --> [*]
+
+    style CREATED fill:#e1f5fe
+    style RUNNING fill:#fff3e0
+    style FINISHED fill:#e8f5e9
+    style CANCELED fill:#ffebee
 ```
 
 ### 创建任务
@@ -267,33 +293,55 @@ IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]
   └── 工具集成：支持工具调用
 ```
 
-### Workflow vs Scheduler 的区别
+### 职责边界：Scheduler、Workflow 和 Agent
 
 ```mermaid
-graph LR
-    subgraph "Scheduler"
-        S1[监听 Task 状态] --> S2[触发回调]
-        S2 --> S3[发送 Event 给 Task]
-        S3 --> S4[Task 状态转换]
+graph TB
+    subgraph "Scheduler - 状态管理者"
+        S1[监听 Task 状态变化] --> S2[根据状态调度任务]
+        S2 --> S3[状态改变后处理]
     end
 
-    subgraph "Workflow"
-        W1[根据 event_chain] --> W2[自驱动执行]
-        W2 --> W3[阶段转换]
-        W3 --> W4[执行动作函数]
+    subgraph "Workflow - 阶段推进者"
+        W1[关心任务推进情况] --> W2[按 event_chain 自驱动]
+        W2 --> W3[驱动自身状态变化]
     end
 
-    S4 -.->|使用| W1
+    subgraph "Agent - 任务执行者"
+        A1[专注任务内容执行] --> A2[确保正确推进]
+        A2 --> A3[不关心任务状态]
+    end
 
-    style S1 fill:#fff3e0
-    style S4 fill:#fff3e0
+    S3 -->|触发| W1
+    S3 -->|调用| A1
+
+    style S1 fill:#e1f5fe
+    style S3 fill:#e1f5fe
     style W1 fill:#e8f5e9
     style W3 fill:#e8f5e9
+    style A1 fill:#fff3e0
+    style A3 fill:#fff3e0
 ```
 
-**关键区别**：
-- **Scheduler**：状态驱动，监听 Task 状态变化并触发处理
-- **Workflow**：事件驱动，按预设的 event_chain 自主推进
+**职责划分**：
+
+**Scheduler（调度器）**：
+- ✅ 只关心 Task 的状态机状态
+- ✅ 根据状态进行任务调度
+- ✅ 在状态改变时执行后处理
+- ❌ 不关心任务具体如何执行
+
+**Workflow（工作流）**：
+- ✅ 不关心 Task 的状态
+- ✅ 只关心任务运行期间的推进情况
+- ✅ 依任务推进情况驱动自身的状态变化
+- ❌ 不负责任务的生命周期管理
+
+**Agent（智能体）**：
+- ✅ 不关心 Task 的状态
+- ✅ 专注于任务内容的正确执行
+- ✅ 确保任务按预期推进
+- ❌ 不管理状态转换
 
 ### ReAct 工作流示例
 
@@ -413,7 +461,7 @@ if task.is_error():
 状态机与调度器协同工作，实现任务的自动化调度：
 
 ```python
-from tasking.core.scheduler.simple import create_simple_scheduler
+from tasking.core.scheduler import build_base_scheduler
 from tasking.core.state_machine.task import build_base_tree_node
 from tasking.core.state_machine.task.const import TaskState, TaskEvent
 from tasking.model.llm import CompletionConfig
@@ -432,7 +480,7 @@ task = build_base_tree_node(
 task.compile(max_revisit_count=3)
 
 # 创建调度器（需要配置 Agent）
-# scheduler = create_simple_scheduler(executor=agent, max_error_retry=3)
+# scheduler = build_base_scheduler(executor=agent, orchestrator=None, max_error_retry=3)
 
 # 执行调度
 # context = {"user_id": "user123"}

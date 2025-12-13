@@ -3,6 +3,8 @@ import getpass
 import json
 from typing import Any, cast
 
+from loguru import logger
+
 from pydantic import SecretStr
 
 from mcp import Tool as McpTool
@@ -326,7 +328,7 @@ class OpenAiLLM(ILLM):
 
         Raises:
             ValueError: 2
-                The value error raised by the unsupported message type.
+                The value error raised by the unsupported message type or API errors.
 
         Returns:
             Message:
@@ -337,12 +339,20 @@ class OpenAiLLM(ILLM):
         # Create the generation history
         history = to_openai_dict(messages)
 
-        # Call for the completion
-        response: ChatCompletion = await self.client.chat.completions.create(  # pyright: ignore[reportCallIssue, reportUnknownVariableType]
-            model=self._model,
-            messages=history,
-            **kwargs,
-        )
+        try:
+            # Call for the completion
+            response = cast(
+                ChatCompletion,
+                await self.client.chat.completions.create(
+                    model=self._model,
+                    messages=history,
+                    **kwargs,
+                ),
+            )
+
+        except Exception as e:
+            logger.error(e)
+            raise e
 
         content_text: str = response.choices[0].message.content or ""
         # Convert to list[TextBlock] format
@@ -469,11 +479,16 @@ class OpenAiEmbeddingLLM(IEmbedModel):
             [item.text if isinstance(item, TextBlock) else "" for item in content]
         )
 
-        response = await self._client.embeddings.create(
-            model=self._model,
-            input=text,
-        )
-        return response.data[0].embedding[:dimensions]
+        try:
+            response = await self._client.embeddings.create(
+                model=self._model,
+                input=text,
+            )
+            return response.data[0].embedding[:dimensions]
+
+        except Exception as e:
+            logger.error(e)
+            raise e
 
     async def embed_batch(
         self,
@@ -505,11 +520,16 @@ class OpenAiEmbeddingLLM(IEmbedModel):
             )
             texts.append(text)
 
-        response = await self._client.embeddings.create(
-            model=self._model,
-            input=texts,
-        )
-        embeddings: list[list[float | int]] = []
-        for data in response.data:
-            embeddings.append(data.embedding[:dimensions])
-        return embeddings
+        try:
+            response = await self._client.embeddings.create(
+                model=self._model,
+                input=texts,
+            )
+            embeddings: list[list[float | int]] = []
+            for data in response.data:
+                embeddings.append(data.embedding[:dimensions])
+            return embeddings
+
+        except Exception as e:
+            logger.error(e)
+            raise e

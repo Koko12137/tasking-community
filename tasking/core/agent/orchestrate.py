@@ -1,11 +1,11 @@
 import json
 from enum import Enum, auto
-from functools import partial
 from typing import Any, Callable, Awaitable, cast, Type
 
 from json_repair import repair_json
 from loguru import logger
 from fastmcp import Client
+from fastmcp.tools import Tool
 from fastmcp.client.transports import ClientTransportT
 
 from .interface import IAgent
@@ -22,14 +22,26 @@ from ..state_machine.task import (
 )
 from ...llm import ILLM, build_llm
 from ...model import (
-    TextBlock, Message, StopReason, Role, IQueue, CompletionConfig, get_settings
+    TextBlock, ToolCallRequest, Message, Role, IQueue, CompletionConfig, get_settings
 )
 from ...model.message import TextBlock
 from ...utils.io import read_markdown
+from ...utils.string.extract import extract_by_label
 from ...utils.content import extract_text_from_message
 
 
-def create_sub_tasks(valid_tasks: dict[str, Type[ITreeTaskNode[TaskState, TaskEvent]]], task: ITreeTaskNode[TaskState, TaskEvent], json_str: str) -> None:
+CREATE_DOC = """根据 JSON 字符串创建子任务列表，并将其添加到指定的父任务中。该函数不会返回值，而是直接修改传入的父任务实例。
+
+    Args:
+        json_str (str): 包含子任务信息的 JSON 字符串
+
+    Raises:
+        ValueError: 如果无法解析 JSON 字符串
+        AssertionError: 如果子任务数据缺少必要字段
+"""
+
+
+def create_sub_tasks(json_str: str, kwargs: dict[str, Any] | None = None) -> None:
     """根据 JSON 字符串创建子任务列表，并将其添加到指定的父任务中。该函数不会返回值，而是直接修改传入的父任务实例。
 
     Args:
@@ -41,19 +53,24 @@ def create_sub_tasks(valid_tasks: dict[str, Type[ITreeTaskNode[TaskState, TaskEv
         ValueError: 如果无法解析 JSON 字符串
         AssertionError: 如果子任务数据缺少必要字段
     """
+    assert kwargs is not None, "kwargs 参数不能为空"
+    valid_tasks: dict[str, Type[ITreeTaskNode[TaskState, TaskEvent]]] = kwargs["valid_tasks"]
+    task: ITreeTaskNode[TaskState, TaskEvent] = kwargs["task"]
+
     repaired_json = repair_json(json_str)
     try:
-        sub_tasks_data: list[dict[str, Any]] = json.loads(repaired_json, ensure_ascii=False, encoding="utf-8")
+        sub_tasks_data: dict[str, dict[str, Any]] = json.loads(repaired_json)
     except json.JSONDecodeError as e:
         raise ValueError(f"无法解析子任务 JSON 字符串: {e}")
 
-    for sub_task_data in sub_tasks_data:
+    for title, sub_task_data in sub_tasks_data.items():
         # 根据任务类型创建子任务实例
         assert "任务类型" in sub_task_data, "子任务数据必须包含 '任务类型' 字段"
         sub_task = valid_tasks[sub_task_data["任务类型"]]()
         # 设置子任务输入
         assert "任务输入" in sub_task_data, "子任务数据必须包含 '任务输入' 字段"
         sub_task.set_input([TextBlock(text=sub_task_data["任务输入"])])
+        sub_task.set_title(title)
         # 将子任务添加到父任务
         task.add_sub_task(sub_task)
 
@@ -141,9 +158,6 @@ def get_orch_actions(
     Returns:
         常用工作流动作定义
     """
-    # 创建任务偏函数
-    create_sub_tasks_partial = partial(create_sub_tasks, valid_tasks)
-    
     actions: dict[OrchestrateStage, Callable[
         [
             IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
@@ -209,55 +223,18 @@ def get_orch_actions(
             task.get_context().append_context_data(result)
             # 返回 THINK 事件重新思考
             return OrchestrateEvent.THINK
+        
+        # 从消息中提取 orchestration 输出
+        orchestration = extract_by_label(
+            extract_text_from_message(message),
+            "orchestration", "orchestrate"
+        )
 
-        # 允许执行工具标志位
-        allow_tool: bool = True
-
-        if message.stop_reason == StopReason.TOOL_CALL:
-            # Act on the task or environment
-            for tool_call in message.tool_calls:
-                # 检查工具执行许可
-                if not allow_tool:
-                    # 生成错误信息
-                    result = Message(
-                        role=Role.TOOL,
-                        tool_call_id=tool_call.id,
-                        is_error=True,
-                        content=[TextBlock(text="由于前置工具调用出错，后续工具调用被禁止继续执行")]
-                    )
-                    # 记录到任务上下文
-                    task.get_context().append_context_data(result)
-                    continue
-
-                try:
-                    # 开始执行工具，如果是工具服务的工具，则 task/workflow 不会被注入到参数中
-                    result = await agent.act(
-                        context=context,
-                        queue=queue,
-                        tool_call=tool_call,
-                        task=task,
-                        workflow=workflow,
-                    )
-                except HumanInterfere as e:
-                    # 将人类介入信息反馈到任务
-                    result = Message(
-                        role=Role.USER,
-                        content=e.get_messages(),
-                        is_error=True,
-                    )
-                    # 禁止后续工具调用执行
-                    allow_tool = False
-
-                # 检查调用错误状态
-                if result.is_error:
-                    # 将任务设置为错误状态
-                    task.set_error(extract_text_from_message(result))
-                    # 停止执行剩余的工具
-                    allow_tool = False
-
-        if not allow_tool or task.is_error():
-            # 调用了工具，但出现错误，或者计划没有被批准，返回 THINK 事件重新思考
-            return OrchestrateEvent.THINK
+        if orchestration == "":
+            # 编排结果为空，进入错误处理流程
+            task.set_error("编排结果为空，无法创建子任务")
+            # 直接完成当前思考，返回 FINISH 事件结束工作流
+            return OrchestrateEvent.FINISH
 
         # 正常完成思考，开始编排
         return OrchestrateEvent.ORCHESTRATE
@@ -314,14 +291,25 @@ def get_orch_actions(
             completion_config=completion_config,
         )
 
-        try:
-            # 强制类型转换
-            task_casted = cast(ITreeTaskNode[TaskState, TaskEvent], task)
-            # 解析 JSON 结果
-            create_sub_tasks_partial(task_casted, extract_text_from_message(message))
-        except ValueError as e:
+        # 构造 ToolCallRequest
+        tool_call = ToolCallRequest(
+            id="auto_create_sub_tasks",
+            name="create_sub_tasks",
+            args={
+                "json_str": extract_text_from_message(message),
+            },
+        )
+        # 调用 act 执行子任务创建
+        result = await agent.act(
+            context=context, 
+            queue=queue, 
+            task=task, 
+            tool_call=tool_call,
+            valid_tasks=valid_tasks, 
+        )
+        if result.is_error:
             # 设置任务错误状态
-            task.set_error(f"无法解析子任务 JSON 字符串: {e}")
+            task.set_error(extract_text_from_message(message))
             return OrchestrateEvent.THINK
 
         return OrchestrateEvent.FINISH
@@ -478,8 +466,8 @@ def build_orch_agent(
     prompts = prompts if prompts is not None else {
         OrchestrateStage.THINKING: read_markdown("workflow/orchestrate/thinking.md").format(
             task_types="\n\n".join([
-                f"<option>\n{ProtocolTaskView()(cast(ITask[TaskState, TaskEvent], t))}\n</option>" 
-                for t in valid_tasks.values()]),
+                f"<option>\n<name>\n{option_name}\n</name>\n<description>\n{ProtocolTaskView()(cast(ITask[TaskState, TaskEvent], option_desc))}\n</description>\n</option>" 
+                for option_name, option_desc in valid_tasks.items()]),
         ),
         OrchestrateStage.ORCHESTRATING: read_markdown("workflow/orchestrate/orchestrating.md"),
     }
@@ -504,6 +492,14 @@ def build_orch_agent(
             max_tokens=llm_cfg.max_tokens,
             tools=[],
         )
+        
+    # 构建创建子任务工具
+    tool = Tool.from_function(
+        fn=create_sub_tasks,
+        name="create_sub_tasks",
+        description=CREATE_DOC,
+        exclude_args=['kwargs'],
+    )
 
     # 构建工作流实例
     workflow = BaseWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent](
@@ -516,6 +512,7 @@ def build_orch_agent(
         prompts=prompts,
         observe_funcs=observe_funcs,
         event_chain=event_chain,
+        tools={"create_sub_tasks": (tool, set[str]())},
     )
     # 关联工作流到智能体
     agent.set_workflow(workflow)

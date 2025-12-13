@@ -113,6 +113,3 @@ gunicorn.pid
 # Misc
 *.swp
 *~
-
-# Third-party types
-typings/

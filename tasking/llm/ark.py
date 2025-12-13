@@ -3,6 +3,7 @@ import getpass
 import json
 from typing import Any, cast
 
+from loguru import logger
 from pydantic import SecretStr
 from mcp import Tool as McpTool
 from fastmcp.tools import Tool as FastMcpTool
@@ -371,7 +372,7 @@ class ArkLLM(ILLM):
 
         Raises:
             ValueError:
-                The value error raised by the unsupported message type.
+                The value error raised by the unsupported message type or API errors.
 
         Returns:
             Message:
@@ -382,31 +383,36 @@ class ArkLLM(ILLM):
         kwargs = to_ark(completion_config)
         history = to_ark_dict(messages)
 
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=history,
-            stream=False,
-            **kwargs,
-        )
+        try:
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=history,
+                stream=False,
+                **kwargs,
+            )
 
-        # Type assertion: stream=False returns ChatCompletion, not AsyncStream
-        response = cast(ChatCompletion, response)
+            # Type assertion: stream=False returns ChatCompletion, not AsyncStream
+            response = cast(ChatCompletion, response)
 
-        content_text: str = response.choices[0].message.content or ""
-        # Convert to list[TextBlock] format
-        content_blocks = [TextBlock(text=content_text)] if content_text else []
+            content_text: str = response.choices[0].message.content or ""
+            # Convert to list[TextBlock] format
+            content_blocks = [TextBlock(text=content_text)] if content_text else []
 
-        usage = _create_usage(response)
-        tool_calls = _extract_tool_calls(response)
-        stop_reason = _map_stop_reason(response, tool_calls)
+            usage = _create_usage(response)
+            tool_calls = _extract_tool_calls(response)
+            stop_reason = _map_stop_reason(response, tool_calls)
 
-        return Message(
-            role=Role.ASSISTANT,
-            content=cast(list[MultimodalContent], content_blocks),
-            tool_calls=tool_calls,
-            stop_reason=stop_reason,
-            usage=usage,
-        )
+            return Message(
+                role=Role.ASSISTANT,
+                content=cast(list[MultimodalContent], content_blocks),
+                tool_calls=tool_calls,
+                stop_reason=stop_reason,
+                usage=usage,
+            )
+
+        except Exception as e:
+            logger.error(e)
+            raise e
 
 
 def _create_usage(response: ChatCompletion) -> CompletionUsage:
@@ -497,21 +503,22 @@ def _convert_content_to_ark_embedding_format(
                         image_url={"url": url_str}
                     )
                 )
-        elif isinstance(block, VideoBlock):
+        elif isinstance(block, VideoBlock): # pyright: ignore[reportUnnecessaryIsInstance]
             # Convert VideoBlock to Ark embedding format
-            if block.video_url:
-                ark_items.append(
-                    MultimodalEmbeddingContentPartVideoParam(
-                        type="video_url",
-                        video_url={"url": block.video_url}
-                    )
-                )
-            elif block.video_base64:
+            # Prioritize base64 over URL for video data
+            if block.video_base64:
                 url_str = f"data:video/{block.video_type};base64,{block.video_base64}"
                 ark_items.append(
                     MultimodalEmbeddingContentPartVideoParam(
                         type="video_url",
                         video_url={"url": url_str}
+                    )
+                )
+            elif block.video_url:
+                ark_items.append(
+                    MultimodalEmbeddingContentPartVideoParam(
+                        type="video_url",
+                        video_url={"url": block.video_url}
                     )
                 )
         else:
@@ -600,16 +607,21 @@ class ArkEmbeddingLLM(IEmbedModel):
         if not ark_input:
             raise ValueError("No valid content found for embedding")
 
-        # Call the API using proper Ark embedding format
-        response = await self._client.multimodal_embeddings.create(
-            model=self._model,
-            input=ark_input,
-            dimensions=dimensions,
-        )
+        try:
+            # Call the API using proper Ark embedding format
+            response = await self._client.multimodal_embeddings.create(
+                model=self._model,
+                input=ark_input,
+                dimensions=dimensions,
+            )
 
-        # Extract the embedding vector
-        # response.data is a MultimodalEmbedding object with an embedding field
-        return response.data.embedding
+            # Extract the embedding vector
+            # response.data is a MultimodalEmbedding object with an embedding field
+            return response.data.embedding
+
+        except Exception as e:
+            logger.error(e)
+            raise e
 
     async def embed_batch(
         self,

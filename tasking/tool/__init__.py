@@ -1,11 +1,11 @@
 from .intent import intent_identify
-from .terminal import ITerminal, SingleThreadTerminal
-from .text_edit import TextEditor, EditOperation
+from .terminal import ITerminal, LocalTerminal
+from .filesystem import FileSystem, EditOperation
 
 
 __all__ = [
     "intent_identify",
     "ITerminal",
-    "SingleThreadTerminal",
-    "TextEditor", "EditOperation",
+    "LocalTerminal",
+    "FileSystem", "EditOperation",
 ]

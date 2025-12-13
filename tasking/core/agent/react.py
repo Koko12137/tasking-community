@@ -276,7 +276,8 @@ def get_react_actions(
             # 手动调用结束工作流
             end_workflow({"task": task, "message": message})
 
-        if task.is_completed():
+        if task.is_completed() or task.is_error():
+            # 任务已完成或出错，触发 COMPLETE 事件
             return ReActEvent.COMPLETE
 
         return ReActEvent.PROCESS

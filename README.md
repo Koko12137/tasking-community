@@ -90,13 +90,12 @@ Tasking的设计哲学体现了AI系统设计的演进：**从被动防御上下
 
 ```mermaid
 stateDiagram-v2
-    [*] --> INITED: 初始化
-    INITED --> CREATED: IDENTIFIED
+    [*] --> CREATED: 任务创建
     CREATED --> RUNNING: PLANED
     RUNNING --> FINISHED: DONE
-    RUNNING --> FAILED: ERROR
-    FAILED --> RUNNING: RETRY
-    FAILED --> CANCELED: CANCEL
+    RUNNING --> RUNNING: PLANED (错误重试)
+    RUNNING --> CREATED: INIT (子任务取消重置)
+    RUNNING --> CANCELED: CANCEL
     FINISHED --> [*]
     CANCELED --> [*]
 ```
@@ -111,7 +110,7 @@ stateDiagram-v2
 
 #### 任务的职责边界
 **关心什么**：
-- 自己的状态变化（INITED → RUNNING → FINISHED/FAILED）
+- 自己的状态变化（CREATED → RUNNING → FINISHED/CANCELED）
 - 自己的输入和输出
 - 按照约定及时报告执行结果或错误
 
@@ -123,15 +122,30 @@ stateDiagram-v2
 
 #### 调度器的职责边界
 **关心什么**：
-- 任务当前的状态和状态转换规则
-- 如何根据状态选择合适的调度策略
+- **只关心 Task 的状态机状态**
+- 根据状态进行任务调度
+- 在状态改变时执行后处理
 - 任务间的协调和资源管理
 - 系统的保护和错误恢复
 
 **不关心什么**：
 - 任务的具体执行内容和逻辑
 - 任务使用什么工具和算法
+- 任务如何推进
 - 任务为什么要这样执行
+
+#### 工作流/Agent的职责边界
+**关心什么**：
+- **不关心 Task 的状态**
+- 只关心任务运行期间的推进情况
+- Workflow：依推进情况驱动自身状态变化
+- Agent：专注任务内容的正确执行和推进
+
+**不关心什么**：
+- Task 的状态管理
+- 任务生命周期推进
+- 状态转换逻辑
+- 调度器的实现细节
 
 #### 智能体+工作流的职责边界
 **关心什么**：
@@ -275,10 +289,9 @@ from loguru import logger
 from fastmcp import Client
 
 from tasking.core.agent import build_simple_agent
-from tasking.core.scheduler import create_simple_scheduler
+from tasking.core.scheduler import build_base_scheduler
 from tasking.core.state_machine.task import build_default_tree_node
-from tasking.model import Message, IQueue
-from server.utils.queue import AQueue
+from tasking.model import Message, IQueue, AsyncQueue
 
 async def main():
     """执行一个完整的任务执行故事"""
@@ -301,7 +314,7 @@ async def main():
     logger.info("📋 任务单元已创建，目标已设定")
 
     # 第四步：执行任务流程
-    message_queue: IQueue[Message] = AQueue()
+    message_queue: IQueue[Message] = AsyncQueue()
     await scheduler.schedule({}, message_queue, task)
 
     # 第五步：获取任务结果
@@ -324,7 +337,7 @@ if __name__ == "__main__":
 🤖 智能体执行器已创建，提供高质量执行能力
 📋 调度器已就绪，管理任务状态
 📋 任务单元已创建，目标已设定
-🔄 任务状态：INITED → CREATED → RUNNING
+🔄 任务状态：CREATED → RUNNING → FINISHED
 ✅ 任务执行完成，结果：人工智能技术是...
 🎊 任务驱动执行完成！
 ```
@@ -401,7 +414,7 @@ Tasking通过清晰的职责分离和标准化接口实现了以下关键优势�
 ### 🔧 核心能力 Road Map
 
 **任务管理核心**：
-- [x] 完整的任务状态机（INITED → CREATED → RUNNING → FINISHED/FAILED/CANCELED）
+- [x] 完整的任务状态机（CREATED → RUNNING → FINISHED/CANCELED）
 - [x] 任务级上下文隔离和权限控制
 - [x] 层次化任务组织（任务树结构）
 

@@ -1,11 +1,12 @@
 """SQLite记忆存储实现模块"""
+import json
 from dataclasses import dataclass
 from typing import Any
 
 import aiosqlite
 
 from .interface import ISqlDatabase,ISqlDBManager
-from ..model import MemoryT
+from ..model import MemoryT, MultimodalContent, TextBlock, ImageBlock, VideoBlock
 
 
 @dataclass
@@ -42,16 +43,21 @@ class SqliteDatabase(ISqlDatabase[MemoryT]):
         self._table_name = table_name
         self._memory_cls = memory_cls
 
-    async def add(self, context: dict[str, Any], memory: MemoryT) -> None:
+    async def add(self, context: dict[str, Any], memory: MemoryT, timeout: float = 1800.0) -> None:
         """添加记忆到SQLite数据库
 
         Args:
             context: 上下文信息，用于配置或选择数据库实例
             memory: 记忆对象，必须实现MemoryProtocol协议
+            timeout: 超时时间（秒），默认1800秒，目前 sqlite 不支持
         """
         memory_dict = memory.to_dict()
+
+        # 处理多模态内容，参考 Milvus 的实现
+        memory_dict = self._serialize_content(memory_dict)
+
         columns = ", ".join(memory_dict.keys())
-        placeholders = ", ".join("?" for _ in memory_dict)
+        placeholders = ", ".join("?" for _ in memory_dict.keys())
         values = list(memory_dict.values())
 
         query = f"INSERT INTO {self._table_name} ({columns}) VALUES ({placeholders})"
@@ -127,7 +133,7 @@ class SqliteDatabase(ISqlDatabase[MemoryT]):
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
 
         return [
-            self._memory_cls.from_dict(dict(zip(columns, row)))  # type: ignore[misc]
+            self._process_row(dict(zip(columns, row)))
             for row in rows
         ]
 
@@ -177,3 +183,88 @@ class SqliteDatabase(ISqlDatabase[MemoryT]):
         query = " ".join(filter(None, query_parts))
 
         return query, values
+
+    def _process_row(self, row_dict: dict[str, Any]) -> MemoryT:
+        """处理查询结果行，反序列化 content 字段。
+
+        Args:
+            row_dict: 数据库查询返回的行字典
+
+        Returns:
+            处理后的记忆对象
+        """
+        # 反序列化 content
+        if "content" in row_dict:
+            row_dict["content"] = self._deserialize_content(row_dict["content"])
+
+        return self._memory_cls.from_dict(row_dict)  # type: ignore[misc]
+
+    def _deserialize_content(self, content: Any) -> list[MultimodalContent]:
+        """反序列化内容。
+
+        如果 content 是 JSON 字符串且表示列表，解析为列表。
+        如果无法解析，返回包含该内容的 TextBlock 列表。
+
+        Args:
+            content: 存储的内容
+
+        Returns:
+            反序列化后的多模态内容
+        """
+        if isinstance(content, str):
+            # 尝试解析为 JSON（多模态内容）
+            if content.startswith("[") and content.endswith("]"):
+                try:
+                    parsed: list[dict[str, Any]] = json.loads(content)
+                    # 将字典列表转换为 MultimodalContent 对象列表
+                    multimodal_contents: list[MultimodalContent] = []
+                    for item in parsed:
+                        if item.get("type") == "text":
+                            multimodal_contents.append(TextBlock(text=item.get("text", "")))
+                        elif item.get("type") == "image_url":
+                            multimodal_contents.append(ImageBlock(
+                                image_url=item.get("image_url", ""),
+                                image_base64=item.get("image_base64", ""),
+                                image_type=item.get("image_type", "jpeg"),
+                                detail=item.get("detail", "low")
+                            ))
+                        elif item.get("type") == "video_url":
+                            multimodal_contents.append(VideoBlock(
+                                video_url=item.get("video_url", ""),
+                                video_base64=item.get("video_base64", ""),
+                                video_type=item.get("video_type", "mp4"),
+                                fps=item.get("fps", 1)
+                            ))
+                        return multimodal_contents
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            # 无法解析为 JSON，返回包含原内容的 TextBlock
+            return [TextBlock(text=content)]
+
+        # 非字符串类型，转换为字符串并返回 TextBlock
+        if content:
+            return [TextBlock(text=str(content))]
+
+        # 空内容返回空列表
+        return []
+
+    def _serialize_content(self, memory_dict: dict[str, Any]) -> dict[str, Any]:
+        """序列化多模态内容为 JSON 字符串。
+
+        如果 content 是列表（多模态），转换为 JSON 字符串以便存储。
+
+        Args:
+            memory_dict: 数据库字典
+
+        Returns:
+            处理后的数据库字典
+        """
+        content: list[MultimodalContent] | None = memory_dict.get("content")
+        if content is None:
+            raise ValueError("Memory dictionary must contain 'content' field.")
+        # 将 content 的每一个元素转换为字典表示
+        content_list: list[dict[str, Any]] = []
+        for item in content:
+            content_list.append(item.model_dump())
+        memory_dict["content"] = json.dumps(content_list, ensure_ascii=False)
+        return memory_dict

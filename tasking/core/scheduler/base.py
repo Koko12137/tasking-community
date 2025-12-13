@@ -133,32 +133,32 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         self,
         context: dict[str, Any],
         queue: IQueue[Message],
-        task: Callable[
+        action: Callable[
             [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
             Awaitable[EventT] | Awaitable[None]
         ] | None,
-        fsm: ITask[StateT, EventT],
+        task: ITask[StateT, EventT],
     ) -> EventT | None:
         """调用任务包装器，支持同步和异步任务调用
 
         Args:
             context: 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
             queue: 数据队列，用于输出调度过程中产生的数据
-            task: 触发的任务函数，函数签名为
+            action: 触发的任务函数，函数签名为
                 - 参数1：调度器实例，允许递归调用调度器
                 - 参数2：context，上下文字典，用于传递用户ID/AccessToken/TraceID等信息
                 - 参数3：queue，数据队列，用于输出调度过程中产生的数据
                 - 参数4：任务状态机实例
-            fsm: 任务状态机实例
+            task: 任务状态机实例
         """
-        if task is None:
+        if action is None:
             logger.warning("调度任务未定义，跳过执行")
             return
 
-        if inspect.iscoroutinefunction(task):
-            event = await task(self, context, queue, fsm)
+        if inspect.iscoroutinefunction(action):
+            event = await action(self, context, queue, task)
         else:
-            event = await asyncify(task)(self, context, queue, fsm)
+            event = await asyncify(action)(self, context, queue, task)
 
         if event is not None:
             return cast(EventT, event)
@@ -169,7 +169,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         self,
         context: dict[str, Any],
         queue: IQueue[Message],
-        fsm: ITask[StateT, EventT],
+        task: ITask[StateT, EventT],
         current_state: StateT,
     ) -> None:
         """状态变更回调接口，状态机状态变化时被调用
@@ -177,7 +177,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         Args:
             context: 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
             queue: 数据队列，用于输出调度过程中产生的数据
-            fsm: 任务状态机实例
+            task: 任务状态机实例
             current_state: 当前状态
 
         Raises:
@@ -188,20 +188,20 @@ class BaseScheduler(IScheduler[StateT, EventT]):
             raise RuntimeError("调度器未编译，无法执行状态回调")
 
         # 匹配业务任务
-        task = self._on_state_fn.get(current_state)
+        action = self._on_state_fn.get(current_state)
         # 执行业务任务
-        event = await self._call_wrapper(context, queue, task, fsm)
+        event = await self._call_wrapper(context, queue, action, task)
         if event is None:
             return # 无事件返回，直接结束
         else:
             # 处理事件
-            await fsm.handle_event(event)
+            await task.handle_event(event)
 
     async def on_state_changed(
         self,
         context: dict[str, Any],
         queue: IQueue[Message],
-        fsm: ITask[StateT, EventT],
+        task: ITask[StateT, EventT],
         prev_state: StateT,
         current_state: StateT,
     ) -> None:
@@ -210,7 +210,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         Args:
             context: 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
             queue: 数据队列，用于输出调度过程中产生的数据
-            fsm: 任务状态机实例
+            task: 任务状态机实例
             prev_state: 变更前的状态
             current_state: 变更后的状态
 
@@ -221,21 +221,21 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         if not self._compiled:
             raise RuntimeError("调度器未编译，无法执行状态变更回调")
 
-        logger.info(f"\n[调度器] 收到状态变更：{fsm.get_id()[:8]} | {prev_state.name}→{current_state.name}")
+        logger.info(f"\n[调度器] 收到状态变更：{task.get_id()[:8]} | {prev_state.name}→{current_state.name}")
 
         # 匹配业务任务
-        task = self._on_state_changed_fn.get((prev_state, current_state))
+        action = self._on_state_changed_fn.get((prev_state, current_state))
         # 执行业务任务
-        await self._call_wrapper(context, queue, task, fsm)
+        await self._call_wrapper(context, queue, action, task)
         logger.info(f"[调度器] 回调任务完成：{prev_state.name}→{current_state.name}")
 
-    async def schedule(self, context: dict[str, Any], queue: IQueue[Message], fsm: ITask[StateT, EventT]) -> Any:
+    async def schedule(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[StateT, EventT]) -> Any:
         """调度任务状态机，根据其当前状态执行相应任务，直到进入结束状态
 
         Args:
             context: 上下文字典，用于传递用户ID/AccessToken/TraceID等信息
             queue: 数据队列，用于输出调度过程中产生的数据
-            fsm: 任务状态机实例
+            task: 任务状态机实例
 
         Raises:
             RuntimeError: 如果调度器未编译则抛出该异常
@@ -244,10 +244,10 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         if not self._compiled:
             raise RuntimeError("调度器未编译，无法调度任务")
 
-        current_state = fsm.get_current_state() # pyright: ignore[reportAssignmentType]
+        current_state = task.get_current_state() # pyright: ignore[reportAssignmentType]
         if current_state is None: # pyright: ignore[reportUnnecessaryComparison]
             raise ValueError("任务状态机当前状态未知，无法调度任务")
-        logger.info(f"\n[调度器] 调度任务：{fsm.get_id()[:8]} | 当前状态：{current_state.name}")
+        logger.info(f"\n[调度器] 调度任务：{task.get_id()[:8]} | 当前状态：{current_state.name}")
 
         # 检查是否为结束状态
         if current_state in self._end_states:
@@ -255,21 +255,21 @@ class BaseScheduler(IScheduler[StateT, EventT]):
             return None
 
         # 设置任务的最大重访次数
-        fsm.set_max_revisit_count(self._max_revisit_count)
+        task.set_max_revisit_count(self._max_revisit_count)
 
         # 查找可用的状态任务
         while current_state not in self._end_states:
             current_state: StateT
-            logger.info(f"\n[调度器] 调度任务：{fsm.get_id()[:8]} | 当前状态：{current_state.name}")
+            logger.info(f"\n[调度器] 调度任务：{task.get_id()[:8]} | 当前状态：{current_state.name}")
             # 执行当前状态任务
-            await self.on_state(context, queue, fsm, current_state)
+            await self.on_state(context, queue, task, current_state)
             # 获取下一个状态
-            next_state = fsm.get_current_state()
+            next_state = task.get_current_state()
             # 执行状态变更回调
-            await self.on_state_changed(context, queue, fsm, current_state, next_state)
+            await self.on_state_changed(context, queue, task, current_state, next_state)
             # 重新读取状态，确保任何后处理产生的状态变更被采纳
-            current_state = fsm.get_current_state()
-            logger.info(f"\n[调度器] 调度任务：{fsm.get_id()[:8]} | 任务状态更新为：{current_state.name}")
+            current_state = task.get_current_state()
+            logger.info(f"\n[调度器] 调度任务：{task.get_id()[:8]} | 任务状态更新为：{current_state.name}")
 
         return None
 

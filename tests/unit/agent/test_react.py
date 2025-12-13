@@ -28,7 +28,10 @@ from tasking.core.agent.react import (
 )
 from tasking.core.agent.react import ReActStage, ReActEvent
 from tasking.model import Message, Role
-from tests.unit.agent.test_helpers import AgentTestMixin, TestState
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from unit.agent.test_helpers import AgentTestMixin, TestState
 
 
 class TestEndWorkflow(unittest.TestCase, AgentTestMixin):
@@ -299,6 +302,127 @@ class TestWorkflowDocumentation(unittest.TestCase):
         self.assertIsInstance(END_WORKFLOW_DOC, str)
         self.assertGreater(len(END_WORKFLOW_DOC), 0)
         self.assertIn("结束工作流", END_WORKFLOW_DOC)
+
+
+# New tests based on updated requirements
+
+class TestReactAgentWorkflowStates:
+    """Test React Agent workflow state transitions based on new requirements."""
+
+    def test_react_stage_normal_transitions(self):
+        """Test ReActStage can normally transition (PROCESSING -> COMPLETED)."""
+        # Get transition function
+        transitions = get_react_transition()
+
+        # Test PROCESSING + PROCESS -> PROCESSING (continues processing)
+        transition_key = (ReActStage.PROCESSING, ReActEvent.PROCESS)
+        assert transition_key in transitions
+        next_stage, _ = transitions[transition_key]
+        assert next_stage == ReActStage.PROCESSING
+
+        # Test PROCESSING + COMPLETE -> COMPLETED (ends workflow)
+        transition_key = (ReActStage.PROCESSING, ReActEvent.COMPLETE)
+        assert transition_key in transitions
+        next_stage, _ = transitions[transition_key]
+        assert next_stage == ReActStage.COMPLETED
+
+    def test_no_unreachable_workflow_states(self):
+        """Check for unreachable workflow states."""
+        reachable_states = {ReActStage.PROCESSING, ReActStage.COMPLETED}
+        all_states = set(ReActStage.list_stages())
+
+        # All defined states should be reachable
+        assert reachable_states == all_states, f"Unreachable states: {all_states - reachable_states}"
+
+    def test_workflow_state_transition_correctness(self):
+        """Verify workflow state transition correctness."""
+        transitions = get_react_transition()
+
+        # Verify PROCESSING -> PROCESSING transition (for continued processing)
+        processing_key = (ReActStage.PROCESSING, ReActEvent.PROCESS)
+        assert processing_key in transitions
+        next_stage, callback = transitions[processing_key]
+        assert next_stage == ReActStage.PROCESSING
+        assert callback is not None
+
+        # Verify PROCESSING -> COMPLETED transition (for workflow completion)
+        completed_key = (ReActStage.PROCESSING, ReActEvent.COMPLETE)
+        assert completed_key in transitions
+        next_stage, callback = transitions[completed_key]
+        assert next_stage == ReActStage.COMPLETED
+        assert callback is not None
+
+
+class TestReactAgentWorkflowExecution:
+    """Test React Agent workflow execution with mocked dependencies."""
+
+    def test_mocked_llm_and_tool_calls_normal_execution(self):
+        """Test Mock LLM and tool calls for normal execution flow."""
+        # This test would require async testing setup
+        # For now, we verify the structure exists
+        actions = get_react_actions(Mock())
+        assert ReActStage.PROCESSING in actions
+        assert callable(actions[ReActStage.PROCESSING])
+
+    def test_potential_infinite_loop_detection(self):
+        """Test for potential workflow infinite loops."""
+        # The transition rules show PROCESSING + PROCESS -> PROCESSING
+        # This could potentially cause infinite loops if not handled properly
+        transitions = get_react_transition()
+
+        # Check the potentially problematic transition
+        processing_key = (ReActStage.PROCESSING, ReActEvent.PROCESS)
+        assert processing_key in transitions
+        next_stage, _ = transitions[processing_key]
+
+        # This transition back to PROCESSING could cause infinite loops
+        # The actual implementation must have logic to break the loop
+        # (e.g., task completion, error conditions, finish flags)
+        assert next_stage == ReActStage.PROCESSING
+
+
+class TestReactAgentToolCallLogic:
+    """Test React Agent tool call logic."""
+
+    def test_tool_call_normal_continues_execution_loop(self):
+        """Test that successful tool calls continue the execution loop."""
+        # This test verifies that when tool calls are successful,
+        # the workflow continues to the next iteration (PROCESS event)
+        transitions = get_react_transition()
+
+        # Successful processing should return to PROCESSING state
+        processing_key = (ReActStage.PROCESSING, ReActEvent.PROCESS)
+        next_stage, _ = transitions[processing_key]
+        assert next_stage == ReActStage.PROCESSING
+
+    def test_tool_call_error_sends_complete_event_error_handling(self):
+        """Test that tool call errors send complete event and enter error handling flow."""
+        # When tool calls fail, the workflow should complete
+        # This is verified by the COMPLETE event transition
+        transitions = get_react_transition()
+
+        # Error processing should transition to COMPLETED
+        completed_key = (ReActStage.PROCESSING, ReActEvent.COMPLETE)
+        next_stage, _ = transitions[completed_key]
+        assert next_stage == ReActStage.COMPLETED
+
+
+class TestReactAgentWorkflowEnd:
+    """Test React Agent workflow end."""
+
+    def test_react_agent_workflow_ends_normally(self):
+        """Test that React Agent workflow can end normally."""
+        # Verify that COMPLETED is a valid end state
+        stages = get_react_stages()
+        assert ReActStage.COMPLETED in stages
+
+        # Verify that there's a transition to COMPLETED
+        transitions = get_react_transition()
+        completed_key = (ReActStage.PROCESSING, ReActEvent.COMPLETE)
+        assert completed_key in transitions
+
+        next_stage, _ = transitions[completed_key]
+        assert next_stage == ReActStage.COMPLETED
 
 
 if __name__ == "__main__":

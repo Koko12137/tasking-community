@@ -2,7 +2,6 @@
 import json
 from typing import Any, NamedTuple, cast
 
-from asyncer import syncify
 from pymilvus import (
     AsyncMilvusClient,
     AnnSearchRequest,
@@ -68,13 +67,14 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         """
         return self._embeddings[model_name].model
 
-    async def add(self, context: dict[str, Any], memory: MemoryT) -> None:
+    async def add(self, context: dict[str, Any], memory: MemoryT, timeout: float = 1800.0) -> None:
         """添加数据库到Milvus向量数据库。
         支持多模态内容，直接使用 content 进行嵌入。
-        
+
         Args:
             context: 上下文信息，用于配置或选择数据库实例
             memory: 记忆对象，必须实现MemoryProtocol协议
+            timeout: 超时时间（秒），默认1800秒
         """
         # 将 memory 的 content 转为向量表示（支持多模态）
         vectors: dict[str, list[float | int]] = {}
@@ -86,8 +86,8 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
 
         # 将 memory 转为字典表示
         memory_dict = memory.to_dict()
-        # 如果 content 是多模态列表，序列化为 JSON 字符串存储
-        memory_dict = self._serialize_content(memory_dict)
+        # 将 content 转为序列化形式存储
+        memory_dict["content"] = str(self._serialize_content(memory_dict))
         # 如果 vectors 和 memory_dict 中有重复字段，清除 memory_dict 中的字段
         for key in vectors.keys():
             if key in memory_dict:
@@ -98,6 +98,7 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         await client.insert(
             collection_name=self._collection_name,
             data={**memory_dict, **vectors},
+            timeout=timeout,
         )
 
     async def delete(self, context: dict[str, Any], memory_id: str) -> None:
@@ -123,25 +124,15 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
             context: 上下文信息，用于配置或选择数据库实例
             memory: 记忆对象，必须实现MemoryProtocol协议
         """
-        # 将 memory 的 content 转为向量表示（支持多模态）
-        vectors: dict[str, list[float | int]] = {}
-        for name, info in self._embeddings.items():
-            # 确保 content 是 list[MultimodalContent] 格式
-            content = self._ensure_multimodal_content(memory.content)
-            vector = await info.model.embed(content, info.dimension)
-            vectors[name] = vector
-
         # 将 memory 转为字典表示
         memory_dict = memory.to_dict()
-        # 如果 content 是多模态列表，序列化为 JSON 字符串存储
-        memory_dict = self._serialize_content(memory_dict)
 
         # 获取 Milvus 客户端
         client = await self._milvus_manager.get_vector_database(context)
         # 通过 upsert 方法更新数据库
         await client.upsert(
             collection_name=self._collection_name,
-            data={**memory_dict, **vectors},
+            data=memory_dict,
         )
 
     async def query(
@@ -174,19 +165,7 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
 
         memories: list[MemoryT] = []
         for item in hits:
-            entity_data: dict[str, Any] = {
-                "id": item.get("id"),
-                "content": item.get("content"),
-                "category": item.get("category"),
-            }
-
-            # 反序列化 content
-            if "content" in entity_data:
-                entity_data["content"] = self._deserialize_content(
-                    entity_data["content"]
-                )
-
-            memory = self._memory_cls.from_dict(entity_data)
+            memory = self._memory_cls.from_dict(item)
             memories.append(cast(MemoryT, memory))
         return memories
 
@@ -288,9 +267,14 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         Returns:
             处理后的数据库字典
         """
-        content = memory_dict.get("content")
-        if isinstance(content, list):
-            memory_dict["content"] = json.dumps(content, ensure_ascii=False)
+        content: list[MultimodalContent] | None = memory_dict.get("content")
+        if content is None:
+            raise ValueError("Memory dictionary must contain 'content' field.")
+        # 将 content 的每一个元素转换为字典表示
+        content_list: list[dict[str, Any]] = []
+        for item in content:
+            content_list.append(item.model_dump())
+        memory_dict["content"] = json.dumps(content_list, ensure_ascii=False)
         return memory_dict
 
     def _deserialize_content(self, content: Any) -> list[MultimodalContent]:

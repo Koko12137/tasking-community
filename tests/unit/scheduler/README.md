@@ -29,8 +29,7 @@ tests/scheduler/
   - 测试循环检测和限制
   - 测试状态转换规则验证
 - **Builder 函数测试**
-  - 测试 `create_simple_scheduler` 函数
-  - 测试 `create_tree_scheduler` 函数
+  - 测试 `build_base_scheduler` 函数
   - 测试 Builder 参数传递
 - **基础工作流执行测试**
   - 测试简单的状态转换流程
@@ -71,7 +70,7 @@ The tests cover:
 - ✅ State transition handling
 - ✅ Callback execution
 - ✅ Error handling and retry logic
-- ✅ Builder functions (create_simple_scheduler, create_tree_scheduler)
+- ✅ Builder functions (build_base_scheduler)
 - ✅ Integration with agents and tasks
 - ✅ Queue and context handling
 - ✅ Async and sync state functions
