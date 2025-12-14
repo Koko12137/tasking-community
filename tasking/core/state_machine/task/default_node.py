@@ -103,14 +103,14 @@ def get_base_transition() -> dict[
 class DefaultTreeNode(BaseTreeTaskNode[TaskState, TaskEvent]):
     """默认树形任务节点，通常用于初始任务节点"""
     _protocol: list[MultimodalContent] = [
-        TextBlock(text=read_document("task/default.xml"))
+        TextBlock(text=read_document("task/default.md"))
     ]
     _task_type: str = "root_task"
     _tags: set[str] = set()
     
     def __init__(self, max_depth: int = 5) -> None:
         super().__init__(
-            protocol=self._protocol,
+            unique_protocol=self._protocol,
             tags=self._tags,
             task_type=self._task_type,
             valid_states=get_base_states(),

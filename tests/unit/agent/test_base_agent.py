@@ -17,6 +17,7 @@ import unittest
 import asyncio
 from typing import Any, Dict, Set, Tuple, Optional, Callable, Awaitable, TypeVar
 from unittest.mock import Mock, AsyncMock, patch
+from fastmcp.client.transports import ClientTransportT
 
 # pylint: disable=import-error
 # NOTE: E0401 import-error is a pylint configuration issue.
@@ -27,15 +28,15 @@ from tasking.core.state_machine.task.interface import ITask
 from tasking.core.state_machine.workflow.interface import IWorkflow
 from tasking.core.agent.react import ReActStage, ReActEvent
 from tasking.llm.interface import ILLM
-from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue
+from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue, TextBlock
 from tests.unit.agent.test_helpers import (
     AgentTestMixin,
     MockLLM,
     MockTask,
     MockWorkflow,
     MockQueue,
-    TestState,
-    TestEvent,
+    MockState,
+    MockEvent,
     create_react_agent_test_state,
     create_react_agent_test_events
 )
@@ -54,20 +55,19 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
         self.mock_llm = self.create_mock_llm("test-model", "Test response")
 
         # 创建LLM字典 - 使用SimpleStage作为键
-        from tasking.core.state_machine.workflow.const import ReActStage
         self.llms: dict[ReActStage, ILLM] = {
             ReActStage.PROCESSING: self.mock_llm,
             ReActStage.COMPLETED: self.mock_llm,
         }
 
         # 创建BaseAgent实例 - 使用正确的协议类型
-        self.agent = BaseAgent[ReActStage, ReActEvent, TestState, TestEvent](
+        self.agent = BaseAgent[ReActStage, ReActEvent, MockState, MockEvent, ClientTransportT](
             name="TestAgent",
             agent_type="TestType",
             llms=self.llms
         )
 
-        # 设置工作流 - 使用SimpleStage而不是TestState
+        # 设置工作流 - 使用SimpleStage而不是MockState
         self.workflow = self.create_mock_workflow(ReActStage.PROCESSING, self.test_events)
         self.agent.set_workflow(self.workflow)
 
@@ -113,7 +113,7 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
         self.assertEqual(self.agent.get_workflow(), new_workflow)
 
         # 测试未设置工作流时的错误
-        agent_no_workflow = BaseAgent[ReActStage, ReActEvent, TestState, TestEvent](
+        agent_no_workflow = BaseAgent[ReActStage, ReActEvent, MockState, MockEvent, ClientTransportT](
             name="NoWorkflowAgent",
             agent_type="TestType",
             llms=self.llms
@@ -145,8 +145,8 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
         """测试思考功能"""
         # 创建观察消息
         observe_messages = [
-            Message(role=Role.USER, content="Observation 1"),
-            Message(role=Role.USER, content="Observation 2")
+            Message(role=Role.USER, content=[TextBlock(text="Observation 1")]),
+            Message(role=Role.USER, content=[TextBlock(text="Observation 2")])
         ]
 
         # 创建完成配置
@@ -183,13 +183,13 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
         pre_hook_called = []
         post_hook_called = []
 
-        def pre_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[TestState, TestEvent]) -> None:
+        def pre_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[MockState, MockEvent]) -> None:
             pre_hook_called.append(True)
 
-        def post_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[TestState, TestEvent]) -> None:
+        def post_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[MockState, MockEvent]) -> None:
             post_hook_called.append(True)
 
-        def post_observe_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[TestState, TestEvent], _messages: list[Message]) -> None:
+        def post_observe_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[MockState, MockEvent], _messages: list[Message]) -> None:
             post_hook_called.append(True)
 
         def pre_think_hook(_context: dict[str, Any], _queue: IQueue[Message], _messages: list[Message]) -> None:
@@ -198,7 +198,7 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
         def post_think_hook(_context: dict[str, Any], _queue: IQueue[Message], _messages: list[Message], _result: Message) -> None:
             post_hook_called.append(True)
 
-        def post_act_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[TestState, TestEvent], _result: Message) -> None:
+        def post_act_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[MockState, MockEvent], _result: Message) -> None:
             post_hook_called.append(True)
 
         # 添加钩子
@@ -226,7 +226,7 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
         # 创建异步钩子函数
         async_hook_called = []
 
-        async def async_pre_hook(context: dict[str, Any], queue: IQueue[Message], task: ITask[TestState, TestEvent]) -> None:
+        async def async_pre_hook(context: dict[str, Any], queue: IQueue[Message], task: ITask[MockState, MockEvent]) -> None:
             await asyncio.sleep(0.01)  # 模拟异步操作
             async_hook_called.append(True)
 
@@ -268,7 +268,7 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
 
         # 验证泛型类型约束
         # 这里我们主要测试BaseAgent可以正确处理不同的状态和事件类型
-        agent_generic = BaseAgent[ReActStage, ReActEvent, TestState, TestEvent](
+        agent_generic = BaseAgent[ReActStage, ReActEvent, MockState, MockEvent, ClientTransportT](
             name="GenericAgent",
             agent_type="Generic",
             llms={ReActStage.PROCESSING: self.mock_llm}
@@ -284,7 +284,7 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
             ReActStage.COMPLETED: self.mock_llm,
         }
 
-        agent_with_failing_llm = BaseAgent[ReActStage, ReActEvent, TestState, TestEvent](
+        agent_with_failing_llm = BaseAgent[ReActStage, ReActEvent, MockState, MockEvent, ClientTransportT](
             name="FailingAgent",
             agent_type="TestType",
             llms=llms_with_failure
@@ -312,7 +312,7 @@ class TestBaseAgentIntegration(unittest.TestCase, AgentTestMixin):
     def test_full_observe_think_act_cycle(self) -> None:
         """测试完整的观察-思考-行动循环"""
         # 创建Agent - 使用具体类型
-        agent = BaseAgent[ReActStage, ReActEvent, TestState, TestEvent](
+        agent = BaseAgent[ReActStage, ReActEvent, MockState, MockEvent, ClientTransportT](
             name="CycleAgent",
             agent_type="Integration",
             llms=self.llms
@@ -329,7 +329,7 @@ class TestBaseAgentIntegration(unittest.TestCase, AgentTestMixin):
 
         # 1. 观察阶段
         def observe_fn(task: ITask, kwargs: dict[str, Any]) -> Message:
-            return Message(role=Role.USER, content=f"Task state: {task.get_current_state()}")
+            return Message(role=Role.USER, content=[TextBlock(text=f"Task state: {task.get_current_state()}")])
 
         # 暂时简化复杂的异步调用
         # observations = await agent.observe(...)
@@ -341,7 +341,7 @@ class TestBaseAgentIntegration(unittest.TestCase, AgentTestMixin):
     def test_hook_integration(self) -> None:
         """测试钩子系统集成"""
         # 创建Agent - 使用具体类型
-        agent = BaseAgent[ReActStage, ReActEvent, TestState, TestEvent](
+        agent = BaseAgent[ReActStage, ReActEvent, MockState, MockEvent, ClientTransportT](
             name="HookAgent",
             agent_type="Integration",
             llms=self.llms
@@ -387,7 +387,7 @@ class TestBaseAgentIntegration(unittest.TestCase, AgentTestMixin):
         }
 
         # 创建Agent - 使用具体类型
-        agent = BaseAgent[ReActStage, ReActEvent, TestState, TestEvent](
+        agent = BaseAgent[ReActStage, ReActEvent, MockState, MockEvent, ClientTransportT](
             name="MultiLLMAgent",
             agent_type="Test",
             llms=multi_llms

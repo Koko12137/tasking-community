@@ -182,7 +182,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
 
         Raises:
             RuntimeError: 如果调度器未编译则抛出该异常
-            ValueError: 如果状态转换不合法则抛出该异常
+            ValueError: 如果状态回调任务未返回事件则抛出该异常
         """
         if not self._compiled:
             raise RuntimeError("调度器未编译，无法执行状态回调")
@@ -192,10 +192,9 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         # 执行业务任务
         event = await self._call_wrapper(context, queue, action, task)
         if event is None:
-            return # 无事件返回，直接结束
-        else:
-            # 处理事件
-            await task.handle_event(event)
+            raise ValueError("状态回调任务未返回事件，无法驱动状态转换")
+        # 处理事件
+        await task.handle_event(event)
 
     async def on_state_changed(
         self,
@@ -254,6 +253,43 @@ class BaseScheduler(IScheduler[StateT, EventT]):
             logger.info(f"[调度器] 任务已处于结束状态：{current_state.name}，无需调度")
             return None
 
+        # 验证任务状态与调度器配置的匹配性
+        task_valid_states = task.get_valid_states()
+        scheduler_states: set[StateT] = set()
+        for from_state, to_state in self._on_state_changed_fn.keys():
+            scheduler_states.add(from_state)
+            scheduler_states.add(to_state)
+
+        # 检查：任务的合法状态是否都在调度器配置中
+        missing_in_scheduler: list[StateT] = []
+        for state in task_valid_states:
+            if state not in scheduler_states and state not in self._end_states:
+                missing_in_scheduler.append(state)
+
+        if missing_in_scheduler:
+            missing_names = [s.name for s in missing_in_scheduler]
+            scheduler_names = [s.name for s in scheduler_states]
+            raise ValueError(
+                f"任务状态与调度器配置不匹配：以下任务的合法状态未在调度器的 on_state_changed_fn 中配置：\n"
+                f"→ 缺失状态：{missing_names}\n"
+                f"→ 调度器配置的状态：{scheduler_names}\n"
+                f"→ 提示：请确保所有任务的合法状态都在调度器的状态转换规则中"
+            )
+
+        # 检查：任务的所有非结束状态的合法状态是否都有对应的 on_state_fn
+        missing_on_state_fn: list[StateT] = []
+        for state in task_valid_states:
+            if state not in self._end_states and state not in self._on_state_fn:
+                missing_on_state_fn.append(state)
+
+        if missing_on_state_fn:
+            missing_names = [s.name for s in missing_on_state_fn]
+            raise ValueError(
+                f"任务状态与调度器配置不匹配：以下任务的非结束状态未配置 on_state_fn，无法产生事件触发状态转换：\n"
+                f"→ 缺失状态：{missing_names}\n"
+                f"→ 提示：这些状态需要配置 on_state_fn 来产生事件，否则状态无法改变，会导致死循环"
+            )
+
         # 设置任务的最大重访次数
         task.set_max_revisit_count(self._max_revisit_count)
 
@@ -287,7 +323,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
             RuntimeError: 重复编译/无结束状态/无转换规则/状态不可达/有环（无环模式）
             ValueError: 结束状态未参与转换/max_revisit_count逻辑冲突（如-1且要求无环）
         """
-        # -------------------------- 基础校验（保留，无冗余） --------------------------
+        # -------------------------- 基础校验 --------------------------
         # 1. 禁止重复编译
         if self._compiled:
             raise RuntimeError("调度器已编译，无法重复编译")
@@ -319,7 +355,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
                     f"编译失败：结束状态「{end_state.name}」未参与任何转换，永远无法到达"
                 )
 
-        # -------------------------- 构建状态转换邻接表（必要，无冗余） --------------------------
+        # -------------------------- 构建状态转换邻接表 --------------------------
         state_adj: dict[StateT, set[StateT]] = defaultdict(set)
         for from_state, to_state in self._on_state_changed_fn.keys():
             state_adj[from_state].add(to_state)
@@ -327,7 +363,23 @@ class BaseScheduler(IScheduler[StateT, EventT]):
             f"[调度器] 状态转换邻接表：{ {s.name: [t.name for t in ts] for s, ts in state_adj.items()} }"
         )
 
-        # -------------------------- 分模式实现状态校验（核心修改） --------------------------
+        # 6. 检查：on_state_changed_fn 中出现的所有非结束状态都必须配置 on_state_fn
+        # （否则无法产生事件触发状态转换）
+        states_with_outgoing_edges = set(state_adj.keys())  # 有出边的状态（from_state）
+        missing_on_state_fn: list[StateT] = []
+        for state in states_with_outgoing_edges:
+            if state not in self._end_states and state not in self._on_state_fn:
+                missing_on_state_fn.append(state)
+
+        if missing_on_state_fn:
+            missing_names = [s.name for s in missing_on_state_fn]
+            raise RuntimeError(
+                f"编译失败：以下非结束状态有出边但未配置 on_state_fn，无法产生事件触发状态转换：\n"
+                f"→ 缺失状态：{missing_names}\n"
+                f"→ 提示：这些状态需要配置 on_state_fn 来产生事件，否则状态无法改变，会导致死循环"
+            )
+
+        # -------------------------- 分模式实现状态校验 --------------------------
         def is_valid_state(start_state: StateT) -> bool:
             """
             分模式校验状态合法性：

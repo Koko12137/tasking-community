@@ -11,11 +11,18 @@ import tempfile
 import shutil
 import subprocess
 from typing import Optional
+import asyncio
+import pytest
 
-from tasking.tool.terminal import SingleThreadTerminal
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../tasking/tool'))
+import terminal
+LocalTerminal = terminal.LocalTerminal
+_COMMAND_DONE_MARKER = terminal._COMMAND_DONE_MARKER
 
 
-class TestWorkspace:
+class WorkspaceHelper:
     """Helper class for managing test workspaces."""
 
     def __init__(self, name_prefix: str = "terminal_test_"):
@@ -113,33 +120,92 @@ def create_test_terminal(
     allowed_commands: Optional[list] = None,
     prohibited_commands: Optional[list] = None,
     disable_script_execution: bool = True
-) -> SingleThreadTerminal:
+) -> LocalTerminal:
     """Create a terminal instance for testing.
 
     Args:
-        workspace: Path to workspace directory
+        workspace: Path to workspace directory (should be absolute path for root_dir)
         allowed_commands: List of allowed commands (whitelist)
         prohibited_commands: List of prohibited commands (blacklist)
         disable_script_execution: Whether to disable script execution
 
     Returns:
-        Configured SingleThreadTerminal instance
+        Configured LocalTerminal instance
     """
-    return SingleThreadTerminal(
-        workspace=workspace,
+    return LocalTerminal(
+        root_dir=workspace,  # New parameter: root_dir
+        workspace=workspace,  # Workspace within root_dir
         create_workspace=False,  # Workspace should already exist
         allowed_commands=allowed_commands or [],
-        prohibited_commands=prohibited_commands or [
-            "sudo ", "su ", "shutdown", "reboot",
-            "rm -rf /", "dd if=/", "mv /", "cp /",
-            "rm -rf *", "rm -rf .*"
-        ],
         disable_script_execution=disable_script_execution
     )
 
 
-def run_command_in_terminal(terminal: SingleThreadTerminal, command: str) -> tuple[str, int]:
+async def create_test_terminal_async(
+    workspace: str,
+    allowed_commands: Optional[list] = None,
+    prohibited_commands: Optional[list] = None,
+    disable_script_execution: bool = True,
+    init_commands: Optional[list] = None
+) -> LocalTerminal:
+    """Create and initialize a terminal instance for async testing.
+
+    Args:
+        workspace: Path to workspace directory (should be absolute path for root_dir)
+        allowed_commands: List of allowed commands (whitelist)
+        prohibited_commands: List of prohibited commands (blacklist)
+        disable_script_execution: Whether to disable script execution
+        init_commands: List of initialization commands to run
+
+    Returns:
+        Configured and initialized LocalTerminal instance
+    """
+    terminal = LocalTerminal(
+        root_dir=workspace,  # New parameter: root_dir
+        workspace=workspace,  # Workspace within root_dir
+        create_workspace=False,  # Workspace should already exist
+        allowed_commands=allowed_commands or [],
+        disable_script_execution=disable_script_execution,
+        init_commands=init_commands
+    )
+
+    # Run initialization commands to sync current directory
+    await terminal.run_init_commands()
+
+    return terminal
+
+
+async def run_command_in_terminal(terminal: LocalTerminal, command: str, disable_sync: bool = False) -> tuple[str, int]:
     """Run a command in terminal and return output and exit code.
+
+    Args:
+        terminal: Terminal instance
+        command: Command to run
+        disable_sync: If True, run command without automatic directory sync
+
+    Returns:
+        Tuple of (output, exit_code)
+    """
+    try:
+        if disable_sync:
+            # Run command directly without sync (faster for simple commands)
+            output = await terminal._execute_with_timeout(f"{command}; echo '{terminal._COMMAND_DONE_MARKER}'", timeout=10.0)
+        else:
+            output = await terminal.run_command(f"{command}; echo $?")
+        lines = output.strip().split('\n')
+        if lines:
+            exit_code = int(lines[-1])
+            output = '\n'.join(lines[:-1])
+        else:
+            exit_code = 0
+
+        return output, exit_code
+    except Exception as e:
+        return str(e), 1
+
+
+async def run_command_in_terminal_async(terminal: LocalTerminal, command: str) -> tuple[str, int]:
+    """Run a command in terminal asynchronously and return output and exit code.
 
     Args:
         terminal: Terminal instance
@@ -149,7 +215,7 @@ def run_command_in_terminal(terminal: SingleThreadTerminal, command: str) -> tup
         Tuple of (output, exit_code)
     """
     try:
-        output = terminal.run_command(f"{command}; echo $?")
+        output = await terminal.run_command(f"{command}; echo $?")
         lines = output.strip().split('\n')
         if lines:
             exit_code = int(lines[-1])
@@ -163,7 +229,7 @@ def run_command_in_terminal(terminal: SingleThreadTerminal, command: str) -> tup
 
 
 def verify_file_content(
-    workspace: TestWorkspace,
+    workspace: WorkspaceHelper,
     file_path: str,
     expected_content: str,
     exact_match: bool = False
@@ -190,7 +256,7 @@ def verify_file_content(
         return False
 
 
-def count_lines_in_file(workspace: TestWorkspace, file_path: str) -> int:
+def count_lines_in_file(workspace: WorkspaceHelper, file_path: str) -> int:
     """Count the number of lines in a file.
 
     Args:
@@ -207,7 +273,7 @@ def count_lines_in_file(workspace: TestWorkspace, file_path: str) -> int:
         return 0
 
 
-def create_test_file_structure(workspace: TestWorkspace):
+def create_test_file_structure(workspace: WorkspaceHelper):
     """Create a standard test file structure.
 
     Args:
@@ -225,7 +291,7 @@ def create_test_file_structure(workspace: TestWorkspace):
 
 
 def assert_terminal_security(
-    terminal: SingleThreadTerminal,
+    terminal: LocalTerminal,
     forbidden_commands: list
 ):
     """Assert that terminal properly blocks forbidden commands.
@@ -242,7 +308,7 @@ def assert_terminal_security(
 
 
 def assert_terminal_functionality(
-    terminal: SingleThreadTerminal,
+    terminal: LocalTerminal,
     allowed_commands: list
 ):
     """Assert that terminal properly allows allowed commands.
@@ -258,6 +324,76 @@ def assert_terminal_functionality(
         assert terminal.check_command(cmd), f"Functionality issue: {cmd} should be allowed"
 
 
+async def assert_terminal_security_async(
+    terminal: LocalTerminal,
+    forbidden_commands: list
+):
+    """Assert that terminal properly blocks forbidden commands (async version).
+
+    Args:
+        terminal: Terminal instance to test
+        forbidden_commands: List of commands that should be blocked
+
+    Raises:
+        AssertionError: If any forbidden command is not properly blocked
+    """
+    for cmd in forbidden_commands:
+        assert not terminal.check_command(cmd), f"Security violation: {cmd} should be blocked"
+
+
+async def assert_terminal_functionality_async(
+    terminal: LocalTerminal,
+    allowed_commands: list
+):
+    """Assert that terminal properly allows allowed commands (async version).
+
+    Args:
+        terminal: Terminal instance to test
+        allowed_commands: List of commands that should be allowed
+
+    Raises:
+        AssertionError: If any allowed command is not properly allowed
+    """
+    for cmd in allowed_commands:
+        assert terminal.check_command(cmd), f"Functionality issue: {cmd} should be allowed"
+
+
+async def run_security_command_test(
+    terminal: LocalTerminal,
+    command: str,
+    should_be_blocked: bool = True,
+    allow_by_human: bool = False
+):
+    """Test a command execution with security expectations.
+
+    Args:
+        terminal: Terminal instance to test
+        command: Command to test
+        should_be_blocked: Whether the command should be blocked
+        allow_by_human: Whether to run with human permissions
+
+    Returns:
+        Tuple of (success: bool, output: str, error: Optional[str])
+    """
+    try:
+        if should_be_blocked:
+            # Command should be blocked by check_command
+            assert not terminal.check_command(command, allow_by_human=allow_by_human), \
+                f"Security violation: {command} should be blocked"
+            return True, "", None
+        else:
+            # Command should be allowed and execute successfully
+            output = await terminal.run_command(command, allow_by_human=allow_by_human)
+            return True, output, None
+    except (PermissionError, ValueError) as e:
+        if should_be_blocked:
+            return True, "", None  # Expected blocking
+        else:
+            return False, "", str(e)  # Unexpected blocking
+    except Exception as e:
+        return False, "", str(e)  # Unexpected error
+
+
 def get_system_info() -> dict:
     """Get system information for test environment.
 
@@ -271,3 +407,94 @@ def get_system_info() -> dict:
         "bash_available": bool(shutil.which("bash")),
         "sed_available": bool(shutil.which("sed")),
     }
+
+
+# Pytest fixtures for async testing
+@pytest.fixture
+def temp_workspace():
+    """Create a temporary workspace for testing."""
+    workspace = WorkspaceHelper()
+    workspace.create()
+    yield workspace
+    workspace.cleanup()
+
+
+@pytest.fixture
+async def async_terminal(temp_workspace):
+    """Create an async terminal instance for testing."""
+    terminal = await create_test_terminal_async(
+        workspace=temp_workspace.get_path(),
+        disable_script_execution=True
+    )
+    yield terminal
+    terminal.close()
+
+
+@pytest.fixture
+async def async_terminal_with_scripts(temp_workspace):
+    """Create an async terminal instance with script execution allowed."""
+    terminal = await create_test_terminal_async(
+        workspace=temp_workspace.get_path(),
+        disable_script_execution=False
+    )
+    yield terminal
+    terminal.close()
+
+
+@pytest.fixture
+async def async_terminal_with_allowed_commands(temp_workspace):
+    """Create an async terminal instance with specific allowed commands."""
+    terminal = await create_test_terminal_async(
+        workspace=temp_workspace.get_path(),
+        allowed_commands=["ls", "pwd", "echo", "cat", "find"],
+        disable_script_execution=True
+    )
+    yield terminal
+    terminal.close()
+
+
+# Lists of dangerous commands for security testing
+DANGEROUS_COMMANDS = [
+    "sudo rm -rf /",
+    "su root",
+    "shutdown now",
+    "reboot now",
+    "rm -rf *",
+    "rm -rf .*",
+    "dd if=/dev/zero of=/dev/sda",
+    "mkfs /dev/sda1",
+]
+
+# New prohibited commands from terminal.py updates
+NEW_PROHIBITED_COMMANDS = [
+    "chmod 777 file.txt",
+    "chmod +x script.sh",
+    "sudo chmod 777 /etc/passwd",
+    "apt install git",
+    "apt-get install nginx",
+    "yum install httpd",
+    "dnf install python3",
+    "brew install node",
+    "dpkg -i package.deb",
+    "rpm -ivh package.rpm"
+]
+
+# Command substitution attacks
+COMMAND_SUBSTITUTION_ATTACKS = [
+    "echo $(sudo ls)",
+    "cat $(find /etc -name passwd)",
+    "rm $(find . -name 'tmp*')",
+    "echo `sudo ls`",
+    "cat `find /etc -name passwd`",
+    "ls `whoami`"
+]
+
+# Safe commands for functionality testing
+SAFE_COMMANDS = [
+    "pwd",
+    "ls -la",
+    "echo 'hello world'",
+    "cat README.md",
+    "find . -name '*.txt'",
+    "grep 'pattern' file.txt"
+]

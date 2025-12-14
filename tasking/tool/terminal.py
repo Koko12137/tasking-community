@@ -5,20 +5,20 @@ This module implements a terminal abstraction with safety constraints, including
 workspace restrictions, command whitelisting/blacklisting, and script execution control.
 """
 
+import asyncio
 import os
 import subprocess
 import shlex
 import re
-import threading
-import time
-import fcntl
 import platform
+import signal
 from abc import ABC, abstractmethod
 from uuid import uuid4
-from typing import List, Optional
 from pathlib import Path
+from typing import List, Optional
 
 from loguru import logger
+from asyncer import syncify
 
 # ------------------------------
 # 核心常量定义（私有，避免外部修改）
@@ -47,7 +47,7 @@ _PROHIBITED_REGEX: list[dict[str, object]] = [
         "is_absolute": True
     },
     {
-        "regex": r'(shutdown -h now)|(reboot now)',  # 强制关机重启
+        "regex": r'(shutdown\s+(-h\s+)?now)|(reboot\s+now)',  # 强制关机重启（shutdown now、shutdown -h now、reboot now）
         "desc": "强制关机/重启",
         "is_absolute": True
     },
@@ -81,7 +81,14 @@ _PROHIBITED_REGEX: list[dict[str, object]] = [
         "is_absolute": True
     },
 
-    # 4. 软件包/系统管理命令（非人类允许时拦截）
+    # 4. 文件权限修改命令（非人类允许时拦截）
+    {
+        "regex": r'\bchmod\b',                    # 文件权限修改（chmod、chmod 777、chmod +x）
+        "desc": "文件权限修改",
+        "is_absolute": False
+    },
+    
+    # 5. 软件包/系统管理命令（非人类允许时拦截）
     {
         "regex": r'(apt\s+)|(apt-get\s+)|(yum\s+)|(dnf\s+)|(brew\s+)|(dpkg\s+)|(rpm\s+)',
         "desc": "软件包管理",
@@ -95,7 +102,7 @@ _COMMAND_SEPARATORS_PATTERN = re.compile(
     re.IGNORECASE
 )
 # 路径类命令清单（需重点校验路径参数的命令，用于强化日志提示）
-_PATH_SENSITIVE_COMMANDS = ["find", "grep", "ls", "cp", "mv", "rm", "cat", "sed"]
+_PATH_SENSITIVE_COMMANDS = ["find", "grep", "ls", "cp", "mv", "rm", "cat", "sed", "cd"]
 
 # rm命令精准删除校验正则（仅允许单个具体路径，排除通配符/批量符号）
 _RM_SAFE_PATH_PATTERN = re.compile(r'^[\w./-]+$')  # 只允许字母、数字、./-，无*、..
@@ -134,16 +141,16 @@ class ITerminal(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    def cd_to_workspace(self) -> None:
+    async def cd_to_workspace(self) -> None:
         """切换终端当前目录"""
+        raise NotImplementedError
 
     @abstractmethod
     def get_current_dir(self) -> str:
         """获取终端当前会话的工作目录（与bash状态实时同步）。
 
         Returns:
-            str: 当前目录绝对路径（如"/home/user/safe_w录切换到
-        workspace根目录，并同步内部状态。
+            str: 当前目录绝对路径（如"/home/user/safe_w录切换到workspace根目录，并同步内部状态。
 
         Raises:
             RuntimeError: workspace未初始化或终端未启动。
@@ -195,19 +202,19 @@ class ITerminal(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def acquire(self) -> None:
-        """获取终端使用信号量，确保线程安全。
+    async def acquire(self) -> None:
+        """获取终端使用信号量，确保并发安全。
 
-        同一时刻只能有一个线程/协程获取此信号量并使用终端。
+        同一时刻只能有一个任务获取此信号量并使用终端。
         调用方必须在完成终端操作后调用 release() 释放信号量。
 
         建议使用模式：
         ```
-        terminal.acquire()
+        await terminal.acquire()
         try:
-            terminal.run_command("ls")
+            await terminal.run_command("ls")
         finally:
-            terminal.release()
+            await terminal.release()
         ```
 
         Raises:
@@ -216,8 +223,8 @@ class ITerminal(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def release(self) -> None:
-        """释放终端使用信号量，唤醒等待的线程。
+    async def release(self) -> None:
+        """释放终端使用信号量，唤醒等待的任务。
 
         Raises:
             RuntimeError: 终端未启动或信号量释放失败。
@@ -237,7 +244,7 @@ class ITerminal(ABC):
         4. 禁止命令列表检查（拒绝列表内的危险命令）
         5. 路径范围检查（所有涉及路径的命令，均需在工作空间内）
 
-        Args：
+        Args:
             command: 待校验的bash命令字符串。
             allow_by_human: 是否由人类用户允许执行（True时跳过白名单和脚本限制）
 
@@ -250,15 +257,15 @@ class ITerminal(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def run_command(
+    async def run_command(
         self, command: str, allow_by_human: bool = False, timeout: Optional[float] = None
     ) -> str:
-        """执行bash命令，返回输出并同步终端状态（含安全校验）。
+        """执行bash命令，返回输出并同步终端状态（异步版本，含安全校验）。
 
         Args:
             command: 待执行的bash命令（如"grep 'key' ./file.txt"、"find ./src -name '*.py'"）。
             allow_by_human: 被人类允许执行
-            timeout: 超时时间（秒），None表示不限制超时
+            timeout: 超时时间（秒），None表示不限制超时。使用协程超时机制。
 
         Returns:
             str: 命令标准输出（已过滤空行与标记）。
@@ -268,6 +275,27 @@ class ITerminal(ABC):
             PermissionError: 命令未通过安全校验（如在黑名单、路径越界）。
             subprocess.SubprocessError: 命令执行中发生IO错误。
             TimeoutError: 命令执行超时。
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def read_process(self, stop_word: str) -> str:
+        """读取终端输出。
+
+        Returns:
+            str: 终端标准输出。
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def write_process(self, data: str) -> None:
+        """写入终端输入并等待输出完成。
+
+        Args:
+            data: 要写入的数据。
+            
+        Note:
+            写入后会等待命令执行完成（通过读取完成标记）。
         """
         raise NotImplementedError
 
@@ -283,6 +311,15 @@ class LocalTerminal(ITerminal):
     - 人类允许时可以跳出workspace，但绝对禁止危险命令
     - 强化路径校验：find/grep等路径类命令均需通过工作空间边界检查
     - 线程安全：通过 threading.RLock 确保同一时刻只有一个线程使用终端
+
+    平台支持：
+    - ✅ Linux：完全支持（使用 /proc/<pid>/cwd 获取真实目录）
+    - ✅ macOS (Darwin)：完全支持（使用 pwd -P 获取真实目录）
+    - ❌ Windows：不支持（需要 bash 和 /proc 文件系统）
+    - ❌ 其他系统：不支持
+
+    注意：此实现依赖于 Unix/Linux 系统的特性（如 bash、/proc 文件系统），
+    在 Windows 系统上无法运行。如需 Windows 支持，请使用其他终端实现。
     """
     _terminal_id: str                   # 终端唯一标识符
     _root_dir: str                      # 根目录路径（绝对路径）
@@ -291,7 +328,7 @@ class LocalTerminal(ITerminal):
     _process: subprocess.Popen[str]     # 长期bash进程
     _allowed_commands: List[str]        # 允许命令列表（白名单）
     _disable_script_execution: bool     # 是否禁用脚本执行
-    _lock: threading.RLock              # 线程锁，确保线程安全
+    _lock: asyncio.Lock                 # 异步锁，确保并发安全
     _init_commands: list[str]           # 初始化命令
 
     def __init__(
@@ -316,16 +353,29 @@ class LocalTerminal(ITerminal):
             ValueError: root_dir不是绝对路径，或绝对路径的workspace不在root_dir下。
             FileNotFoundError: 根目录或工作空间不存在且create_workspace=False。
             NotADirectoryError: root_dir或workspace路径存在但不是目录。
-            RuntimeError: 终端进程启动失败。
+            RuntimeError: 终端进程启动失败或不支持当前操作系统。
         """
         # 检查当前系统，仅支持类Unix系统（Linux、macOS等）
-        if platform.system() not in {"Linux", "Darwin"}:
+        current_system = platform.system()
+        if current_system not in {"Linux", "Darwin"}:
+            supported_systems = "Linux 和 macOS (Darwin)"
             raise RuntimeError(
-                f"LocalTerminal仅支持类Unix系统，当前系统为：{platform.system()}"
+                f"LocalTerminal 仅支持类 Unix 系统（{supported_systems}），"
+                f"当前系统为：{current_system}\n"
+                f"\n"
+                f"原因：此实现依赖于 Unix/Linux 系统特性：\n"
+                f"  - bash shell（Windows 默认使用 cmd/PowerShell）\n"
+                f"  - /proc 文件系统（用于获取进程真实目录）\n"
+                f"  - fcntl 模块（用于非阻塞 I/O）\n"
+                f"\n"
+                f"解决方案：\n"
+                f"  - 在 Linux 或 macOS 系统上运行\n"
+                f"  - 在 Windows 上使用 WSL (Windows Subsystem for Linux)\n"
+                f"  - 或使用其他支持 Windows 的终端实现"
             )
         
         self._terminal_id = uuid4().hex  # 生成唯一终端ID
-        self._lock = threading.RLock()   # 初始化线程锁（可重入锁）
+        self._lock = asyncio.Lock()      # 初始化异步锁
 
         # 1. 处理根目录：必须传入绝对路径
         if not os.path.isabs(root_dir):
@@ -373,31 +423,58 @@ class LocalTerminal(ITerminal):
         self._allowed_commands = allowed_commands.copy() if allowed_commands else []
         self._disable_script_execution = disable_script_execution
 
-        # 4. 初始化终端状态，启动进程
+        # 3. 初始化终端状态，启动进程
         self._current_dir = ""
         self.open()  # 自动启动终端进程
 
-        # 5. 直接切换到工作空间目录（初始化时允许从任何目录切换）
+        self._init_commands = init_commands if init_commands is not None else []
+        # 4. 同步运行异步初始化命令
+        try:
+            # 优先尝试 syncify（正常情况）
+            try:
+                syncify(self.run_init_commands)()
+            except Exception as syncify_error:
+                # syncify失败时，尝试使用 asyncio.run（无事件循环情况）
+                try:
+                    asyncio.run(self.run_init_commands())
+                except RuntimeError:
+                    # 也有事件循环，但syncify不兼容（如pytest async模式），使用concurrent.futures
+                    logger.warning(f"syncify和asyncio.run都失败，使用ThreadPoolExecutor fallback: {syncify_error}")
+                    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(lambda: asyncio.run(self.run_init_commands()))
+                        try:
+                            future.result(timeout=10)
+                        except FutureTimeoutError:
+                            raise RuntimeError("终端初始化超时")
+        except Exception as e:
+            logger.error(f"终端初始化失败: {e}")
+            raise
+
+    async def run_init_commands(self) -> None:
+        """运行初始化命令（异步版本）"""
+        # 直接切换到工作空间目录（初始化时允许从任何目录切换）
         logger.info(f"🔄 切换到工作空间目录：{self._workspace}")
         try:
             # 直接发送cd命令，绕过安全检查（因为这是初始化步骤）
-            if not self._process or not self._process.stdin:
-                raise RuntimeError("终端进程或输入流未初始化")
-            cd_cmd = f"cd {self._workspace}\n"
-            self._process.stdin.write(cd_cmd)
-            self._process.stdin.flush()
-
+            # 使用 shlex.quote 转义路径，处理特殊字符
+            quoted_workspace = shlex.quote(self._workspace)
+            cd_cmd = f"cd {quoted_workspace}"
+            await self.write_process(cd_cmd)
             # 同步当前目录（现在目录已经在workspace内，使用正常同步方法）
-            self._sync_current_dir()
+            await self._sync_current_dir()
             logger.info(f"✅ 已切换到工作空间目录：{self._current_dir}")
         except Exception as e:
             logger.error(f"❌ 切换到工作空间目录失败：{e}")
             raise
 
-        # 6. 运行初始化命令
-        self._init_commands = init_commands if init_commands is not None else []
         for cmd in self._init_commands:
-            self.run_command(cmd)
+            try:
+                await self.run_command(cmd)
+                logger.info(f"✅ 初始化命令执行成功：{cmd}")
+            except Exception as e:
+                logger.error(f"❌ 初始化命令执行失败：{cmd}，错误：{e}")
 
     def get_id(self) -> str:
         return self._terminal_id
@@ -407,39 +484,43 @@ class LocalTerminal(ITerminal):
             raise RuntimeError("工作空间未初始化（内部错误）")
         return self._workspace
 
-    def cd_to_workspace(self) -> None:
+    async def cd_to_workspace(self) -> None:
         """切换终端当前目录到workspace根目录（支持含特殊字符的路径）"""
         workspace = self.get_workspace()
         try:
-            if not self._process or not self._process.stdin:
-                raise RuntimeError("终端进程或输入流未初始化")
-            
             # 用shlex.quote转义路径（处理空格、引号等特殊字符）
             quoted_workspace = shlex.quote(workspace)
-            cd_cmd = f"cd {quoted_workspace}\n"
-            self._process.stdin.write(cd_cmd)
-            self._process.stdin.flush()
+            # 使用 write_process 执行 cd 命令（会自动等待完成标记）
+            cd_cmd = f"cd {quoted_workspace}"
+            await self._execute_with_timeout(cd_cmd, timeout=5.0)  # 5s timeout for cd
 
             # 同步当前目录
-            self._sync_current_dir()
+            await self._sync_current_dir()
             logger.info(f"🔄 已切换到workspace目录（含特殊字符处理）：{workspace}")
         except Exception as e:
             logger.error(f"❌ 切换到workspace目录失败：{e}")
             raise
 
-    def acquire(self) -> None:
-        """获取终端使用信号量，确保线程安全"""
+    async def acquire(self) -> None:
+        """获取终端使用信号量，确保并发安全"""
         if not self._process or self._process.poll() is not None:
             raise RuntimeError("终端未运行或已退出")
-        logger.debug(f"🔒 线程 {threading.current_thread().name} 获取终端锁")
-        self._lock.acquire()
+        current_task = asyncio.current_task()
+        task_name = current_task.get_name() if current_task else 'unknown'
+        logger.debug(f"🔒 任务 {task_name} 获取终端锁")
+        await self._lock.acquire()
 
-    def release(self) -> None:
-        """释放终端使用信号量，唤醒等待的线程"""
-        if not self._process or self._process.poll() is not None:
-            raise RuntimeError("终端未运行或已退出")
+    async def release(self) -> None:
+        """释放终端使用信号量，唤醒等待的任务"""
+        # 检查进程是否存在（在关闭过程中可能已被删除）
+        if hasattr(self, '_process') and self._process:
+            if self._process.poll() is not None:
+                raise RuntimeError("终端未运行或已退出")
+        # 如果进程不存在，可能是正在关闭，仍然尝试释放锁
         self._lock.release()
-        logger.debug(f"🔓 线程 {threading.current_thread().name} 释放终端锁")
+        current_task = asyncio.current_task()
+        task_name = current_task.get_name() if current_task else 'unknown'
+        logger.debug(f"🔓 任务 {task_name} 释放终端锁")
 
     def get_current_dir(self) -> str:
         if self._current_dir == "":
@@ -462,6 +543,7 @@ class LocalTerminal(ITerminal):
 
         try:
             # 启动长期bash进程（配置双向管道与行缓冲）
+            # 指定工作目录为workspace，避免后续cd操作
             self._process = subprocess.Popen(
                 args=["bash"],
                 stdin=subprocess.PIPE,
@@ -473,18 +555,19 @@ class LocalTerminal(ITerminal):
                 close_fds=True,            # 关闭无关文件描述符，减少资源占用
                 encoding='utf-8',
                 errors='replace',
+                cwd=self._workspace,  # 直接指定工作目录
             )
-            logger.info(f"✅ 终端进程启动成功（PID: {self._process.pid}）")
+            logger.info(f"✅ 终端进程启动成功（PID: {self._process.pid}），工作目录：{self._workspace}")
 
         except Exception as e:
             raise RuntimeError(f"终端进程启动失败：{str(e)}") from e
         
-    def _get_real_current_dir(self) -> str:
-        """私有辅助方法：获取进程真实当前工作目录（避免pwd被篡改）。
+    async def _get_real_current_dir(self) -> str:
+        """私有辅助方法：获取bash子进程的真实当前工作目录（避免pwd被篡改）。
         
         优先级：
-        1. Linux：/proc/self/cwd（内核维护，不可篡改）；
-        2. 其他系统：pwd -P（强制物理路径，忽略PWD环境变量）。
+        1. Linux：/proc/<pid>/cwd（bash子进程的当前目录，内核维护，不可篡改）；
+        2. 其他系统：通过bash执行pwd -P（强制物理路径，忽略PWD环境变量）。
         
         Returns:
             str: 真实当前目录绝对路径。
@@ -492,38 +575,37 @@ class LocalTerminal(ITerminal):
         Raises:
             RuntimeError: 获取真实目录失败。
         """
-        # 场景1：Linux系统（优先使用/proc/self/cwd）
-        proc_cwd_path = "/proc/self/cwd"
+        if not self._process:
+            raise RuntimeError("终端进程未启动，无法获取当前目录")
+        
+        # 场景1：Linux系统（优先使用/proc/<pid>/cwd获取bash子进程的目录）
+        proc_cwd_path = f"/proc/{self._process.pid}/cwd"
         if os.path.exists(proc_cwd_path) and os.path.islink(proc_cwd_path):
             try:
                 # 读取符号链接指向的真实路径（内核保证准确性）
                 real_cwd = os.readlink(proc_cwd_path)
                 # 转为绝对路径（处理符号链接可能的相对路径）
                 real_cwd_abs = os.path.abspath(real_cwd)
-                logger.debug(f"📌 从/proc/self/cwd获取真实目录：{real_cwd_abs}")
+                logger.debug(f"📌 从/proc/{self._process.pid}/cwd获取真实目录：{real_cwd_abs}")
                 return real_cwd_abs
             except (OSError, ValueError) as e:
-                logger.warning(f"⚠️ /proc/self/cwd读取失败，降级使用pwd -P：{str(e)[:50]}")
+                logger.warning(f"⚠️ /proc/{self._process.pid}/cwd读取失败，降级使用pwd -P：{str(e)[:50]}")
 
-        # 场景2：非Linux系统（降级使用pwd -P）
+        # 场景2：非Linux系统或/proc不可用（通过bash执行pwd -P）
+        # 注意：这里需要通过bash进程执行pwd，而不是直接使用subprocess
+        # 因为我们需要获取bash子进程的当前目录，而不是Python进程的目录
         try:
-            # pwd -P：强制获取物理路径，忽略PWD环境变量和符号链接
-            result = subprocess.check_output(
-                ["pwd", "-P"],
-                stdin=subprocess.DEVNULL,
-                stderr=subprocess.STDOUT,
-                encoding="utf-8",
-                cwd=self._root_dir  # 避免父进程目录影响
-            )
-            real_cwd_abs = result.strip()
-            logger.debug(f"📌 从pwd -P获取真实目录：{real_cwd_abs}")
-            return real_cwd_abs
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"获取真实目录失败（pwd -P执行错误）：{e.output.strip()}") from e
+            # 发送 pwd 命令（使用与 run_command 相同的格式）
+            wrapped_cmd = f"pwd -P"
+            output = await self._execute_with_timeout(wrapped_cmd, timeout=5.0)  # 5s timeout for pwd
+            return output.strip()
+            
         except Exception as e:
-            raise RuntimeError(f"获取真实目录失败：{str(e)[:50]}") from e
+            # 最后的fallback：使用root_dir
+            logger.warning(f"⚠️ 获取bash当前目录失败：{str(e)[:50]}，使用root_dir作为fallback")
+            return self._root_dir
 
-    def _sync_current_dir(self) -> None:
+    async def _sync_current_dir(self) -> None:
         """私有方法：同步bash会话的真实当前目录到_current_dir（防篡改）。
         
         优化点：
@@ -535,7 +617,7 @@ class LocalTerminal(ITerminal):
 
         try:
             # 步骤1：获取进程真实当前目录（核心修改：替换pwd命令）
-            real_cwd = self._get_real_current_dir()
+            real_cwd = await self._get_real_current_dir()
 
             # 步骤2：校验真实目录是否在根目录范围内（安全边界）
             if not real_cwd.startswith(self._root_dir):
@@ -551,8 +633,6 @@ class LocalTerminal(ITerminal):
             # 日志提示（区分是否在workspace内）
             if real_cwd.startswith(self._workspace):
                 logger.info(f"🔄 同步终端当前目录：{real_cwd} (在workspace内)")
-            else:
-                logger.info(f"🔄 同步终端当前目录：{real_cwd} (在workspace外，但在root_dir内)")
 
         except Exception as e:
             raise RuntimeError(f"目录同步失败：{str(e)}") from e
@@ -573,17 +653,54 @@ class LocalTerminal(ITerminal):
         Returns:
             list[str]: 分割后的独立命令列表（去除首尾空格）。
         """
-        # 使用正则表达式分割命令
-        parts = _COMMAND_SEPARATORS_PATTERN.split(command)
+        try:
+            if not _COMMAND_SEPARATORS_PATTERN.search(command):
+                return [command.strip()] if command.strip() else []
 
-        # 过滤空命令并去除首尾空格
-        commands: list[str] = []
-        for part in parts:
-            trimmed = part.strip()
-            if trimmed:  # 只保留非空命令
-                commands.append(trimmed)
+            commands: list[str] = []
+            current_command = ""
+            in_single_quote = False
+            in_double_quote = False
+            i = 0
 
-        return commands
+            while i < len(command):
+                char = command[i]
+                if char == "'" and not in_double_quote:
+                    in_single_quote = not in_single_quote
+                    current_command += char
+                elif char == '"' and not in_single_quote:
+                    in_double_quote = not in_double_quote
+                    current_command += char
+                elif char == "\\" and (in_single_quote or in_double_quote):
+                    current_command += char
+                    i += 1
+                    if i < len(command):
+                        current_command += command[i]
+                elif not in_single_quote and not in_double_quote:
+                    if i < len(command) - 1 and command[i:i+2] in ("&&", "||"):
+                        if current_command.strip():
+                            commands.append(current_command.strip())
+                        current_command = ""
+                        i += 1
+                    elif char in (";", "|", "\n"):
+                        if current_command.strip():
+                            commands.append(current_command.strip())
+                        current_command = ""
+                    else:
+                        current_command += char
+                else:
+                    current_command += char
+
+                i += 1
+
+            if current_command.strip():
+                commands.append(current_command.strip())
+
+            return commands if commands else [command.strip()] if command.strip() else []
+        except Exception:
+            parts = _COMMAND_SEPARATORS_PATTERN.split(command)
+            commands = [p.strip() for p in parts if p.strip()]
+            return commands if commands else [command.strip()] if command.strip() else []
 
     def _is_script_command(self, command: str) -> bool:
         """私有方法：判断命令是否包含脚本执行（支持复合命令+带路径解释器检测）。
@@ -628,12 +745,18 @@ class LocalTerminal(ITerminal):
             if not single_cmd_stripped:
                 continue  # 跳过空命令片段
 
-            # 4. 检查当前独立命令是否命中任一脚本规则
+            # 排除重定向操作符后的文件名（如 echo 'hello' > test.sh 中的 test.sh 不是脚本执行）
+            # 移除重定向操作符及其后的内容（>、>>、<、2>、&> 等）
+            cmd_without_redirect = re.sub(r'\s*[<>]+\s*\S+', '', single_cmd_stripped)
+            cmd_without_redirect = re.sub(r'\s*2>\s*\S+', '', cmd_without_redirect)
+            cmd_without_redirect = re.sub(r'\s*&\s*[<>]\s*\S+', '', cmd_without_redirect)
+            
+            # 4. 检查当前独立命令是否命中任一脚本规则（使用去除重定向后的命令）
             for rule in script_rules:
                 # 用正则匹配：忽略大小写（已预处理小写，此处可简化）
-                match = re.search(rule, single_cmd_stripped)
+                match = re.search(rule, cmd_without_redirect)
                 if match:
-                    # 特殊排除：避免将“目录路径”误判为脚本（如 ./dir/ 不是脚本）
+                    # 特殊排除：避免将"目录路径"误判为脚本（如 ./dir/ 不是脚本）
                     matched_str = match.group(0).strip()
                     # 排除场景1：以 / 结尾（是目录，如 /usr/bin/）
                     if matched_str.endswith('/'):
@@ -691,7 +814,6 @@ class LocalTerminal(ITerminal):
                         f"  执行命令：{command_stripped}"
                     )
                     return True
-                    return True
 
         # 额外校验：rm命令的路径是否为“精准路径”（排除通配符/特殊符号）
         if cmd_name == "rm":
@@ -734,7 +856,35 @@ class LocalTerminal(ITerminal):
         if self._is_prohibited_command(command_stripped, allow_by_human):
             return True
 
-        # 步骤2：正则匹配「命令执行型嵌套」（支持转义/未转义引号）
+        # 步骤2：检查命令替换 $() 和 ``
+        # 匹配 $(...) 和 `...`
+        substitution_patterns = [
+            r'\$\(([^)]+)\)',  # $(command)
+            r'`([^`]+)`',      # `command`
+        ]
+        
+        for pattern in substitution_patterns:
+            matches = re.finditer(pattern, command_stripped)
+            for match in matches:
+                nested_cmd = match.group(1).strip()
+                if nested_cmd:
+                    # 递归检查嵌套命令
+                    if self._is_prohibited_command(nested_cmd, allow_by_human):
+                        logger.error(
+                            f"❌ 命令替换包含禁止操作：{match.group(0)} → {nested_cmd}"
+                        )
+                        return True
+                    # 检查嵌套命令的路径约束（如 find / 应该被拦截）
+                    if not self._check_path_constraints(nested_cmd, allow_by_human):
+                        logger.error(
+                            f"❌ 命令替换中的路径超出范围：{match.group(0)} → {nested_cmd}"
+                        )
+                        return True
+                    # 递归检查嵌套命令中的逃逸命令
+                    if self._has_escaped_prohibited_cmd(nested_cmd, allow_by_human):
+                        return True
+
+        # 步骤3：正则匹配「命令执行型嵌套」（支持转义/未转义引号）
         # 正则说明：
         # - ^.*?(bash|sh|python|python3|node|go) -c\s*：匹配执行命令的解释器（如 bash -c）
         # - (?:\\\\['"]|['"]])：匹配开头的转义引号（\\\\\"）或未转义引号（"）
@@ -813,7 +963,11 @@ class LocalTerminal(ITerminal):
             str: 提取后的纯命令名（小写，统一匹配格式）。
         """
         # 1. 拆分命令词（仅取第一个，排除参数，如 "go run" → "go"）
-        cmd_parts = shlex.split(command_path.strip())
+        try:
+            cmd_parts = shlex.split(command_path.strip())
+        except ValueError:
+            # 引号未闭合等语法错误，使用简单分割
+            cmd_parts = command_path.strip().split()
         if not cmd_parts:
             return ""
         
@@ -886,7 +1040,12 @@ class LocalTerminal(ITerminal):
         - 其他路径命令：保留原逻辑（允许workspace内合法路径）
         """
         try:
-            cmd_parts = shlex.split(command)
+            # 尝试使用 shlex.split，但如果引号未闭合则使用简单分割
+            try:
+                cmd_parts = shlex.split(command)
+            except ValueError:
+                # 引号未闭合等语法错误，使用简单分割
+                cmd_parts = command.split()
             if not cmd_parts:
                 return True
 
@@ -894,8 +1053,181 @@ class LocalTerminal(ITerminal):
             # 非路径敏感命令直接放行
             if cmd_name not in _PATH_SENSITIVE_COMMANDS:
                 return True
+            
+            # echo 命令的参数不应该被当作路径检查（echo 只是输出文本）
+            if cmd_name == "echo":
+                return True
+            
+            # sed 命令的特殊处理：sed 的参数格式是 sed [options] 'script' [file...]
+            # 需要跳过 sed 脚本（引号内的内容），只检查文件路径
+            if cmd_name == "sed":
+                # sed 命令格式：sed [options] 'script' [file...]
+                # 找到第一个非选项参数（通常是 sed 脚本），然后检查后面的文件路径
+                file_args: list[str] = []
+                skip_next = False
+                script_found = False
+                for arg in cmd_parts[1:]:
+                    if skip_next:
+                        skip_next = False
+                        continue
+                    arg_stripped = arg.strip()
+                    # 跳过选项（如 -i, -e, -f）
+                    if arg_stripped.startswith("-"):
+                        # -i 选项可能带参数（如 -i.bak），需要跳过
+                        if "=" in arg_stripped:
+                            continue
+                        # 某些选项需要参数（如 -f scriptfile），跳过下一个参数
+                        if arg_stripped in ("-f", "-e", "--expression", "--file"):
+                            skip_next = True
+                            continue
+                        continue
+                    # 跳过 sed 脚本（引号内的内容，或包含 sed 操作符的内容）
+                    # sed 脚本通常包含 /、s/、d、a\、i\、c\ 等操作符
+                    if (arg_stripped.startswith("'") and arg_stripped.endswith("'")) or \
+                       (arg_stripped.startswith('"') and arg_stripped.endswith('"')) or \
+                       ("/" in arg_stripped and ("s/" in arg_stripped or "/d" in arg_stripped or "/a" in arg_stripped or "/i" in arg_stripped or "/c" in arg_stripped)) or \
+                       (not script_found and ("s/" in arg_stripped or "/d" in arg_stripped or "/a" in arg_stripped or "/i" in arg_stripped or "/c" in arg_stripped)):
+                        script_found = True
+                        continue
+                    # 剩余的参数应该是文件路径（在找到脚本之后）
+                    if script_found and arg_stripped and not arg_stripped.startswith("-"):
+                        file_args.append(arg_stripped)
+                
+                # 检查文件路径
+                for file_arg in file_args:
+                    if not file_arg or file_arg == "/":
+                        continue
+                    try:
+                        if os.path.isabs(file_arg):
+                            path_obj = Path(file_arg).expanduser()
+                        else:
+                            path_obj = Path(self._current_dir).joinpath(file_arg).expanduser()
+                        abs_path = str(path_obj.resolve(strict=False))
+                    except (ValueError, OSError) as e:
+                        logger.warning(f"⚠️ sed文件路径参数{file_arg}不是合法本地路径，跳过校验：{str(e)[:50]}")
+                        continue
+                    
+                    # 检查路径是否在允许范围内
+                    if not abs_path.startswith(self._root_dir):
+                        logger.error(
+                            f"❌ sed命令文件路径超出根目录范围：\n"
+                            f"  根目录：{self._root_dir}\n"
+                            f"  非法路径：{abs_path}\n"
+                            f"  执行命令：{command}"
+                        )
+                        return False
+                    
+                    # 非人类允许时，必须在 workspace 内
+                    if not allow_by_human and not abs_path.startswith(self._workspace):
+                        logger.error(
+                            f"❌ sed命令文件路径超出workspace：\n"
+                            f"  workspace：{self._workspace}\n"
+                            f"  非法路径：{abs_path}\n"
+                            f"  执行命令：{command}\n"
+                            f"  提示：如需跳出workspace，请使用 allow_by_human=True"
+                        )
+                        return False
+                
+                # sed 命令检查完成
+                return True
 
-            # 遍历所有参数，逐个校验路径
+            # 特殊处理：cd 命令必须检查目标路径
+            if cmd_name == "cd":
+                # cd 命令的参数是目标目录
+                if len(cmd_parts) > 1:
+                    target_dir = cmd_parts[1].strip()
+                else:
+                    # cd 无参数，切换到 home 目录，允许
+                    return True
+                
+                # 排除非路径参数
+                if target_dir.startswith("-"):
+                    return True  # cd - 等选项，允许
+                
+                # 解析目标路径
+                try:
+                    if os.path.isabs(target_dir):
+                        path_obj = Path(target_dir).expanduser()
+                    else:
+                        path_obj = Path(self._current_dir).joinpath(target_dir).expanduser()
+                    abs_path = str(path_obj.resolve(strict=False))
+                except (ValueError, OSError) as e:
+                    logger.warning(f"⚠️ cd目标路径{target_dir}不是合法本地路径，跳过校验：{str(e)[:50]}")
+                    return True  # 路径解析失败，保守允许
+                
+                # 检查目标路径是否在允许范围内
+                if not abs_path.startswith(self._root_dir):
+                    logger.error(
+                        f"❌ cd命令目标路径超出根目录范围：\n"
+                        f"  根目录：{self._root_dir}\n"
+                        f"  非法路径：{abs_path}\n"
+                        f"  执行命令：{command}"
+                    )
+                    return False
+                
+                # cd 命令：非人类允许时必须在workspace内
+                if not allow_by_human and not abs_path.startswith(self._workspace):
+                    logger.error(
+                        f"❌ cd命令目标路径超出workspace：\n"
+                        f"  workspace：{self._workspace}\n"
+                        f"  非法路径：{abs_path}\n"
+                        f"  提示：如需跳出workspace，请使用 allow_by_human=True"
+                    )
+                    return False
+                
+                # cd 命令校验通过
+                return True
+
+            # 特殊处理 find 命令：find 的第一个非选项参数是搜索路径
+            if cmd_name == "find":
+                # find 命令格式：find [path] [options] [expression]
+                # 第一个非选项参数是搜索路径
+                path_found = False
+                for arg in cmd_parts[1:]:
+                    arg_stripped = arg.strip()
+                    if not arg_stripped:
+                        continue
+                    # 跳过选项参数（如 -name、-type、-mtime 等）
+                    if arg_stripped.startswith("-"):
+                        continue
+                    # 第一个非选项参数是搜索路径
+                    if not path_found:
+                        path_found = True
+                        # 检查这个路径（包括 "/"）
+                        if arg_stripped == "/":
+                            # "/" 是根目录，肯定超出 root_dir
+                            logger.error(
+                                f"❌ find命令搜索路径超出根目录范围：\n"
+                                f"  根目录：{self._root_dir}\n"
+                                f"  非法路径：/\n"
+                                f"  执行命令：{command}"
+                            )
+                            return False
+                        try:
+                            if os.path.isabs(arg_stripped):
+                                path_obj = Path(arg_stripped).expanduser()
+                            else:
+                                path_obj = Path(self._current_dir).joinpath(arg_stripped).expanduser()
+                            abs_path = str(path_obj.resolve(strict=False))
+                        except (ValueError, OSError) as e:
+                            logger.warning(f"⚠️ find路径参数{arg_stripped}不是合法本地路径，跳过校验：{str(e)[:50]}")
+                            continue
+                        
+                        # 检查路径是否在允许范围内
+                        if not abs_path.startswith(self._root_dir):
+                            logger.error(
+                                f"❌ find命令搜索路径超出根目录范围：\n"
+                                f"  根目录：{self._root_dir}\n"
+                                f"  非法路径：{abs_path}\n"
+                                f"  执行命令：{command}"
+                            )
+                            return False
+                        # find 命令只需要检查第一个路径参数
+                        break
+                # find 命令检查完成
+                return True
+            
+            # 遍历所有参数，逐个校验路径（非cd、非find命令）
             for arg in cmd_parts[1:]:
                 arg_stripped = arg.strip()
                 # 排除非路径参数（URL、纯选项等）
@@ -904,9 +1236,13 @@ class LocalTerminal(ITerminal):
                 if not arg_stripped or arg_stripped == "/":
                     continue
 
-                # 解析路径（处理~用户目录、相对路径）
+                # 解析路径（处理~用户目录、相对路径、绝对路径）
                 try:
-                    path_obj = Path(self._current_dir).joinpath(arg_stripped).expanduser()
+                    # 如果是绝对路径，直接使用；否则相对于当前目录
+                    if os.path.isabs(arg_stripped):
+                        path_obj = Path(arg_stripped).expanduser()
+                    else:
+                        path_obj = Path(self._current_dir).joinpath(arg_stripped).expanduser()
                     abs_path = str(path_obj.resolve(strict=False))
                 except (ValueError, OSError) as e:
                     logger.warning(f"⚠️ 参数{arg}不是合法本地路径，跳过校验：{str(e)[:50]}")
@@ -934,7 +1270,7 @@ class LocalTerminal(ITerminal):
                         return False
 
                 # 3. 其他命令：非人类允许时必须在workspace内
-                elif not allow_by_human and not abs_path.startswith(self._workspace):
+                if cmd_name != "rm" and not allow_by_human and not abs_path.startswith(self._workspace):
                     logger.error(
                         f"❌ 路径超出workspace：\n"
                         f"  workspace：{self._workspace}\n"
@@ -965,106 +1301,7 @@ class LocalTerminal(ITerminal):
         if not self._process.stdin or not self._process.stdout:
             raise RuntimeError("终端进程输入/输出流未初始化")
 
-    def _read_command_output_nonblocking(self, timeout: Optional[float], command: str) -> list[str]:
-        """私有方法：使用非阻塞方式读取命令输出。
-
-        Args:
-            timeout: 超时时间（秒）
-            command: 执行的命令（用于错误信息）
-
-        Returns:
-            list[str]: 命令输出行列表
-
-        Raises:
-            TimeoutError: 命令执行超时
-            RuntimeError: 终端进程意外退出
-        """
-        if not self._process:
-            raise RuntimeError("终端进程未初始化")
-
-        output: list[str] = []
-        start_time = time.time()
-
-        while True:
-            # 检查是否超时
-            if timeout is not None:
-                elapsed = time.time() - start_time
-                if elapsed >= timeout:
-                    raise TimeoutError(f"命令执行超时（{timeout}秒）：{command}")
-
-            # 使用非阻塞方式检查进程状态
-            if self._process.poll() is not None:
-                # 进程已退出，读取剩余输出
-                if self._process.stdout:
-                    remaining_output = self._process.stdout.read()
-                    if remaining_output:
-                        for line in remaining_output.splitlines():
-                            line_clean = line.rstrip("\n")
-                            if line_clean == _COMMAND_DONE_MARKER:
-                                break
-                            if line_clean.strip():
-                                output.append(line_clean)
-                break
-
-            # 尝试非阻塞读取
-            line = self._try_nonblocking_read()
-            if line is None:
-                # 没有数据可读，等待一小段时间
-                time.sleep(0.01)
-                continue
-
-            # 处理读取到的行
-            line_clean = line.rstrip("\n")
-            if line_clean == _COMMAND_DONE_MARKER:
-                break  # 遇到标记，停止读取
-            if line_clean.strip():
-                output.append(line_clean)
-
-        return output
-
-    def _try_nonblocking_read(self) -> str | None:
-        """私有方法：尝试非阻塞读取一行输出。
-
-        Returns:
-            str | None: 读取到的行，如果没有数据则返回None
-
-        Raises:
-            RuntimeError: 终端进程意外退出
-        """
-        if not self._process or not self._process.stdout:
-            return None
-
-        try:
-            # 设置文件描述符为非阻塞模式
-            fd = self._process.stdout.fileno()
-            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
-            # 尝试读取数据
-            try:
-                line = self._process.stdout.readline()
-                return line if line else None
-            except OSError:
-                # 没有数据可读
-                return None
-            finally:
-                # 恢复阻塞模式
-                fcntl.fcntl(fd, fcntl.F_SETFL, flags)
-
-        except (AttributeError, OSError) as exc:
-            # 如果fcntl操作失败，使用简单的阻塞读取
-            if self._process.stdout:
-                line = self._process.stdout.readline()
-                if not line:
-                    if self._process and self._process.poll() is not None:
-                        raise RuntimeError(
-                            f"终端进程意外退出（PID: {self._process.pid}），命令执行中断"
-                        ) from exc
-                    return None
-                return line
-            return None
-
-    def _sync_directory_if_needed(self, command: str) -> None:
+    async def _sync_directory_if_needed(self, command: str) -> None:
         """私有方法：如果命令包含cd操作，同步当前目录。
 
         Args:
@@ -1072,7 +1309,7 @@ class LocalTerminal(ITerminal):
         """
         cmd_lower = command.strip().lower()
         if "cd " in cmd_lower or cmd_lower == "cd":
-            self._sync_current_dir()
+            await self._sync_current_dir()
 
     def check_command(self, command: str, allow_by_human: bool = False) -> bool:
         """按固定顺序执行命令安全校验（允许列表→脚本→逃逸→禁止列表→路径）。
@@ -1146,15 +1383,15 @@ class LocalTerminal(ITerminal):
             logger.info(f"✅ 命令安全可执行：{command_stripped}")
         return True
 
-    def run_command(
+    async def run_command(
         self, command: str, allow_by_human: bool = False, timeout: float | None = None
     ) -> str:
-        """执行bash命令，返回输出并同步终端状态（含安全校验）。
+        """执行bash命令，返回输出并同步终端状态（异步版本，含安全校验）。
 
         Args:
             command: 待执行的bash命令（如"grep 'key' ./file.txt"、"find ./src -name '*.py'"）。
             allow_by_human: 被人类允许执行
-            timeout: 超时时间（秒），None表示不限制超时
+            timeout: 超时时间（秒），None表示等待 indefinitely。如果未指定，则等待命令自然完成。
 
         Returns:
             str: 命令标准输出（已过滤空行与标记）。
@@ -1165,47 +1402,123 @@ class LocalTerminal(ITerminal):
             subprocess.SubprocessError: 命令执行中发生IO错误。
             TimeoutError: 命令执行超时。
         """
-        # 1. 前置校验：终端状态
-        self._validate_terminal_state()
-
-        # 2. 安全校验（传入allow_by_human，控制是否绕过白名单/脚本限制）
-        if not self.check_command(command, allow_by_human):
-            raise PermissionError(f"命令未通过安全校验，拒绝执行：{command}")
-
+        # 获取异步锁，确保并发安全
+        await self.acquire()
         try:
-            # 3. 包装命令：附加完成标记，确保准确分割输出
-            wrapped_cmd = f"{command} && echo '{_COMMAND_DONE_MARKER}'\n"
-            if self._process and self._process.stdin:
-                self._process.stdin.write(wrapped_cmd)
-                self._process.stdin.flush()
-            logger.info(f"📤 已发送命令到终端：{command}")
+            # 1. 前置校验：终端状态
+            self._validate_terminal_state()
 
-            # 4. 读取命令输出（直到遇到完成标记或超时）
-            output = self._read_command_output_nonblocking(timeout, command)
+            # 2. 安全校验（传入allow_by_human，控制是否绕过白名单/脚本限制）
+            if not self.check_command(command, allow_by_human):
+                raise PermissionError(f"命令未通过安全校验，拒绝执行：{command}")
+
+            # 3. 调用超时包装协程
+            result = await self._execute_with_timeout(command, timeout)
+
+            # 4. 检查命令是否执行失败（检查输出中的错误信息）
+            error_indicators = ["command not found", "No such file or directory", "Permission denied"]
+            if any(indicator.lower() in result.lower() for indicator in error_indicators):
+                raise subprocess.SubprocessError(
+                    f"命令执行失败：{command}\n输出：{result[:200]}"
+                )
 
             # 5. 状态同步：若命令包含cd，更新当前目录
-            self._sync_directory_if_needed(command)
+            await self._sync_directory_if_needed(command)
 
             # 6. 返回清理后的输出
-            result = "\n".join(output)
             logger.info(f"📥 命令执行完成，输出长度：{len(result)} 字符")
             return result
 
-        except TimeoutError:
-            # 超时处理，直接重新抛出
+        except (TimeoutError, PermissionError):
+            # 超时和权限错误，直接重新抛出
             raise
         except OSError as e:
             raise subprocess.SubprocessError(
                 f"命令执行中发生IO错误：{str(e)}（命令：{command}）"
             ) from e
+        finally:
+            # 释放异步锁
+            await self.release()
+
+    async def read_process(self, stop_word: str) -> str:
+        """读取终端输出。
+
+        Args:
+            stop_word: 遇到该停止词时结束读取。
+
+        Returns:
+            str: 终端输出。
+
+        Raises:
+            RuntimeError: 终端未启动或输出流不可用。
+        """
+        if not self._process or self._process.poll() is not None:
+            raise RuntimeError("终端未运行或已退出")
+        if not self._process.stdout:
+            raise RuntimeError("终端输出流不可用")
+
+        data: list[str] = []
+        loop = asyncio.get_event_loop()
+
+        while True:
+            # Use run_in_executor to make blocking readline() async
+            line = await loop.run_in_executor(None, self._process.stdout.readline)
+            if line.strip() == stop_word:
+                break
+            data.append(line.rstrip('\n\r'))
+
+        return '\n'.join(data)
+
+    async def write_process(self, data: str) -> None:
+        """写入终端输入（简化版本，不等待完成）。
+
+        Args:
+            data: 要写入的数据。
+
+        Raises:
+            RuntimeError: 终端未启动或输入流不可用。
+
+        Note:
+            这是纯粹的写入操作，不等待命令执行完成。
+            如需等待完成，请使用异步的 run_command 方法。
+        """
+        if not self._process or self._process.poll() is not None:
+            raise RuntimeError("终端未运行或已退出")
+        if not self._process.stdin:
+            raise RuntimeError("终端输入流不可用")
+
+        # 添加换行符（如果需要）
+        if not data.endswith('\n'):
+            data += '\n'
+
+        # 写入命令
+        self._process.stdin.write(data)
+        self._process.stdin.flush()
 
     def close(self) -> None:
+        # 检查进程是否存在
         if not self._process or self._process.poll() is not None:
             logger.info("ℹ️ 终端进程已关闭或未启动，无需重复操作")
+            # 重置状态
+            self._process = None
+            self._current_dir = ""
             return
 
         pid = self._process.pid  # 保存PID用于日志
-        self.acquire()  # 确保线程安全关闭
+
+        # 在同步上下文中尝试获取锁，如果已经被获取则跳过
+        try:
+            # 检查锁是否可用，如果不可用则跳过锁获取
+            if self._lock.locked():
+                logger.debug("🔒 终端锁已被其他任务持有，跳过锁获取进行关闭")
+            else:
+                # 在同步上下文中，我们需要创建一个新的事件循环来获取锁
+                # 但是close()方法通常在程序退出时调用，此时可能没有运行的事件循环
+                # 为了避免阻塞，我们跳过锁获取
+                logger.debug("🔒 在同步上下文中关闭终端，跳过锁获取")
+        except Exception:
+            # 忽略锁获取失败，继续关闭进程
+            pass
 
         try:
             # 1. 关闭输入管道（告知进程无更多输入）
@@ -1229,253 +1542,91 @@ class LocalTerminal(ITerminal):
             ) from e
 
         finally:
-            # 重置状态，避免后续调用异常
-            if hasattr(self, '_process'):
-                del self._process
-            self._current_dir = ""
-            self.release()  # 释放锁
-
-
-# ------------------------------
-# 示例用法（验证新增功能：禁止命令+路径越界防护）
-# ------------------------------
-if __name__ == "__main__":
-    try:
-        # 测试配置：允许基础命令+find/grep+chmod，禁用脚本，默认禁止命令
-        # 使用终端实际启动的目录作为根目录
-        # 简单起见，使用绝对路径指定一个明确的目录
-        TEST_ROOT_DIR = "/home/koko/Projects/tasking"
-        TEST_WORKSPACE = "safe_terminal_test"
-        terminal = LocalTerminal(
-            root_dir=TEST_ROOT_DIR,
-            workspace=TEST_WORKSPACE,
-            create_workspace=True,
-            allowed_commands=[  # 允许路径类命令+chmod
-                "ls", "cd", "touch", "mkdir", "grep", "find", "cat", "chmod"
-            ],
-            disable_script_execution=True
-        )
-        print("\n📋 初始配置：")
-        print(f"   工作空间：{terminal.get_workspace()}")
-        print(f"   当前目录：{terminal.get_current_dir()}")
-        print(f"   允许命令：{terminal.get_allowed_commands()}")
-        print(f"   禁用脚本：{terminal.is_script_execution_disabled()}\n")
-
-        # 1. 测试正常路径类命令（find/grep在工作空间内）
-        print("=" * 60)
-        print("1. 测试正常路径命令：find ./ -name '*.txt' + grep 'test' ./test.txt")
-        # 创建测试文件
-        terminal.run_command("touch test.txt && echo 'test content' > test.txt")
-        # 执行find（查找工作空间内的txt文件）
-        FIND_OUTPUT = terminal.run_command("find ./ -name '*.txt'")
-        print(f"find输出：\n{FIND_OUTPUT}")
-        # 执行grep（搜索工作空间内的文件）
-        GREP_OUTPUT = terminal.run_command("grep 'test' ./test.txt")
-        print(f"grep输出：\n{GREP_OUTPUT}\n")
-
-        # 2. 测试允许命令（chmod修改权限 - 现在允许）
-        print("=" * 60)
-        print("2. 测试允许命令：chmod 777 test.txt")
-        try:
-            terminal.run_command("chmod 777 test.txt")
-            print("✅ chmod 命令执行成功\n")
-        except PermissionError as e:
-            print(f"错误：{e}\n")
-
-        # 3. 测试禁止命令（apt安装）
-        print("=" * 60)
-        print("3. 测试禁止命令：apt install git")
-        try:
-            terminal.run_command("apt install git")
-        except PermissionError as e:
-            print(f"预期错误：{e}\n")
-
-        # 4. 测试路径越界（grep外部文件）
-        print("=" * 60)
-        print("4. 测试路径越界：grep 'key' /home/outside/test.txt")
-        try:
-            terminal.run_command("grep 'key' /home/outside/test.txt")
-        except PermissionError as e:
-            print(f"预期错误：{e}\n")
-
-        # 5. 测试路径越界（find外部目录）
-        print("=" * 60)
-        print("5. 测试路径越界：find /home/outside -name '*.py'")
-        try:
-            terminal.run_command("find /home/outside -name '*.py'")
-        except PermissionError as e:
-            print(f"预期错误：{e}\n")
-
-        # 6. 测试逃逸禁止命令（bash -c 'apt update'）
-        print("=" * 60)
-        print("6. 测试逃逸禁止命令：bash -c 'apt update'")
-        try:
-            terminal.run_command("bash -c 'apt update'")
-        except PermissionError as e:
-            print(f"预期错误：{e}\n")
-
-        # 新增测试：人类允许执行"不在白名单但非黑名单"的命令（如head命令，默认不在允许列表）
-        print("=" * 60)
-        print("7. 测试人类允许：执行不在白名单的命令（head test.txt）")
-        try:
-            # allow_by_human=True，绕过白名单（允许列表无head）
-            HEAD_OUTPUT = terminal.run_command("head -n 1 test.txt", allow_by_human=True)
-            print(f"head输出：\n{HEAD_OUTPUT}")
-        except PermissionError as e:
-            print(f"预期错误：{e}\n")
-
-        # 新增测试：人类允许执行其他命令
-        print("=" * 60)
-        print("8. 测试其他文件操作命令（file test.txt）")
-        try:
-            FILE_OUTPUT = terminal.run_command("file test.txt", allow_by_human=True)
-            print(f"file命令输出：\n{FILE_OUTPUT}\n")
-        except PermissionError as e:
-            print(f"错误：{e}\n")
-
-        # 新增测试：超时控制测试
-        print("=" * 60)
-        print("9. 测试超时控制：sleep 5 但只等待2秒超时")
-        try:
-            # 使用超时参数，2秒后应该超时
-            terminal.run_command("sleep 5", timeout=2.0)
-        except TimeoutError as e:
-            print(f"预期超时错误：{e}\n")
-        except Exception as e:
-            print(f"其他错误：{e}\n")
-
-        # 10. 新功能测试：人类允许时可以跳出workspace访问上级目录
-        print("=" * 60)
-        print("10. 测试人类允许：跳出workspace访问上级目录")
-        try:
-            # 不使用allow_by_human时应该被拒绝
-            terminal.run_command("ls ../")
-        except PermissionError as e:
-            print(f"预期错误（无人类允许）：{e}")
-
-        try:
-            # 使用allow_by_human=True时应该被允许
-            PARENT_OUTPUT = terminal.run_command("ls ../", allow_by_human=True)
-            print(f"✅ 人类允许时成功访问上级目录，输出：\n{PARENT_OUTPUT[:200]}...\n")
-        except PermissionError as e:
-            print(f"意外错误：{e}\n")
-
-        # 11. 新功能测试：人类允许时可以cd到workspace外
-        print("=" * 60)
-        print("11. 测试人类允许：cd到workspace外的目录")
-        try:
-            # 不使用allow_by_human时应该被拒绝
-            terminal.run_command("cd ../")
-        except PermissionError as e:
-            print(f"预期错误（无人类允许）：{e}")
-
-        try:
-            # 使用allow_by_human=True时应该被允许
-            terminal.run_command("cd ../", allow_by_human=True)
-            current_dir = terminal.get_current_dir()
-            print(f"✅ 人类允许时成功cd到上级目录，当前目录：{current_dir}")
-            # 切回workspace以便后续测试
-            terminal.cd_to_workspace()
-        except PermissionError as e:
-            print(f"意外错误：{e}\n")
-
-        # 12. 新功能测试：绝对禁止命令即使人类允许也不行
-        print("=" * 60)
-        print("12. 测试绝对禁止命令：即使人类允许也不行")
-        dangerous_commands = [
-            "rm -rf /",
-            "dd if=/dev/zero",
-            "shutdown -h now",
-            "mkfs"
-        ]
-        for cmd in dangerous_commands:
+            # 释放锁（在删除 _process 之前）
             try:
-                terminal.run_command(cmd, allow_by_human=True)
-                print(f"❌ 危险命令被执行：{cmd}")
-            except PermissionError as e:
-                print(f"✅ 危险命令被正确阻止：{cmd}")
+                # 对于close方法，我们直接释放锁而不等待（因为可能没有活跃的事件循环）
+                if self._lock.locked():
+                    # 尝试非阻塞释放
+                    if hasattr(self._lock, 'release'):
+                        self._lock.release()
+            except (RuntimeError, AttributeError):
+                # 如果锁已经被释放或进程不存在，忽略错误
+                pass
+            finally:
+                # 重置状态
+                self._process = None
+                self._current_dir = ""
 
-        # 13. 新功能测试：workspace为None时默认使用root_dir
-        print("=" * 60)
-        print("13. 测试workspace为None时默认使用root_dir")
-        try:
-            terminal_no_ws = LocalTerminal(
-                root_dir=TEST_ROOT_DIR,
-                workspace=None,  # 明确设为None
-                create_workspace=False,
-                allowed_commands=["ls", "pwd", "echo"],
-                disable_script_execution=True
-            )
-            workspace = terminal_no_ws.get_workspace()
-            print(f"✅ workspace为None时，工作空间默认为：{workspace}")
-            print(f"   是否等于root_dir：{workspace == TEST_ROOT_DIR}")
-            terminal_no_ws.close()
-        except Exception as e:
-            print(f"错误：{e}")
-            
-        # 新增测试：验证精准删除、批量删除拦截、跨层级删除拦截
-        print("=" * 60)
-        print("14. 测试rm命令精准删除与批量拦截")
-        # 14.1 允许：workspace内精准删除单个文件
-        try:
-            terminal.run_command("mkdir -p ./tmp && echo 'test' > ./tmp/log.txt")  # 准备测试文件
-            terminal.run_command("rm -rf ./tmp/log.txt")  # 精准删除
-            print("✅ 允许：workspace内精准删除（rm -rf ./tmp/log.txt）")
-        except PermissionError as e:
-            print(f"❌ 意外错误：{e}")
+    async def _execute_with_timeout(self, command: str, timeout: Optional[float] = None) -> str:
+        """使用协程超时包装执行命令。
 
-        # 14.2 拦截：批量删除（rm -rf *）
-        try:
-            terminal.run_command("rm -rf *")
-            print("❌ 错误：批量删除未被拦截")
-        except PermissionError as e:
-            print(f"✅ 拦截：批量删除（rm -rf *），原因：{str(e)[:100]}")
+        Args:
+            command: 要执行的命令
+            timeout: 超时时间（秒）
 
-        # 14.3 拦截：跨层级删除（rm -rf ../test.txt）
-        try:
-            terminal.run_command("rm -rf ../test.txt")
-            print("❌ 错误：跨层级删除未被拦截")
-        except PermissionError as e:
-            print(f"✅ 拦截：跨层级删除（rm -rf ../test.txt），原因：{str(e)[:100]}")
+        Returns:
+            str: 命令输出（可能包含超时信息）
+        """
+        # Append the done marker to the command
+        command_with_marker = f"{command}; echo '{_COMMAND_DONE_MARKER}'"
+        await self.write_process(command_with_marker)
+        # 2. 创建协程任务
+        read_task = asyncio.create_task(self.read_process(_COMMAND_DONE_MARKER))
 
-        # 新增测试：验证提权命令拦截（sudo、su变体）
-        print("=" * 60)
-        print("15. 测试提权命令拦截")
-        priv_commands = [
-            "sudo -i",          # sudo带参数
-            "/usr/bin/sudo ls", # 带路径的sudo
-            "su root",          # su提权
-            "sudoers",          # 编辑sudo配置
-        ]
-        for cmd in priv_commands:
+        # 3. 启动命令执行协程
+        try:
+            if timeout is None:
+                # No timeout specified - wait indefinitely
+                result = await read_task
+                return result
+            else:
+                result = await asyncio.wait_for(
+                    read_task,
+                    timeout=timeout,
+                )
+                return result
+        except asyncio.TimeoutError:
             try:
-                terminal.run_command(cmd, allow_by_human=True)  # 即使人类允许也拦截
-                print(f"❌ 错误：提权命令{cmd}未被拦截")
-            except PermissionError as e:
-                print(f"✅ 拦截：提权命令{cmd}，原因：{str(e)[:80]}")
+                # 超时处理：发送中断信号并返回部分结果
+                await self._handle_command_timeout(command, 5.0)
+            except Exception:
+                return "终端错误，执行命令失败。"
 
-        # 新增测试：验证含特殊字符的workspace切换
-        print("=" * 60)
-        print("16. 测试含特殊字符的workspace切换")
-        try:
-            # 创建含空格和引号的workspace（如 "safe ws'2024"）
-            special_ws = os.path.join(TEST_ROOT_DIR, "safe ws'2024")
-            terminal_special = LocalTerminal(
-                root_dir=TEST_ROOT_DIR,
-                workspace=special_ws,
-                create_workspace=True,
-                allowed_commands=["ls", "pwd"],
-            )
-            print(f"✅ 成功创建并切换到含特殊字符的workspace：{terminal_special.get_workspace()}")
-            terminal_special.close()
-        except Exception as e:
-            print(f"❌ 特殊字符workspace处理错误：{e}")
+            # 取消读取任务但不抛出异常
+            if not read_task.done():
+                read_task.cancel()
+                try:
+                    # 尝试获取已读取的部分结果
+                    partial_result = await read_task
+                except asyncio.CancelledError:
+                    # 任务被取消，返回空结果
+                    partial_result = ""
+            else:
+                partial_result = ""
 
-    except Exception as e:
-        print(f"\n❌ 示例执行异常：{str(e)}")
-    finally:
-        # 确保终端关闭
-        terminal = locals().get('terminal')
-        if terminal:
-            print("\n" + "=" * 60)
-            terminal.close()
+            # 返回部分结果和超时信息
+            timeout_msg = f"\n[命令执行超时 ({timeout}s)]"
+            return partial_result + timeout_msg
+
+    async def _handle_command_timeout(self, command: str, timeout: float) -> None:
+        """处理命令超时：发送SIGINT信号并写入错误信息。
+
+        Args:
+            command: 超时的命令
+            timeout: 超时时间
+        """
+        if self._process and self._process.poll() is None:
+            # 1. 发送SIGINT信号
+            self._process.send_signal(signal.SIGINT)
+
+            # 2. 写入错误信息到stderr（合并到stdout）
+            error_msg = f"\nError: Command timeout after {timeout}s: {command}\n"
+            logger.warning(f"⏰ 命令执行超时（{timeout}秒）：{command}")
+
+            # 由于stderr合并到stdout，直接写入stdin
+            try:
+                await self.write_process(f"echo \"{error_msg}\" >&2 && echo '{_COMMAND_DONE_MARKER}'")
+            except Exception:
+                # 如果写入失败，只记录日志
+                logger.error(f"❌ 无法写入超时错误信息到终端")
+                raise

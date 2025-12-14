@@ -150,6 +150,22 @@ class MaxStepCounter(IStepCounter):
         self.current = 0
         self.lock = Lock()
 
+    def get_uid(self) -> str:
+        """Get the unique identifier of the step counter.
+
+        Returns:
+            str: The unique identifier of the step counter.
+        """
+        return self.uid
+
+    def get_limit(self) -> int:
+        """Get the limit of the step counter.
+
+        Returns:
+            int: The limit of the step counter.
+        """
+        return self.limit
+
     async def check_limit(self) -> bool:
         """Check if the limit of the step counter is reached.
 

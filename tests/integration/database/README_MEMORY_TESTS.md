@@ -47,22 +47,19 @@
 
 ```bash
 # 运行所有测试
-./tests/memory/run_memory_tests.sh all
+./tests/run_tests.sh all
 
 # 运行 SQLite 测试
-./tests/memory/run_memory_tests.sh sqlite
+./tests/run_tests.sh test tests/integration/database/test_sqlite_memory.py
 
 # 运行 Milvus 测试
-./tests/memory/run_memory_tests.sh milvus
+./tests/run_tests.sh test tests/integration/database/test_milvus_memory.py
 
 # 生成覆盖率报告
-./tests/memory/run_memory_tests.sh coverage
+./tests/run_tests.sh coverage
 
 # 运行代码质量检查
-./tests/memory/run_memory_tests.sh quality
-
-# 查看帮助
-./tests/memory/run_memory_tests.sh help
+./tests/run_tests.sh quality
 ```
 
 ### 直接使用 pytest

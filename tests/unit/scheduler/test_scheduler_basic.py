@@ -16,7 +16,7 @@ from tasking.core.state_machine.task.const import TaskEvent, TaskState
 class MockTask:
     """Mock task implementation."""
 
-    def __init__(self, task_id: str = "test_task", initial_state: TaskState = TaskState.INITED):
+    def __init__(self, task_id: str = "test_task", initial_state: TaskState = TaskState.CREATED, valid_states: set[TaskState] | None = None):
         self._task_id = task_id
         self._current_state = initial_state
         self._data = {"task_id": task_id}
@@ -24,10 +24,17 @@ class MockTask:
         self._error_info = None
         self._sub_tasks = []
         self._event_log = []
+        self._max_revisit_count = 0
+        # Default valid states
+        self._valid_states = valid_states or {TaskState.CREATED, TaskState.RUNNING, TaskState.FINISHED, TaskState.CANCELED}
 
     def get_id(self) -> str:
         """Get task ID."""
         return self._task_id
+
+    def get_valid_states(self) -> set[TaskState]:
+        """Get valid states."""
+        return self._valid_states.copy()
 
     def get_current_state(self) -> TaskState:
         """Get current state."""
@@ -38,18 +45,20 @@ class MockTask:
         self._current_state = state
         self._state_visit_counts[state] = self._state_visit_counts.get(state, 0) + 1
 
+    def set_max_revisit_count(self, count: int) -> None:
+        """Set max revisit count (no-op stub for scheduler)."""
+        self._max_revisit_count = count
+
     async def handle_event(self, event: TaskEvent) -> None:
         """Handle event and update state."""
         self._event_log.append((self._current_state, event))
 
         # Simple state machine - use early returns for clarity
         state_transition_map = {
-            (TaskState.INITED, TaskEvent.IDENTIFIED): TaskState.CREATED,
-            (TaskState.CREATED, TaskEvent.PLANED): TaskState.RUNNING,
+            (TaskState.CREATED, TaskEvent.INIT): TaskState.RUNNING,
+            (TaskState.RUNNING, TaskEvent.PLANED): TaskState.RUNNING,
             (TaskState.RUNNING, TaskEvent.DONE): TaskState.FINISHED,
-            (TaskState.RUNNING, TaskEvent.ERROR): TaskState.FAILED,
-            (TaskState.FAILED, TaskEvent.RETRY): TaskState.RUNNING,
-            (TaskState.FAILED, TaskEvent.CANCEL): TaskState.CANCELED,
+            (TaskState.RUNNING, TaskEvent.CANCEL): TaskState.CANCELED,
         }
 
         key = (self._current_state, event)
@@ -88,8 +97,8 @@ class MockTask:
 
     def reset(self) -> None:
         """Reset task to initial state."""
-        self._current_state = TaskState.INITED
-        self._state_visit_counts = {TaskState.INITED: 1}
+        self._current_state = TaskState.CREATED
+        self._state_visit_counts = {TaskState.CREATED: 1}
         self._error_info = None
         self._event_log = []
 
@@ -154,6 +163,7 @@ class TestBaseScheduler(unittest.IsolatedAsyncioTestCase):
         scheduler = BaseScheduler(
             end_states={TaskState.FINISHED},
             on_state_fn={
+                TaskState.CREATED: mock_state_fn,  # CREATED has outgoing edge, needs on_state_fn
                 TaskState.RUNNING: mock_state_fn
             },
             on_state_changed_fn={
@@ -164,6 +174,52 @@ class TestBaseScheduler(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(scheduler.is_compiled())
         self.assertEqual(scheduler.get_max_revisit_count(), 1)
+
+    async def test_compilation_detects_unreachable_states(self) -> None:
+        """Test that compilation rejects states that cannot reach an end state."""
+
+        async def noop_state(_scheduler, _context, _queue, _fsm):
+            return TaskEvent.DONE
+
+        with self.assertRaises(RuntimeError) as context:
+            BaseScheduler(
+                end_states={TaskState.FINISHED},
+                on_state_fn={
+                    TaskState.CREATED: noop_state,
+                    TaskState.RUNNING: noop_state,  # RUNNING has outgoing edge, needs on_state_fn
+                },
+                on_state_changed_fn={
+                    (TaskState.CREATED, TaskState.RUNNING): lambda *_: TaskEvent.PLANED,
+                    (TaskState.RUNNING, TaskState.CREATED): lambda *_: TaskEvent.INIT,
+                    (TaskState.FINISHED, TaskState.CREATED): lambda *_: TaskEvent.INIT,
+                },
+                max_revisit_count=1,
+            )
+        # Now it should fail on unreachable states check, not on_state_fn check
+        self.assertIn("非法状态", str(context.exception))
+
+    async def test_compilation_enforces_acyclic_mode_with_cycle(self) -> None:
+        """Test that acyclic mode rejects cyclic state graphs."""
+
+        async def noop_state(_scheduler, _context, _queue, _fsm):
+            return TaskEvent.DONE
+
+        with self.assertRaises(RuntimeError) as context:
+            BaseScheduler(
+                end_states={TaskState.FINISHED},
+                on_state_fn={
+                    TaskState.CREATED: noop_state,
+                    TaskState.RUNNING: noop_state,  # RUNNING has outgoing edge, needs on_state_fn
+                },
+                on_state_changed_fn={
+                    (TaskState.CREATED, TaskState.RUNNING): lambda *_: TaskEvent.PLANED,
+                    (TaskState.RUNNING, TaskState.CREATED): lambda *_: TaskEvent.INIT,
+                    (TaskState.RUNNING, TaskState.FINISHED): lambda *_: TaskEvent.DONE,
+                },
+                max_revisit_count=-1,
+            )
+        # Now it should fail on acyclic check, not on_state_fn check
+        self.assertIn("无环", str(context.exception))
 
     async def test_schedule_not_compiled_error(self) -> None:
         """Test that schedule fails when scheduler is not compiled."""
@@ -211,15 +267,15 @@ class TestBaseScheduler(unittest.IsolatedAsyncioTestCase):
 
     async def test_simple_workflow_execution(self) -> None:
         """Test execution of a simple workflow."""
-        async def init_fn(_scheduler, _context, _queue, fsm):
-            await fsm.handle_event(TaskEvent.IDENTIFIED)
-            return TaskEvent.IDENTIFIED
-
         async def created_fn(_scheduler, _context, _queue, fsm):
+            await fsm.handle_event(TaskEvent.INIT)
+            return TaskEvent.INIT
+
+        async def running_fn(_scheduler, _context, _queue, fsm):
             await fsm.handle_event(TaskEvent.PLANED)
             return TaskEvent.PLANED
 
-        async def running_fn(_scheduler, _context, _queue, fsm):
+        async def running_fn2(_scheduler, _context, _queue, fsm):
             await fsm.handle_event(TaskEvent.DONE)
             return TaskEvent.DONE
 
@@ -230,19 +286,18 @@ class TestBaseScheduler(unittest.IsolatedAsyncioTestCase):
         scheduler = BaseScheduler(
             end_states={TaskState.FINISHED},
             on_state_fn={
-                TaskState.INITED: init_fn,  # type: ignore
                 TaskState.CREATED: created_fn,  # type: ignore
-                TaskState.RUNNING: running_fn  # type: ignore
+                TaskState.RUNNING: running_fn2  # type: ignore
             },
             on_state_changed_fn={
-                (TaskState.INITED, TaskState.CREATED): transition_fn,
                 (TaskState.CREATED, TaskState.RUNNING): transition_fn,
                 (TaskState.RUNNING, TaskState.FINISHED): transition_fn
             },
             max_revisit_count=3  # Allow multiple visits
         )
 
-        task = MockTask("simple_task")
+        # Task valid states must match scheduler configuration
+        task = MockTask("simple_task", valid_states={TaskState.CREATED, TaskState.RUNNING, TaskState.FINISHED})
         context = {"test": "execution"}
         queue = Queue()
 

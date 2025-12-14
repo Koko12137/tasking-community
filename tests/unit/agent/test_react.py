@@ -12,6 +12,7 @@ ReAct Agent测试套件 [原Simple Agent]
 """
 
 import unittest
+import asyncio
 from unittest.mock import Mock, patch
 
 # pylint: disable=import-error
@@ -27,11 +28,11 @@ from tasking.core.agent.react import (
     END_WORKFLOW_DOC
 )
 from tasking.core.agent.react import ReActStage, ReActEvent
-from tasking.model import Message, Role
+from tasking.model import Message, Role, TextBlock
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from unit.agent.test_helpers import AgentTestMixin, TestState
+from unit.agent.test_helpers import AgentTestMixin, MockState
 
 
 class TestEndWorkflow(unittest.TestCase, AgentTestMixin):
@@ -39,24 +40,24 @@ class TestEndWorkflow(unittest.TestCase, AgentTestMixin):
 
     def setUp(self) -> None:
         """测试设置"""
-        self.init_state, self.valid_states = TestState("RUNNING"), {
-            TestState("RUNNING"), TestState("FINISHED")
+        self.init_state, self.valid_states = MockState("RUNNING"), {
+            MockState("RUNNING"), MockState("FINISHED")
         }
-        # 使用TestState类型
+        # 使用MockState类型
         self.task = self.create_mock_task(
-            TestState("RUNNING"), {TestState("RUNNING"), TestState("FINISHED")}, "test-task"
+            MockState("RUNNING"), {MockState("RUNNING"), MockState("FINISHED")}, "test-task"
         )
 
         # 创建包含output标签的消息
         self.message_with_output = Message(
             role=Role.ASSISTANT,
-            content="<output>\nTest output content\n</output>"
+            content=[TextBlock(text="<output>\nTest output content\n</output>")]
         )
 
         # 创建不包含output标签的消息
         self.message_without_output = Message(
             role=Role.ASSISTANT,
-            content="No output here"
+            content=[TextBlock(text="No output here")]
         )
 
     def test_end_workflow_success(self) -> None:
@@ -104,7 +105,7 @@ class TestEndWorkflow(unittest.TestCase, AgentTestMixin):
         """测试错误的消息角色"""
         wrong_role_message = Message(
             role=Role.USER,  # 错误的角色
-            content="<output>Test output</output>"
+            content=[TextBlock(text="<output>Test output</output>")]
         )
 
         with self.assertRaises(AssertionError) as cm:
@@ -192,7 +193,7 @@ class TestReActActions(unittest.TestCase, AgentTestMixin):
         mock_workflow.get_current_state.return_value = ReActStage.PROCESSING
         mock_workflow.get_prompt.return_value = "Test prompt"
         mock_workflow.get_tools.return_value = {}
-        mock_workflow.get_observe_fn.return_value = lambda task, kwargs: Message(role=Role.USER, content="test")
+        mock_workflow.get_observe_fn.return_value = lambda task, kwargs: Message(role=Role.USER, content=[TextBlock(text="test")])
         mock_agent.get_workflow.return_value = mock_workflow
 
         self.mock_agent = mock_agent
@@ -208,7 +209,7 @@ class TestReActActions(unittest.TestCase, AgentTestMixin):
         processing_action = actions[ReActStage.PROCESSING]
         self.assertTrue(callable(processing_action))
 
-    async def test_processing_action_signature(self) -> None:
+    def test_processing_action_signature(self) -> None:
         """测试PROCESSING动作签名"""
         actions = get_react_actions(self.mock_agent)
         processing_action = actions[ReActStage.PROCESSING]
@@ -217,13 +218,13 @@ class TestReActActions(unittest.TestCase, AgentTestMixin):
         workflow = self.mock_agent.get_workflow.return_value
         context = {}
         queue = self.create_mock_queue()
-        task = self.create_mock_task(TestState("RUNNING"), {TestState("RUNNING"), TestState("FINISHED")})
+        task = self.create_mock_task(MockState("RUNNING"), {MockState("RUNNING"), MockState("FINISHED")})
 
         # MockTask已经设置了completion_config，不需要额外设置
 
         try:
             # 调用动作函数
-            result = await processing_action(workflow, context, queue, task)
+            result = asyncio.run(processing_action(workflow, context, queue, task))
 
             # 验证返回值是事件类型
             self.assertIsInstance(result, (ReActEvent, str))
@@ -236,10 +237,10 @@ class TestReActActions(unittest.TestCase, AgentTestMixin):
 class TestBuildReActAgent(unittest.TestCase):
     """测试build_react_agent函数"""
 
-    @patch('src.core.agent.react.get_settings')
-    @patch('src.core.agent.react.OpenAiLLM')
-    @patch('src.core.agent.react.read_document')
-    def test_build_react_agent_basic(self, mock_read_doc, mock_openai_llm, mock_get_settings):
+    @patch('tasking.core.agent.react.get_settings')
+    @patch('tasking.core.agent.react.build_llm')
+    @patch('tasking.core.agent.react.read_document')
+    def test_build_react_agent_basic(self, mock_read_doc, mock_build_llm, mock_get_settings):
         """测试基本ReAct Agent构建"""
         # 设置模拟
         mock_agent_config = Mock()
@@ -264,7 +265,7 @@ class TestBuildReActAgent(unittest.TestCase):
         mock_get_settings.return_value = mock_settings
 
         mock_read_doc.return_value = "Test prompt content"
-        mock_openai_llm.return_value = Mock()
+        mock_build_llm.return_value = Mock()
 
         try:
             # 构建Agent
@@ -275,13 +276,13 @@ class TestBuildReActAgent(unittest.TestCase):
             self.assertEqual(agent.get_type(), "SimpleAgent")
 
             # 验证LLM被创建
-            self.assertTrue(mock_openai_llm.called)
+            self.assertTrue(mock_build_llm.called)
 
         except Exception as e:
             # 由于依赖外部配置，主要验证函数调用逻辑
             self.assertIsInstance(e, (ValueError, AttributeError, TypeError))
 
-    @patch('src.core.agent.react.get_settings')
+    @patch('tasking.core.agent.react.get_settings')
     def test_build_agent_no_config(self, mock_get_settings):
         """测试没有配置时的错误"""
         mock_settings = Mock()

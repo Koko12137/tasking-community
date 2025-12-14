@@ -76,6 +76,26 @@ class ITask(IStateMachine[StateT, EventT]):
         """
         pass
 
+    @abstractmethod
+    def get_unique_protocol(self) -> list[TextBlock | ImageBlock | VideoBlock]:
+        """
+        获取任务的实例特定协议定义（如果设置了的话）
+
+        Returns:
+            实例特定的协议定义内容，如果未设置则返回类级别的协议定义
+        """
+        pass
+
+    @abstractmethod
+    def set_unique_protocol(self, protocol: list[TextBlock | ImageBlock | VideoBlock]) -> None:
+        """
+        设置任务的实例特定协议定义。这个不会影响类级的协议定义，只会影响当前任务实例。
+
+        Args:
+            protocol: 协议定义内容
+        """
+        pass
+
     # ********** 任务标题/输入/输出数据 **********
 
     @abstractmethod

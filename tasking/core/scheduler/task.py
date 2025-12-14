@@ -70,14 +70,14 @@ def get_tree_on_state_fn(
     # 注册状态调度函数
     on_state_fn[TaskState.CREATED] = created_to_running_task
 
-    # 2. RUNNING -> RUNNING / FINISHED / INITED
+    # 2. RUNNING -> RUNNING / FINISHED / INITED / CANCELED
     async def running_to_finished_task(
         scheduler: IScheduler[TaskState, TaskEvent],
         context: dict[str, Any],
         queue: IQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> TaskEvent:
-        """RUNNING -> RUNNING / FINISHED / INITED 任务调度函数。
+        """RUNNING -> RUNNING / FINISHED / INITED / CANCELED 任务调度函数。
         该任务会先调度其子任务，等待子任务完成后再执行当前任务。该任务执行后可能会进入三种状态：
         - RUNNING: 任务执行出错，状态机重试执行
         - FINISHED: 任务正常完成
@@ -98,8 +98,12 @@ def get_tree_on_state_fn(
         # 调用 Executor 进行任务执行
         await executor.run_task_stream(context=context, queue=queue, task=task)
         if task.is_error():
-            # 任务执行出错，返回 PLANED 事件，状态机重试执行
-            return TaskEvent.PLANED
+            if task.get_state_visit_count(TaskState.RUNNING) >= scheduler.get_max_revisit_count():
+                # 达到最大重试次数，取消任务
+                return TaskEvent.CANCEL
+            else:
+                # 任务执行出错，返回 PLANED 事件，状态机重试执行
+                return TaskEvent.PLANED
 
         # 返回 DONE 事件，驱动状态机转换状态
         return TaskEvent.DONE

@@ -1,328 +1,234 @@
-# Terminal and Document Editor Tests
+# Terminal 和 Filesystem 工具测试驱动文档
 
-This directory contains comprehensive tests for the terminal tool (`tasking/tool/terminal.py`) and document editor tool (`tasking/tool/doc_edit.py`). The test suite ensures the security, reliability, and functionality of these critical system components.
+# 1. 文档概述
 
-## 📋 Table of Contents
+## 1.1 文档目的
 
-- [Test Overview](#test-overview)
-- [Test Structure](#test-structure)
-- [Test Categories](#test-categories)
-- [Running Tests](#running-tests)
-- [Test Design Principles](#test-design-principles)
-- [Environment Setup](#environment-setup)
-- [Coverage](#coverage)
-- [Troubleshooting](#troubleshooting)
+本文档为 `LocalTerminal` 类（本地终端实现）和 `FileSystem` 类（文件系统工具）的测试驱动规范，明确"需测试的功能范围、测试用例设计逻辑、执行标准及交付要求"，确保测试覆盖所有核心功能与安全校验点，验证终端类和文件系统工具符合设计预期（如安全边界控制、线程安全、命令合规性、文件操作安全性等）。
 
-## 🎯 Test Overview
+## 1.2 测试对象
 
-The terminal and document editor test suite validates:
+### 1.2.1 LocalTerminal 类
 
-### Terminal Tests (`test_terminal.py`)
-- **Initialization**: Terminal workspace setup and configuration
-- **Security**: Command filtering, workspace constraints, script execution control
-- **Command Execution**: Safe command execution within workspace boundaries
-- **Process Management**: Terminal process lifecycle and cleanup
-- **Error Handling**: Proper error responses for invalid operations
+测试对象为基于 `ITerminal` 抽象接口实现的 `LocalTerminal` 类，核心职责包括：
 
-### Document Editor Tests (`test_doc_edit.py`)
-- **File Operations**: Creation, modification, and deletion of files
-- **Line-based Editing**: Insert, modify, and delete operations
-- **Path Resolution**: Absolute and relative path handling
-- **Content Processing**: Special characters, unicode, and multiline content
-- **Security**: Workspace constraints and path validation
+- 类Unix系统下的长期bash进程管理（启动、执行命令、关闭）；
 
-## 📁 Test Structure
+- 工作空间（workspace）与根目录（root_dir）的边界控制；
 
-```
-tests/terminal/
-├── 📄 README.md                    # 本文档
-├── 📄 run_tests.sh                # Shell 测试运行脚本
-├── 📄 __init__.py                  # 测试模块初始化
-├── 📄 test_terminal.py            # Terminal 实现测试
-├── 📄 test_doc_edit.py            # 文档编辑器测试
-├── 📄 test_helpers.py             # 测试辅助函数
-└── 📁 test_results/                # 测试结果目录
-    ├── 📁 htmlcov/                 # HTML 覆盖率报告
-    └── 📄 coverage.xml             # XML 覆盖率报告
-```
+- 命令安全校验（白名单、脚本禁用、禁止命令拦截、路径校验等）；
 
-### Test Files
+- 线程安全控制与异常处理（超时、进程崩溃等）。
 
-- **`test_terminal.py`**: Comprehensive tests for `SingleThreadTerminal` implementation
-- **`test_doc_edit.py`**: Tests for `DocumentEditor` class and file editing operations
-- **`test_helpers.py`**: Utility functions and test fixtures
+### 1.2.2 FileSystem 类
 
-## 🧪 Test Categories
+测试对象为基于 `IFileSystem` 抽象接口实现的 `FileSystem` 类，核心职责包括：
 
-### 1. Basic Functionality Tests
-验证核心功能的正常工作：
-- Terminal initialization and configuration
-- Basic command execution (`pwd`, `echo`, `ls`)
-- File creation and basic editing operations
-- Directory navigation and management
+- 基于终端工作空间约束的文件系统操作（文本编辑、文件读取）；
 
-### 2. Security Tests
-确保安全约束有效：
-- **命令过滤**: 验证禁止命令列表正确阻止危险操作
-- **逃逸检测**: 测试嵌套引号、管道、命令替换逃逸尝试
-- **路径约束**: 确保所有操作限制在workspace内
-- **脚本控制**: 验证脚本执行开关正确工作
+- 行级文本编辑操作（插入、修改、删除）；
 
-### 3. Error Handling Tests
-确保错误情况正确处理：
-- 无效命令和参数
-- 文件不存在或权限错误
-- 终端进程异常
-- 路径越界尝试
+- 文件内容读取（支持文本和二进制文件，返回 base64 编码）；
 
-### 4. Edge Cases Tests
-处理边界情况：
-- 空文件和空行处理
-- 大文件和长内容
-- 特殊字符和unicode内容
-- 嵌套目录结构
+- 终端命令执行能力（复用终端的安全约束）；
 
-## 🚀 Running Tests
+- 路径解析与安全校验（确保所有操作在 workspace 内）。
 
-### Prerequisites
+## 1.3 测试依据
+
+- `ITerminal` 和 `IFileSystem` 抽象接口定义的抽象方法契约；
+
+- `LocalTerminal` 和 `FileSystem` 类构造函数及核心方法的设计注释；
+
+- 安全校验规则（如禁止命令正则、路径校验逻辑、脚本禁用规则）；
+
+- 文件系统操作规范（如行号规则、特殊字符转义、目录自动创建等）。
+
+# 2. 测试目标
+
+## 2.1 LocalTerminal 测试目标
+
+1. **功能有效性**：验证终端基础功能（初始化、进程启停、命令执行、目录切换）正常可用；
+
+2. **安全合规性**：验证所有安全校验规则（白名单、脚本禁用、禁止命令、路径控制）有效拦截风险操作；
+
+3. **边界与异常处理**：验证终端对特殊场景（特殊字符路径、复合命令、超时、进程崩溃）的处理符合预期；
+
+4. **线程安全性**：验证多线程并发执行命令时无竞态条件，锁机制有效；
+
+5. **兼容性**：验证终端在支持的类Unix系统（Linux、macOS）上正常运行。
+
+## 2.2 FileSystem 测试目标
+
+1. **功能有效性**：验证文件系统工具基础功能（文件编辑、文件读取、命令执行）正常可用；
+
+2. **文本编辑准确性**：验证行级编辑操作（插入、修改、删除）的准确性和行号处理逻辑；
+
+3. **安全合规性**：验证文件系统工具遵循终端的安全约束（路径校验、命令白名单、脚本禁用）；
+
+4. **边界与异常处理**：验证文件系统工具对特殊场景（特殊字符、Unicode、大文件、路径遍历）的处理符合预期；
+
+5. **集成性**：验证文件系统工具与终端的集成（依赖注入、工作空间共享、安全约束继承）正常工作。
+
+# 3. 测试范围
+
+## 3.0 测试模块概览
+
+测试范围分为两大主要模块：
+
+1. **LocalTerminal 模块**：包含"基础功能模块""安全校验模块""并发与异常处理模块"三大类；
+
+2. **FileSystem 模块**：包含"基础功能模块""文本编辑模块""安全校验模块""边界与异常处理模块"四大类。
+
+具体测试项如下：
+
+## 3.1 基础功能模块
+
+|测试子项|测试内容说明|测试类型|
+|---|---|---|
+|终端初始化|1. 根目录为绝对路径的校验；2. 工作空间（默认/自定义/特殊字符路径）的创建与绑定；3. 初始目录同步至workspace；4. 唯一终端ID生成|功能测试|
+|进程启停|1. 进程启动（bash进程创建、PID生成）；2. 重复启动的异常拦截；3. 优雅关闭（stdin关闭→终止信号→超时强制杀死）；4. 关闭后状态重置|功能测试|
+|目录切换|1. `cd_to_workspace` 切换至workspace（含特殊字符路径转义）；2. `cd` 命令执行后的目录同步（防篡改，依赖 `_get_real_current_dir`）|功能测试|
+|命令执行与输出|1. 简单命令（ls、touch）执行；2. 复合命令（分号/管道连接）执行；3. 命令输出的实时读取与标记过滤（`_COMMAND_DONE_MARKER`）；4. 执行结果的正确性|功能测试|
+## 3.2 安全校验模块（核心）
+
+|测试子项|测试内容说明|测试类型|
+|---|---|---|
+|允许命令白名单校验|1. 白名单非空时，仅允许列表内命令（如仅允许ls/rm时拦截grep）；2. 白名单为空时，允许除禁止命令外的所有命令；3. `allow_by_human=True` 时跳过白名单校验|安全测试|
+|脚本执行禁用校验|1. 禁用时拦截脚本解释器（python、bash、go run等）；2. 拦截带路径的脚本解释器（/usr/bin/python、./venv/bash）；3. 拦截直接执行的脚本文件（./test.sh、test.py）；4. `allow_by_human=True` 时跳过脚本拦截|安全测试|
+|禁止命令拦截|1. 批量删除拦截（rm -rf *、rm -rf ./*）；2. 跨层级删除拦截（rm -rf ../、rm -rf ../sub_ws）；3. 提权命令拦截（sudo、su、sudoers等变体）；4. 系统危险命令拦截（rm -rf /、shutdown、mkfs）；5. 绝对禁止命令不受 `allow_by_human` 影响|安全测试|
+|路径范围校验|1. 所有路径敏感命令（ls、cp、rm等）的路径需在root_dir内；2. rm命令额外限制：仅允许workspace内的精准路径（无*、..）；3. 非rm命令：`allow_by_human=False` 时路径需在workspace内，True时可放宽至root_dir|安全测试|
+|逃逸命令拦截|1. 拦截嵌套在引号中的禁止命令（如bash -c 'sudo rm -rf /'）；2. 拦截转义引号嵌套的禁止命令（如bash -c "sudo rm -rf /"）；3. 递归校验嵌套命令内容|安全测试|
+## 3.3 并发与异常处理模块
+
+|测试子项|测试内容说明|测试类型|
+|---|---|---|
+|线程安全|1. 多线程并发调用 `run_command`（如10线程同时执行ls）；2. 验证锁机制（RLock）有效，无进程阻塞、输出混乱或数据竞争|性能测试+功能测试|
+|异常处理|1. 空命令拦截；2. 命令语法错误（未闭合引号）拦截；3. 命令执行超时（如sleep 3设置超时1秒）；4. 路径不存在/权限不足时的错误提示；5. 终端进程崩溃后的异常抛出|异常测试|
+
+测试用例需遵循"正向验证+反向拦截"原则，即既要验证合法操作正常执行，也要验证非法操作被有效拦截。以下为关键测试用例模板（完整用例集可参考配套的 `test_terminal.py` 和 `test_filesystem.py`）：
+
+## 4.1 基础功能用例模板（以“特殊字符路径切换”为例）
+
+|用例ID|测试项|前置条件|测试步骤|预期结果|优先级|
+|---|---|---|---|---|---|
+|FUNC-CWD-001|含特殊字符的workspace切换|1. 系统为Linux/macOS；2. 存在临时根目录 /tmp/test_root|1. 创建含空格+引号的workspace：/tmp/test_root/safe ws'2024；2. 初始化LocalTerminal，绑定该workspace；3. 调用 `cd_to_workspace()`；4. 调用 `get_current_dir()` 查看目录|1. 终端初始化成功；2. 目录切换后，当前目录与workspace路径一致；3. 无路径解析错误（如空格被截断）|高|
+## 4.2 安全校验用例模板（以"批量删除拦截"为例）
+
+|用例ID|测试项|前置条件|测试步骤|预期结果|优先级|
+|---|---|---|---|---|---|
+|SEC-RM-001|批量删除命令拦截|1. 终端初始化完成，workspace内有测试文件；2. `allow_by_human=False`|1. 执行命令：rm -rf *；2. 查看命令执行结果；3. 验证workspace内文件是否存在|1. 命令被拦截，抛出 `PermissionError`；2. 日志输出"workspace内批量删除"的禁止提示；3. workspace内文件未被删除|最高|
+
+## 4.3 FileSystem 功能用例模板（以"多行插入编辑"为例）
+
+|用例ID|测试项|前置条件|测试步骤|预期结果|优先级|
+|---|---|---|---|---|---|
+|FUNC-FS-EDIT-001|多行插入编辑操作|1. 文件系统工具初始化完成；2. workspace内存在测试文件 test.txt|1. 创建初始文件，内容为"Line 1\nLine 3"；2. 调用 `edit` 方法，在行2插入"Line 2"；3. 读取文件内容验证|1. 文件内容为"Line 1\nLine 2\nLine 3"；2. 行号正确插入；3. 原有内容未被破坏|高|
+
+## 4.4 FileSystem 安全用例模板（以"路径越界拦截"为例）
+
+|用例ID|测试项|前置条件|测试步骤|预期结果|优先级|
+|---|---|---|---|---|---|
+|SEC-FS-PATH-001|文件系统路径越界拦截|1. 文件系统工具初始化完成；2. workspace为 /tmp/test_ws|1. 调用 `edit` 方法，文件路径为 "/etc/passwd"；2. 查看执行结果|1. 操作被拦截，抛出 `RuntimeError`；2. 日志输出"路径超出workspace"的提示；3. /etc/passwd 文件未被修改|最高|
+# 5. 测试环境要求
+
+## 5.1 硬件环境
+
+- CPU：≥2核（支持多线程测试）；
+
+- 内存：≥4GB（避免进程并发时内存不足）；
+
+- 存储：≥10GB（临时根目录与测试文件存储）。
+
+## 5.2 软件环境
+
+|环境类型|具体要求|说明|
+|---|---|---|
+|操作系统|Linux（Ubuntu 20.04+/CentOS 7+）、macOS（12+）|仅支持类Unix系统，Windows需排除|
+|依赖工具|Python 3.12+、pytest 7.0+、loguru 0.7.0+|通过 `uv pip install pytest loguru` 安装|
+|基础组件|bash 4.0+、coreutils（含ls、rm、pwd等命令）|系统默认自带，需确保可执行权限|
+## 5.3 静态检查要求
+
+所有测试代码编辑完成后，必须执行以下静态检查流程：
+
+### 必需检查
+
+1. **pyright 检查**：确保类型正确性和现代 Python 特性的正确使用
+
+   ```bash
+   uv run pyright tasking/tool/terminal.py
+   ```
+
+2. **pylint 检查**：确保代码风格、结构和最佳实践
+
+   ```bash
+   uv run pylint tasking/tool/terminal.py
+   ```
+
+### 检查标准
+
+- **pyright**：必须零错误，警告应评估并修复
+- **pylint**：评分 ≥ 8.0/10，关键错误必须修复
+
+### 集成到开发流程
+
+- 每次编辑代码后必须执行上述检查
+- 提交前必须确保所有检查通过
+- 测试脚本应集成静态检查功能（通过 `quality` 命令执行）
+
+### 测试脚本集成
+
+使用统一的测试脚本 `tests/run_tests.sh` 执行静态检查：
+
 ```bash
-# Ensure you're in the project root
-cd /path/to/tasking
+# 运行 Terminal 模块代码质量检查
+./tests/run_tests.sh terminal quality
 
-# Install dependencies (handled automatically by test runner)
-./tests/terminal/run_tests.sh install
+# 运行 Terminal 模块单元测试
+./tests/run_tests.sh terminal unit
+
+# 运行 Terminal 模块完整测试（质量检查 + 单元测试）
+./tests/run_tests.sh terminal all
 ```
 
-### Quick Start
-```bash
-# Run all tests with quality checks
-./tests/terminal/run_tests.sh all
+# 6. 测试执行策略
 
-# Run only terminal tests
-./tests/terminal/run_tests.sh terminal
+## 6.1 执行顺序
 
-# Run only document editor tests
-./tests/terminal/run_tests.sh docedit
-```
+1. **基础功能测试**：先验证终端初始化、进程启停等核心功能正常，再进行后续测试；
 
-### Test Categories
-```bash
-# Run basic functionality tests
-./tests/terminal/run_tests.sh basic
+2. **安全校验测试**：核心测试模块，按“白名单→脚本禁用→禁止命令→路径校验→逃逸拦截”的顺序执行；
 
-# Run security-focused tests
-./tests/terminal/run_tests.sh security
+3. **并发与异常测试**：最后执行（避免影响基础功能验证）；
 
-# Run code quality checks only
-./tests/terminal/run_tests.sh quality
-```
+4. **兼容性测试**：在不同目标系统上重复上述步骤。
 
-### Coverage Report
-```bash
-# Generate comprehensive coverage report
-./tests/terminal/run_tests.sh coverage
+## 6.2 优先级与阻塞规则
 
-# View HTML coverage report (opens in browser)
-open tests/terminal/test_results/htmlcov/index.html
-```
+- 优先级划分：安全校验模块（最高）> 基础功能模块（高）> 并发与异常模块（中）> 兼容性模块（中）；
 
-### Individual Test Files
-```bash
-# Run specific test file
-./tests/terminal/run_tests.sh single test_terminal.py
+- 阻塞规则：若基础功能模块（如进程启动）测试失败，直接阻塞后续所有测试，需优先修复。
 
-# Run specific test method
-uv run pytest tests/terminal/test_terminal.py::TestSingleThreadTerminal::test_initialization -v
-```
+## 6.3 缺陷管理
 
-### Verbose Output
-```bash
-# Run with verbose output for debugging
-./tests/terminal/run_tests.sh terminal -v
+- **严重缺陷（P0）**：安全校验失效（如批量删除未拦截、提权命令放行）、进程崩溃、线程死锁；需立即修复，修复后重新执行全量测试；
 
-# Run with quiet output
-./tests/terminal/run_tests.sh terminal -q
-```
+- **一般缺陷（P1）**：特殊字符路径切换失败、输出格式异常；需在迭代内修复，修复后执行相关模块测试；
 
-### Parallel Execution
-```bash
-# Run tests with parallel execution
-./tests/terminal/run_tests.sh all -j 4
-```
+- **轻微缺陷（P2）**：日志提示不清晰、非核心方法注释缺失；可延后修复，不阻塞测试通过。
 
-## 🎨 Test Design Principles
+# 7. 测试交付物
 
-### 1. 功能验证优先
-Tests focus on verifying that the terminal and document editor perform their intended functions correctly, rather than measuring performance or load testing.
+1. **测试用例集**：
+   - `test_terminal.py`：LocalTerminal 类的完整测试用例（可直接执行）；
+   - `test_filesystem.py`：FileSystem 类的完整测试用例（可直接执行）；
 
-### 2. 独立性
-Each test method runs independently without depending on the execution order of other tests. Tests create their own temporary workspaces and clean up after themselves.
+2. **测试报告**：含测试覆盖率（≥90%核心方法）、用例执行结果（通过率）、缺陷清单及修复情况；
 
-### 3. 可重复性
-Tests use fixed test data and mocking to ensure consistent results across different environments and runs.
+3. **问题记录**：未修复缺陷的跟踪表（含用例ID、复现步骤、影响范围）；
 
-### 4. 清晰性
-Test names and documentation clearly indicate what functionality is being tested and why.
+4. **环境配置说明**：测试环境的详细部署步骤（用于回归测试）。
 
-### 5. 安全第一
-Many tests specifically focus on verifying security constraints work correctly to prevent workspace escape and command injection.
+# 8. 附则
 
-## 🌍 Environment Setup
-
-### Test Isolation
-Tests use temporary workspaces that are automatically created and cleaned up:
-
-```python
-@pytest.fixture
-def temp_workspace(self):
-    """Create a temporary workspace for testing."""
-    temp_dir = tempfile.mkdtemp(prefix="terminal_test_")
-    yield temp_dir
-    shutil.rmtree(temp_dir, ignore_errors=True)
-```
-
-### Mock Usage
-Tests use mocking to isolate external dependencies and ensure consistent behavior:
-
-```python
-@patch('src.tool.terminal.subprocess.Popen')
-def test_terminal_initialization(self, mock_popen):
-    # Test terminal initialization with mocked subprocess
-    pass
-```
-
-### Environment Variables
-The test runner respects these environment variables:
-
-- `PYTHON`: Python executable to use (default: `uv run python`)
-- `PYTEST_OPTIONS`: Additional pytest options
-- `SKIP_QUALITY`: Skip quality checks if set
-
-## 📊 Coverage
-
-### Target Coverage
-- **Overall Coverage**: ≥ 80%
-- **Branch Coverage**: ≥ 75%
-
-### Coverage Reports
-Coverage reports are generated in multiple formats:
-- **Terminal**: Real-time coverage display
-- **HTML**: Interactive report at `tests/terminal/test_results/htmlcov/`
-- **XML**: Machine-readable report at `tests/terminal/test_results/coverage.xml`
-
-### Coverage Areas
-- All public methods and classes
-- Error handling paths
-- Security validation logic
-- Edge case handling
-
-## 🔧 Troubleshooting
-
-### Common Issues
-
-#### 1. Import Errors
-```
-ModuleNotFoundError: No module named 'src.tool.terminal'
-```
-**Solution**: Run from project root or ensure PYTHONPATH is set correctly
-```bash
-cd /path/to/tasking
-PYTHONPATH=. ./tests/terminal/run_tests.sh all
-```
-
-#### 2. Permission Errors
-```
-PermissionError: Command not through security validation
-```
-**Expected**: This is normal for security tests. The test is verifying that prohibited commands are correctly blocked.
-
-#### 3. Process Already Running
-```
-RuntimeError: Terminal process already running
-```
-**Solution**: Ensure proper cleanup in tests. Each test should use a fresh terminal instance.
-
-#### 4. uv Not Found
-```
-uv: command not found
-```
-**Solution**: Install uv or let the test runner fall back to system python
-```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-#### 5. Quality Check Failures
-```
-pyright: 8 errors
-pylint: 6.50/10
-```
-**Solution**: Fix type hints and code style issues before submitting
-
-### Debugging Tests
-
-#### Enable Debug Output
-```bash
-# Run with maximum verbosity
-./tests/terminal/run_tests.sh terminal -v -s
-
-# Run with pytest debug options
-PYTEST_OPTIONS="--tb=short --no-header" ./tests/terminal/run_tests.sh terminal
-```
-
-#### Test Specific Functionality
-```bash
-# Run specific test categories
-uv run pytest tests/terminal/test_terminal.py::TestTerminalSecurity -v
-
-# Run with debugging
-uv run pytest tests/terminal/test_terminal.py -k "security" -v -s --pdb
-```
-
-#### Inspect Test Workspaces
-For debugging, you can temporarily disable cleanup:
-```bash
-# Modify test to keep temporary directories
-# In test file: Comment out shutil.rmtree() in fixture
-```
-
-### Getting Help
-
-If you encounter issues not covered here:
-
-1. Check the test output for specific error messages
-2. Verify you're running from the correct directory
-3. Ensure dependencies are installed
-4. Check for Python version compatibility (requires Python 3.12+)
-
-## 📝 Contributing
-
-When adding new tests:
-
-1. **Follow naming conventions**: `test_<functionality>_<scenario>`
-2. **Use descriptive docstrings**: Explain what the test validates
-3. **Include security tests**: For any new functionality, include security validation
-4. **Maintain coverage**: Ensure new code is adequately tested
-5. **Update documentation**: Add new test categories to this README
-
-Example test structure:
-```python
-def test_terminal_feature_scenario(self, terminal):
-    """Test that terminal feature handles scenario correctly."""
-    # Arrange
-    setup_test_conditions()
-
-    # Act
-    result = terminal.perform_action()
-
-    # Assert
-    assert result == expected_result
-    assert security_constraints_maintained()
-```
-
-## 🔗 Related Documentation
-
-- [Project README](../../../README.md) - Project overview and setup
-- [Developer Guide](../../../tasking/README.md) - Module architecture and API documentation
-- [Terminal Source](../../../tasking/tool/terminal.py) - Terminal implementation
-- [Document Editor Source](../../../tasking/tool/doc_edit.py) - Document editor implementation
+本文档需随 `LocalTerminal` 和 `FileSystem` 类的迭代同步更新：若新增功能（如支持远程终端、新增文件操作类型）或修改安全规则（如新增禁止命令），需补充对应的测试范围、用例及执行标准。

@@ -21,8 +21,8 @@ from tasking.core.state_machine.task.interface import ITask
 from tasking.core.state_machine.workflow.interface import IWorkflow
 from tasking.core.agent.react import ReActStage, ReActEvent
 from tasking.llm.interface import ILLM
-from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue
-from tests.unit.agent.test_helpers import AgentTestMixin, TestState, TestEvent
+from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue, TextBlock
+from tests.unit.agent.test_helpers import AgentTestMixin, MockState, MockEvent
 
 
 class TestIAgentInterface(unittest.TestCase, AgentTestMixin):
@@ -75,7 +75,7 @@ class TestIAgentInterface(unittest.TestCase, AgentTestMixin):
     def test_interface_contract_compliance(self) -> None:
         """验证接口契约符合性"""
         # 创建一个最小的实现类来测试接口契约
-        class MinimalAgent(IAgent[ReActStage, ReActEvent, TestState, TestEvent, Any]):
+        class MinimalAgent(IAgent[ReActStage, ReActEvent, MockState, MockEvent, Any]):
             def __init__(self):
                 pass
 
@@ -97,40 +97,40 @@ class TestIAgentInterface(unittest.TestCase, AgentTestMixin):
                 return {}
 
             # 工作流管理
-            def get_workflow(self) -> IWorkflow[ReActStage, ReActEvent, TestState, TestEvent]:
+            def get_workflow(self) -> IWorkflow[ReActStage, ReActEvent, MockState, MockEvent]:
                 raise NotImplementedError
 
-            def set_workflow(self, workflow: IWorkflow[ReActStage, ReActEvent, TestState, TestEvent]) -> None:
+            def set_workflow(self, workflow: IWorkflow[ReActStage, ReActEvent, MockState, MockEvent]) -> None:
                 pass
 
             def get_tool_service(self):
                 raise NotImplementedError
 
-            async def call_tool(self, name: str, task: ITask[TestState, TestEvent], inject: dict[str, Any], kwargs: dict[str, Any]) -> Message:
+            async def call_tool(self, name: str, task: ITask[MockState, MockEvent], inject: dict[str, Any], kwargs: dict[str, Any]) -> Message:
                 raise NotImplementedError
 
             # 任务执行
-            async def run_task_stream(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[TestState, TestEvent]) -> ITask[TestState, TestEvent]:
+            async def run_task_stream(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[MockState, MockEvent]) -> ITask[MockState, MockEvent]:
                 return task
 
-            def add_pre_run_once_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[TestState, TestEvent]], Awaitable[None] | None]) -> None:
+            def add_pre_run_once_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
                 pass
 
-            def add_post_run_once_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[TestState, TestEvent]], Awaitable[None] | None]) -> None:
+            def add_post_run_once_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
                 pass
 
             # 运行时能力
-            async def observe(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[TestState, TestEvent], observe_fn: Callable[[ITask[TestState, TestEvent], dict[str, Any]], Message], **kwargs: Any) -> list[Message]:
+            async def observe(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[MockState, MockEvent], observe_fn: Callable[[ITask[MockState, MockEvent], dict[str, Any]], Message], **kwargs: Any) -> list[Message]:
                 return []
 
-            def add_pre_observe_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[TestState, TestEvent]], Awaitable[None] | None]) -> None:
+            def add_pre_observe_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
                 pass
 
-            def add_post_observe_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[TestState, TestEvent], list[Message]], Awaitable[None] | None]) -> None:
+            def add_post_observe_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent], list[Message]], Awaitable[None] | None]) -> None:
                 pass
 
             async def think(self, context: dict[str, Any], queue: IQueue[Message], llm_name: str, observe: list[Message], completion_config: CompletionConfig, **kwargs: Any) -> Message:
-                return Message(role=Role.ASSISTANT, content="test")
+                return Message(role=Role.ASSISTANT, content=[TextBlock(text="test")])
 
             def add_pre_think_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], list[Message]], Awaitable[None] | None]) -> None:
                 pass
@@ -138,13 +138,13 @@ class TestIAgentInterface(unittest.TestCase, AgentTestMixin):
             def add_post_think_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], list[Message], Message], Awaitable[None] | None]) -> None:
                 pass
 
-            async def act(self, context: dict[str, Any], queue: IQueue[Message], tool_call: ToolCallRequest, task: ITask[TestState, TestEvent], **kwargs: Any) -> Message:
-                return Message(role=Role.TOOL, content="test result")
+            async def act(self, context: dict[str, Any], queue: IQueue[Message], tool_call: ToolCallRequest, task: ITask[MockState, MockEvent], **kwargs: Any) -> Message:
+                return Message(role=Role.TOOL, content=[TextBlock(text="test result")])
 
-            def add_pre_act_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[TestState, TestEvent]], Awaitable[None] | None]) -> None:
+            def add_pre_act_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
                 pass
 
-            def add_post_act_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[TestState, TestEvent], Message], Awaitable[None] | None]) -> None:
+            def add_post_act_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent], Message], Awaitable[None] | None]) -> None:
                 pass
 
         # 验证可以实例化最小实现
@@ -184,7 +184,7 @@ class TestInterfaceTypeSafety(unittest.TestCase):
         # 实际的类型检查在运行时可能不太容易验证，我们主要验证接口的泛型结构
 
         # 创建使用不同类型参数的接口类型别名
-        SimpleAgent = IAgent[ReActStage, ReActEvent, TestState, TestEvent, Any]
+        SimpleAgent = IAgent[ReActStage, ReActEvent, MockState, MockEvent, Any]
 
         # 验证类型别名是有效的
         self.assertTrue(callable(SimpleAgent))

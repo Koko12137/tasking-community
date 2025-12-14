@@ -159,8 +159,8 @@ class StateMemoryHooks(IMemoryHooks[StateMemory]):
                 "project_id": project_id,
                 "trace_id": trace_id,
                 "task_id": task_id,
-                "raw_data": messages,
-                "content": extracted.content,
+                "raw_data": [msg.model_dump() for msg in messages],
+                "content": [block.model_dump() for block in extracted.content],
                 "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
             }
         )
@@ -352,7 +352,7 @@ def register_memory_fold_hooks(
         memory_compressor=memory_compressor,
     )
     # 注册到智能体
-    agent.add_pre_run_once_hook(episode_hooks.pre_run_once_hook)
+    agent.add_pre_observe_hook(episode_hooks.pre_run_once_hook)
     agent.add_post_run_once_hook(episode_hooks.post_run_once_hook)
     # 清理状态记忆钩子注册到智能体，避免重复累积，放在所有钩子最后执行
     agent.add_post_run_once_hook(clear_state_memory_hook)

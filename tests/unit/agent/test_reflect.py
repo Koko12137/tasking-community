@@ -27,12 +27,12 @@ from tasking.core.agent.reflect import (
 )
 from tasking.core.agent.react import end_workflow as simple_end_workflow
 from tasking.core.agent.reflect import ReflectStage, ReflectEvent
-from tasking.model import Message, Role, CompletionConfig
+from tasking.model import Message, Role, CompletionConfig, TextBlock
 from typing import Any, Type
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from unit.agent.test_helpers import AgentTestMixin, TestState
+from unit.agent.test_helpers import AgentTestMixin, MockState
 
 
 class TestReflectTransition(unittest.TestCase):
@@ -126,7 +126,7 @@ class TestReflectActions(unittest.TestCase, AgentTestMixin):
         mock_workflow = Mock()
         mock_workflow.get_current_state.return_value = ReflectStage.REASONING
         mock_workflow.get_prompt.return_value = "Test ReAct prompt"
-        mock_workflow.get_observe_fn.return_value = lambda task, kwargs: Message(role=Role.USER, content="ReAct observation")
+        mock_workflow.get_observe_fn.return_value = lambda task, kwargs: Message(role=Role.USER, content=[TextBlock(text="ReAct observation")])
         mock_workflow.get_end_workflow_tool.return_value = Mock()
         mock_agent.get_workflow.return_value = mock_workflow
 
@@ -146,7 +146,7 @@ class TestReflectActions(unittest.TestCase, AgentTestMixin):
         self.assertTrue(callable(reasoning_action))
         self.assertTrue(callable(reflecting_action))
 
-    async def test_reasoning_action_basic(self) -> None:
+    def test_reasoning_action_basic(self) -> None:
         """测试REASONING动作基本功能"""
         actions = get_reflect_actions(self.mock_agent)
         reasoning_action = actions[ReflectStage.REASONING]
@@ -155,7 +155,7 @@ class TestReflectActions(unittest.TestCase, AgentTestMixin):
         workflow = self.mock_agent.get_workflow.return_value
         context = {"user_id": "test_user"}
         queue = self.create_mock_queue()
-        task = self.create_mock_task(TestState("RUNNING"), {TestState("RUNNING"), TestState("FINISHED")})
+        task = self.create_mock_task(MockState("RUNNING"), {MockState("RUNNING"), MockState("FINISHED")})
 
         # 设置task completion config
         completion_config = CompletionConfig(
@@ -166,7 +166,7 @@ class TestReflectActions(unittest.TestCase, AgentTestMixin):
 
         try:
             # 调用动作函数
-            result = await reasoning_action(workflow, context, queue, task)
+            result = asyncio.run(reasoning_action(workflow, context, queue, task))
 
             # 验证返回值是事件类型
             self.assertIsInstance(result, (ReflectEvent, str))
@@ -176,7 +176,7 @@ class TestReflectActions(unittest.TestCase, AgentTestMixin):
             # 由于这个测试涉及复杂的异步操作，我们主要验证函数可以调用
             self.assertIsInstance(e, (AttributeError, TypeError, RuntimeError))
 
-    async def test_reflecting_action_basic(self) -> None:
+    def test_reflecting_action_basic(self) -> None:
         """测试REFLECTING动作基本功能"""
         actions = get_reflect_actions(self.mock_agent)
         reflecting_action = actions[ReflectStage.REFLECTING]
@@ -188,7 +188,7 @@ class TestReflectActions(unittest.TestCase, AgentTestMixin):
         workflow = self.mock_agent.get_workflow.return_value
         context = {"user_id": "test_user"}
         queue = self.create_mock_queue()
-        task = self.create_mock_task(TestState("RUNNING"), {TestState("RUNNING"), TestState("FINISHED")})
+        task = self.create_mock_task(MockState("RUNNING"), {MockState("RUNNING"), MockState("FINISHED")})
 
         # 设置task completion config
         completion_config = CompletionConfig(
@@ -202,7 +202,7 @@ class TestReflectActions(unittest.TestCase, AgentTestMixin):
 
         try:
             # 调用动作函数
-            result = await reflecting_action(workflow, context, queue, task)
+            result = asyncio.run(reflecting_action(workflow, context, queue, task))
 
             # 验证返回值是事件类型
             self.assertIsInstance(result, (ReflectEvent, str))
@@ -216,17 +216,17 @@ class TestReflectActions(unittest.TestCase, AgentTestMixin):
 class TestBuildReflectAgent(unittest.TestCase):
     """测试build_reflect_agent函数"""
 
-    @patch('src.core.agent.reflect.get_settings')
-    @patch('src.core.agent.reflect.OpenAiLLM')
-    @patch('src.core.agent.reflect.read_markdown')
-    @patch('src.core.agent.reflect.get_reflect_actions')
-    @patch('src.core.agent.reflect.get_reflect_transition')
+    @patch('tasking.core.agent.reflect.get_settings')
+    @patch('tasking.core.agent.reflect.build_llm')
+    @patch('tasking.core.agent.reflect.read_markdown')
+    @patch('tasking.core.agent.reflect.get_reflect_actions')
+    @patch('tasking.core.agent.reflect.get_reflect_transition')
     def test_build_reflect_agent_basic(
         self,
         mock_get_transition,
         mock_get_actions,
         mock_read_markdown,
-        mock_openai_llm,
+        mock_build_llm,
         mock_get_settings
     ):
         """测试基本Reflect Agent构建"""
@@ -253,7 +253,7 @@ class TestBuildReflectAgent(unittest.TestCase):
         mock_get_settings.return_value = mock_settings
 
         mock_read_markdown.return_value = "Test ReAct prompt content"
-        mock_openai_llm.return_value = Mock()
+        mock_build_llm.return_value = Mock()
         mock_get_actions.return_value = {}
         mock_get_transition.return_value = {}
 
@@ -266,14 +266,14 @@ class TestBuildReflectAgent(unittest.TestCase):
             self.assertEqual(agent.get_type(), "ReActAgent")
 
             # 验证LLM被创建（每个阶段都应该有一个LLM）
-            self.assertTrue(mock_openai_llm.called)
-            self.assertEqual(mock_openai_llm.call_count, len(ReflectStage))
+            self.assertTrue(mock_build_llm.called)
+            self.assertEqual(mock_build_llm.call_count, 2)
 
         except Exception as e:
             # 由于依赖外部配置，主要验证函数调用逻辑
             self.assertIsInstance(e, (ValueError, AttributeError, TypeError))
 
-    @patch('src.core.agent.reflect.get_settings')
+    @patch('tasking.core.agent.reflect.get_settings')
     def test_build_reflect_agent_no_config(self, mock_get_settings):
         """测试没有配置时的错误"""
         mock_settings = Mock()
@@ -285,17 +285,17 @@ class TestBuildReflectAgent(unittest.TestCase):
 
         self.assertIn("未找到名为", str(cm.exception))
 
-    @patch('src.core.agent.reflect.get_settings')
-    @patch('src.core.agent.reflect.OpenAiLLM')
-    @patch('src.core.agent.reflect.read_markdown')
-    @patch('src.core.agent.reflect.get_reflect_actions')
-    @patch('src.core.agent.reflect.get_reflect_transition')
+    @patch('tasking.core.agent.reflect.get_settings')
+    @patch('tasking.core.agent.reflect.build_llm')
+    @patch('tasking.core.agent.reflect.read_markdown')
+    @patch('tasking.core.agent.reflect.get_reflect_actions')
+    @patch('tasking.core.agent.reflect.get_reflect_transition')
     def test_build_reflect_agent_custom_parameters(
         self,
         mock_get_transition,
         mock_get_actions,
         mock_read_markdown,
-        mock_openai_llm,
+        mock_build_llm,
         mock_get_settings
     ):
         """测试带自定义参数的Reflect Agent构建"""
@@ -309,13 +309,13 @@ class TestBuildReflectAgent(unittest.TestCase):
         mock_get_settings.return_value = mock_settings
 
         mock_read_markdown.return_value = "Custom prompt"
-        mock_openai_llm.return_value = Mock()
+        mock_build_llm.return_value = Mock()
 
         # 创建自定义参数
         custom_actions = {ReflectStage.REASONING: Mock()}
         custom_transitions = {}
         custom_prompts = {ReflectStage.REASONING: "Custom reasoning prompt"}
-        custom_observe_funcs = {ReflectStage.REASONING: lambda task, kwargs: Message(role=Role.USER, content="Custom observation")}
+        custom_observe_funcs = {ReflectStage.REASONING: lambda task, kwargs: Message(role=Role.USER, content=[TextBlock(text="Custom observation")])}
         custom_end_workflow = Mock()
 
         # 设置默认返回值
@@ -347,15 +347,15 @@ class TestReflectEndWorkflow(unittest.TestCase, AgentTestMixin):
 
     def setUp(self) -> None:
         """测试设置"""
-        self.task = self.create_mock_task(TestState("RUNNING"), {TestState("RUNNING"), TestState("FINISHED")})
+        self.task = self.create_mock_task(MockState("RUNNING"), {MockState("RUNNING"), MockState("FINISHED")})
 
-    @patch('src.core.agent.react.end_workflow')
+    @patch('tasking.core.agent.react.end_workflow')
     def test_reflect_end_workflow_uses_simple_end_workflow(self, mock_simple_end_workflow):
         """验证Reflect使用react模块的end_workflow函数"""
         # 由于reflect.py中导入的是react模块的end_workflow，我们验证它可以正常使用
         message_with_output = Message(
             role=Role.ASSISTANT,
-            content="<output>\nReAct output\n</output>"
+            content=[TextBlock(text="<output>\nReAct output\n</output>")]
         )
 
         try:

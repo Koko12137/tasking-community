@@ -25,6 +25,7 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
 
     # *** 任务输入输出 ***
     _protocol: list[TextBlock | ImageBlock | VideoBlock]
+    _unique_protocol: list[TextBlock | ImageBlock | VideoBlock]
     _input_data: list[TextBlock | ImageBlock | VideoBlock]
     _output_data: str
     _is_completed: bool
@@ -45,7 +46,7 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
             tuple[StateT, EventT],
             tuple[StateT, Callable[[ITask[StateT, EventT]], Awaitable[None] | None] | None]
         ],
-        protocol: list[TextBlock | ImageBlock | VideoBlock],
+        unique_protocol: list[TextBlock | ImageBlock | VideoBlock],
         tags: set[str],
         task_type: str,
         context_cls: type[IContext] = BaseContext,
@@ -53,12 +54,10 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
     ) -> None:
         # 状态机属性增强
         self._state_visit_counts = dict()
-        self._max_revisit_limit = 1     # 默认不允许重访
+        self._max_revisit_limit = kwargs.pop('max_revisit_limit', 1)  # 从 kwargs 中获取，默认不允许重访
 
         # 任务预定义属性
-        self._tags = tags.copy()        # 标签集合
-        self._protocol = protocol       # 协议定义
-        self._task_type = task_type     # 任务类型标识字符串
+        self._unique_protocol = unique_protocol       # 实例特定协议定义
 
         # 任务输入输出
         self._title = ""                # 任务标题
@@ -140,6 +139,14 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
     def get_protocol(cls) -> list[TextBlock | ImageBlock | VideoBlock]:
         """获取任务的协议定义，包括输入输出格式等信息"""
         return copy.deepcopy(cls._protocol)
+    
+    def get_unique_protocol(self) -> list[TextBlock | ImageBlock | VideoBlock]:
+        """获取任务的实例特定协议定义（如果设置了的话）"""
+        return copy.deepcopy(self._unique_protocol)
+    
+    def set_unique_protocol(self, protocol: list[TextBlock | ImageBlock | VideoBlock]) -> None:
+        """设置任务的实例特定协议定义。这个不会影响类级的协议定义，只会影响当前任务实例。"""
+        self._unique_protocol = protocol
 
     # ********** 实现ITask接口：输入输出管理 **********
 

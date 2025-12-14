@@ -18,10 +18,10 @@ from typing import Any, Callable, Awaitable
 # 导入核心类与类型
 from tasking.core.state_machine.task.tree import BaseTreeTaskNode
 from tasking.core.state_machine.task.base import BaseTask
-from tasking.core.state_machine.task.default_node import DefaultTreeNode as build_base_tree_node, get_base_states
+from tasking.core.state_machine.task.default_node import get_base_states
 from tasking.core.state_machine.task.const import TaskState, TaskEvent
 from tasking.core.state_machine.task.interface import ITask
-from tasking.model import CompletionConfig
+from tasking.model import CompletionConfig, TextBlock
 
 
 # ==============================
@@ -32,28 +32,32 @@ def get_base_task_transitions() -> dict[
     tuple[TaskState, TaskEvent],
     tuple[TaskState, Callable[[ITask[TaskState, TaskEvent]], Awaitable[None] | None] | None]
 ]:
-    """获取 BaseTask 专用的状态转换规则"""
+    """获取 BaseTask 专用的状态转换规则（使用当前可用的状态和事件）"""
     return {
-        (TaskState.INITED, TaskEvent.IDENTIFIED): (TaskState.CREATED, None),
-        (TaskState.CREATED, TaskEvent.PLANED): (TaskState.RUNNING, None),
+        (TaskState.CREATED, TaskEvent.INIT): (TaskState.RUNNING, None),
+        (TaskState.CREATED, TaskEvent.CANCEL): (TaskState.CANCELED, None),
         (TaskState.RUNNING, TaskEvent.DONE): (TaskState.FINISHED, None),
-        (TaskState.RUNNING, TaskEvent.ERROR): (TaskState.FAILED, None),
-        (TaskState.FAILED, TaskEvent.RETRY): (TaskState.RUNNING, None),  # 与builder.py保持一致
-        # RETRY回到RUNNING
-        (TaskState.FAILED, TaskEvent.CANCEL): (TaskState.CANCELED, None),
+        (TaskState.RUNNING, TaskEvent.CANCEL): (TaskState.CANCELED, None),
+        # 允许从 CANCELED 回到 CREATED 用于重试
+        (TaskState.CANCELED, TaskEvent.INIT): (TaskState.CREATED, None),
     }
 
 
 def create_tree_node(
-    protocol: str,
+    unique_protocol: str,
     tags: set[str],
     task_type: str,
     max_depth: int,
     completion_config: CompletionConfig
 ) -> BaseTreeTaskNode[TaskState, TaskEvent]:
     """Create a BaseTreeTaskNode with default parameters"""
-    return build_base_tree_node(
-        protocol=protocol,
+    from tasking.model import TextBlock
+    from tasking.core.state_machine.task.default_node import get_base_states, get_base_transition
+    return BaseTreeTaskNode[TaskState, TaskEvent](
+        valid_states=get_base_states(),
+        init_state=TaskState.CREATED,
+        transitions=get_base_transition(),
+        unique_protocol=[TextBlock(text=unique_protocol)],
         tags=tags,
         task_type=task_type,
         max_depth=max_depth,
@@ -62,18 +66,19 @@ def create_tree_node(
 
 
 def create_base_task(
-    protocol: str,
+    unique_protocol: str,
     tags: set[str],
     task_type: str,
     completion_config: CompletionConfig,
-    max_revisit_limit: int = 0
+    max_revisit_limit: int = 1
 ) -> BaseTask[TaskState, TaskEvent]:
     """Create a BaseTask with default parameters"""
+    from tasking.model import TextBlock
     return BaseTask[TaskState, TaskEvent](
         valid_states=get_base_states(),
-        init_state=TaskState.INITED,
+        init_state=TaskState.CREATED,  # get_base_states() 返回的状态集合中，CREATED 是初始状态
         transitions=get_base_task_transitions(),
-        protocol=protocol,
+        unique_protocol=[TextBlock(text=unique_protocol)],
         tags=tags,
         task_type=task_type,
         completion_config=completion_config,
@@ -94,7 +99,7 @@ class TestTreeCircularReference(unittest.IsolatedAsyncioTestCase):
             max_tokens=1000
         )
         self.root_node = create_tree_node(
-            protocol="root_protocol",
+            unique_protocol="root_protocol",
             tags={"root"},
             task_type="root_task",
             max_depth=5,
@@ -112,7 +117,7 @@ class TestTreeCircularReference(unittest.IsolatedAsyncioTestCase):
         # 创建节点A (root_node)
         # 创建节点B
         node_b = create_tree_node(
-            protocol="node_b",
+            unique_protocol="node_b",
             tags={"node_b"},
             task_type="node_b_task",
             max_depth=5,
@@ -161,7 +166,7 @@ class TestTreeCircularReference(unittest.IsolatedAsyncioTestCase):
         """测试复杂循环引用: A->B->C->A"""
         # 创建三个节点
         node_b = create_tree_node(
-            protocol="node_b",
+            unique_protocol="node_b",
             tags={"node_b"},
             task_type="node_b_task",
             max_depth=5,
@@ -169,7 +174,7 @@ class TestTreeCircularReference(unittest.IsolatedAsyncioTestCase):
         )
 
         node_c = create_tree_node(
-            protocol="node_c",
+            unique_protocol="node_c",
             tags={"node_c"},
             task_type="node_c_task",
             max_depth=5,
@@ -212,7 +217,7 @@ class TestTreeDepthValidation(unittest.IsolatedAsyncioTestCase):
 
         # 创建根节点
         root = create_tree_node(
-            protocol="root",
+            unique_protocol="root",
             tags={"root"},
             task_type="root_task",
             max_depth=max_depth,
@@ -223,7 +228,7 @@ class TestTreeDepthValidation(unittest.IsolatedAsyncioTestCase):
         current = root
         for i in range(max_depth - 1):
             child = create_tree_node(
-                protocol=f"depth_{i}",
+                unique_protocol=f"depth_{i}",
                 tags={f"depth_{i}"},
                 task_type=f"depth_task_{i}",
                 max_depth=max_depth,
@@ -239,7 +244,7 @@ class TestTreeDepthValidation(unittest.IsolatedAsyncioTestCase):
         # 尝试添加超出最大深度的子节点
         try:
             deeper_child = create_tree_node(
-                protocol="too_deep",
+                unique_protocol="too_deep",
                 tags={"too_deep"},
                 task_type="too_deep_task",
                 max_depth=max_depth,
@@ -252,7 +257,7 @@ class TestTreeDepthValidation(unittest.IsolatedAsyncioTestCase):
 
             # 尝试再添加一层应该失败
             even_deeper = create_tree_node(
-                protocol="even_deeper",
+                unique_protocol="even_deeper",
                 tags={"even_deeper"},
                 task_type="even_deeper_task",
                 max_depth=max_depth,
@@ -269,7 +274,7 @@ class TestTreeDepthValidation(unittest.IsolatedAsyncioTestCase):
     def test_depth_calculation_consistency(self) -> None:
         """测试深度计算的一致性"""
         root = create_tree_node(
-            protocol="root",
+            unique_protocol="root",
             tags={"root"},
             task_type="root_task",
             max_depth=5,
@@ -278,14 +283,14 @@ class TestTreeDepthValidation(unittest.IsolatedAsyncioTestCase):
 
         # 创建平衡的树结构
         child1 = create_tree_node(
-            protocol="child1",
+            unique_protocol="child1",
             tags={"child1"},
             task_type="child1_task",
             max_depth=5,
             completion_config=self.completion_config
         )
         child2 = create_tree_node(
-            protocol="child2",
+            unique_protocol="child2",
             tags={"child2"},
             task_type="child2_task",
             max_depth=5,
@@ -297,7 +302,7 @@ class TestTreeDepthValidation(unittest.IsolatedAsyncioTestCase):
 
         # 添加孙子节点
         grandchild1 = create_tree_node(
-            protocol="grandchild1",
+            unique_protocol="grandchild1",
             tags={"grandchild1"},
             task_type="grandchild1_task",
             max_depth=5,
@@ -318,7 +323,7 @@ class TestTreeDepthValidation(unittest.IsolatedAsyncioTestCase):
     def test_depth_after_removal(self) -> None:
         """测试节点移除后的深度重新计算"""
         root = create_tree_node(
-            protocol="root",
+            unique_protocol="root",
             tags={"root"},
             task_type="root_task",
             max_depth=5,
@@ -326,7 +331,7 @@ class TestTreeDepthValidation(unittest.IsolatedAsyncioTestCase):
         )
 
         child = create_tree_node(
-            protocol="child",
+            unique_protocol="child",
             tags={"child"},
             task_type="child_task",
             max_depth=5,
@@ -357,7 +362,7 @@ class TestStateVisitCounting(unittest.IsolatedAsyncioTestCase):
             max_tokens=1000
         )
         self.task = create_base_task(
-            protocol="visit_count_test",
+            unique_protocol="visit_count_test",
             tags={"test", "visit_count"},
             task_type="visit_count_task",
             completion_config=self.completion_config,
@@ -367,25 +372,25 @@ class TestStateVisitCounting(unittest.IsolatedAsyncioTestCase):
     def test_basic_visit_counting(self) -> None:
         """测试基本的访问计数"""
         # 初始状态的计数应该为1
-        self.assertEqual(self.task.get_state_visit_count(TaskState.INITED), 1)
+        self.assertEqual(self.task.get_state_visit_count(TaskState.CREATED), 1)
 
         # 其他状态的计数应该为0
-        self.assertEqual(self.task.get_state_visit_count(TaskState.CREATED), 0)
         self.assertEqual(self.task.get_state_visit_count(TaskState.RUNNING), 0)
+        self.assertEqual(self.task.get_state_visit_count(TaskState.FINISHED), 0)
 
     async def test_visit_count_increments(self) -> None:
         """测试访问计数的递增"""
-        # 转换到CREATED状态
-        await self.task.handle_event(TaskEvent.IDENTIFIED)
+        # 初始状态是 CREATED，计数为1
         self.assertEqual(self.task.get_state_visit_count(TaskState.CREATED), 1)
 
-        # 再转换到RUNNING状态（通过错误和重试）
-        await self.task.handle_event(TaskEvent.PLANED)  # -> RUNNING
+        # 转换到RUNNING状态
+        await self.task.handle_event(TaskEvent.INIT)  # -> RUNNING
         self.assertEqual(self.task.get_state_visit_count(TaskState.RUNNING), 1)
 
-        # 再次到达RUNNING状态
-        await self.task.handle_event(TaskEvent.ERROR)    # -> FAILED
-        await self.task.handle_event(TaskEvent.RETRY)    # -> RUNNING
+        # 再次到达RUNNING状态（通过取消和重试）
+        await self.task.handle_event(TaskEvent.CANCEL)    # -> CANCELED
+        await self.task.handle_event(TaskEvent.INIT)    # -> CREATED
+        await self.task.handle_event(TaskEvent.INIT)    # -> RUNNING
 
         # RUNNING的计数应该为2
         self.assertEqual(self.task.get_state_visit_count(TaskState.RUNNING), 2)
@@ -395,55 +400,82 @@ class TestStateVisitCounting(unittest.IsolatedAsyncioTestCase):
         max_revisit = 3  # 增加限制，允许初始访问 + 2次重访
 
         # 创建有重访限制的任务
+        # 注意：由于测试中 CREATED 状态会被访问多次（初始1次 + 通过 INIT 事件返回），
+        # 测试流程：初始 CREATED(1) -> RUNNING -> CANCELED -> CREATED(2) -> RUNNING -> ...
+        # 要测试5次 RUNNING 访问，CREATED 会被访问6次（初始1次 + 5次恢复）
+        # 所以需要设置限制至少为6，这样第6次访问 CREATED 时会失败
         task = create_base_task(
-            protocol="revisit_test",
+            unique_protocol="revisit_test",
             tags={"test", "revisit"},
             task_type="revisit_task",
             completion_config=self.completion_config,
-            max_revisit_limit=max_revisit
+            max_revisit_limit=6  # 允许 CREATED 状态被访问6次（初始1次 + 5次恢复）
         )
 
-        # 首先到达CREATED状态
-        await task.handle_event(TaskEvent.IDENTIFIED)  # -> CREATED
+        # 初始状态是 CREATED，计数为1
+        self.assertEqual(task.get_state_visit_count(TaskState.CREATED), 1)
 
         # 访问同一状态，测试重访限制
         # 第一次访问RUNNING状态
-        await task.handle_event(TaskEvent.PLANED)   # -> RUNNING
+        await task.handle_event(TaskEvent.INIT)   # -> RUNNING
         self.assertEqual(task.get_state_visit_count(TaskState.RUNNING), 1)
 
-        # 第二次访问RUNNING状态（通过失败和重试）
-        await task.handle_event(TaskEvent.ERROR)    # -> FAILED
-        await task.handle_event(TaskEvent.RETRY)    # -> RUNNING
+        # 第二次访问RUNNING状态（通过取消和重试）
+        await task.handle_event(TaskEvent.CANCEL)    # -> CANCELED
+        await task.handle_event(TaskEvent.INIT)    # -> CREATED (CREATED 第2次)
+        await task.handle_event(TaskEvent.INIT)    # -> RUNNING
         self.assertEqual(task.get_state_visit_count(TaskState.RUNNING), 2)
 
         # 第三次访问RUNNING状态
-        await task.handle_event(TaskEvent.ERROR)    # -> FAILED
-        await task.handle_event(TaskEvent.RETRY)    # -> RUNNING
+        await task.handle_event(TaskEvent.CANCEL)    # -> CANCELED
+        await task.handle_event(TaskEvent.INIT)    # -> CREATED (CREATED 第3次)
+        await task.handle_event(TaskEvent.INIT)    # -> RUNNING
         self.assertEqual(task.get_state_visit_count(TaskState.RUNNING), 3)
 
-        # 第四次访问应该失败（超过限制）
-        await task.handle_event(TaskEvent.ERROR)    # -> FAILED
+        # 第四次访问RUNNING状态（应该成功，因为限制是5）
+        await task.handle_event(TaskEvent.CANCEL)    # -> CANCELED
+        await task.handle_event(TaskEvent.INIT)    # -> CREATED (CREATED 第4次)
+        await task.handle_event(TaskEvent.INIT)    # -> RUNNING
+        self.assertEqual(task.get_state_visit_count(TaskState.RUNNING), 4)
+        
+        # 第五次访问RUNNING状态（应该成功）
+        await task.handle_event(TaskEvent.CANCEL)    # -> CANCELED
+        await task.handle_event(TaskEvent.INIT)    # -> CREATED (CREATED 第5次)
+        await task.handle_event(TaskEvent.INIT)    # -> RUNNING
+        self.assertEqual(task.get_state_visit_count(TaskState.RUNNING), 5)
+        
+        # 第六次访问应该失败（超过限制6）
+        # CREATED 状态已经被访问了5次（初始1次 + 4次恢复），第6次恢复时会访问第6次
+        await task.handle_event(TaskEvent.CANCEL)    # -> CANCELED
+        await task.handle_event(TaskEvent.INIT)    # -> CREATED (CREATED 第6次，达到限制6，应该成功)
+        # 但第7次访问 CREATED 时会失败
+        await task.handle_event(TaskEvent.INIT)    # -> RUNNING
+        self.assertEqual(task.get_state_visit_count(TaskState.RUNNING), 6)
+        
+        # 第七次访问应该失败（超过限制6）
+        await task.handle_event(TaskEvent.CANCEL)    # -> CANCELED
+        # CREATED 状态已经被访问了6次（初始1次 + 5次恢复），第7次访问时会超过限制6
         with self.assertRaises(RuntimeError):
-            await task.handle_event(TaskEvent.RETRY)    # 这会第四次访问RUNNING，应该失败
+            await task.handle_event(TaskEvent.INIT)    # -> CREATED (CREATED 第7次，超过限制6，应该失败)
 
     async def test_visit_count_reset(self) -> None:
         """测试重置后的访问计数"""
         # 先执行一些转换
-        await self.task.handle_event(TaskEvent.IDENTIFIED)
-        await self.task.handle_event(TaskEvent.PLANED)
+        await self.task.handle_event(TaskEvent.INIT)
+        await self.task.handle_event(TaskEvent.DONE)
 
         # 检查计数
-        self.assertEqual(self.task.get_state_visit_count(TaskState.INITED), 1)
         self.assertEqual(self.task.get_state_visit_count(TaskState.CREATED), 1)
         self.assertEqual(self.task.get_state_visit_count(TaskState.RUNNING), 1)
+        self.assertEqual(self.task.get_state_visit_count(TaskState.FINISHED), 1)
 
         # 重置任务
         self.task.reset()
 
         # 验证重置后的计数
-        self.assertEqual(self.task.get_state_visit_count(TaskState.INITED), 1)
-        self.assertEqual(self.task.get_state_visit_count(TaskState.CREATED), 0)
+        self.assertEqual(self.task.get_state_visit_count(TaskState.CREATED), 1)
         self.assertEqual(self.task.get_state_visit_count(TaskState.RUNNING), 0)
+        self.assertEqual(self.task.get_state_visit_count(TaskState.FINISHED), 0)
 
 
 # ==============================
@@ -456,7 +488,7 @@ class TestTypeSafety(unittest.IsolatedAsyncioTestCase):
         """测试泛型类型参数的正确使用"""
         # 使用正确的类型参数
         task: BaseTask[TaskState, TaskEvent] = create_base_task(
-            protocol="type_test",
+            unique_protocol="type_test",
             tags={"type_test"},
             task_type="type_test_task",
             completion_config=CompletionConfig()
@@ -474,28 +506,29 @@ class TestTypeSafety(unittest.IsolatedAsyncioTestCase):
         """测试状态和事件的兼容性"""
         # 使用create_base_task辅助函数
         task = create_base_task(
-            protocol="compatibility_test",
+            unique_protocol="compatibility_test",
             tags={"test", "compatibility"},
             task_type="compatibility_test",
             completion_config=CompletionConfig()
         )
 
         # 正确的事件应该可以处理
-        await task.handle_event(TaskEvent.IDENTIFIED)
-        self.assertEqual(task.get_current_state(), TaskState.CREATED)
+        await task.handle_event(TaskEvent.INIT)
+        self.assertEqual(task.get_current_state(), TaskState.RUNNING)
 
     async def test_invalid_event_rejection(self) -> None:
         """测试无效事件的拒绝"""
         task = create_base_task(
-            protocol="invalid_event_test",
+            unique_protocol="invalid_event_test",
             tags={"test"},
             task_type="invalid_event_task",
             completion_config=CompletionConfig()
         )
 
         # 尝试处理未定义的事件
+        # 在 CREATED 状态下，DONE 事件未定义
         with self.assertRaises(ValueError):
-            await task.handle_event(TaskEvent.CANCEL)  # 在CREATED状态下未定义
+            await task.handle_event(TaskEvent.DONE)  # 在CREATED状态下未定义
 
 
 # ==============================
@@ -514,23 +547,24 @@ class TestErrorRecovery(unittest.IsolatedAsyncioTestCase):
     async def test_error_state_recovery(self) -> None:
         """测试错误状态的恢复"""
         # 直接创建任务，使用默认的transitions
+        # 注意：由于测试中 CREATED 状态会被访问2次（初始1次 + 1次通过 INIT 事件返回），
+        # 需要设置 max_revisit_limit 至少为 2
         task = create_base_task(
-            protocol="error_recovery_test",
+            unique_protocol="error_recovery_test",
             tags={"test", "error_recovery"},
             task_type="error_recovery_task",
-            completion_config=self.completion_config
+            completion_config=self.completion_config,
+            max_revisit_limit=5  # 增加限制以允许状态恢复
         )
 
         # 正常执行
-        await task.handle_event(TaskEvent.IDENTIFIED)
-        await task.handle_event(TaskEvent.PLANED)
+        await task.handle_event(TaskEvent.INIT)
         self.assertEqual(task.get_current_state(), TaskState.RUNNING)
 
-        # 发生错误
-        await task.handle_event(TaskEvent.ERROR)
-        self.assertEqual(task.get_current_state(), TaskState.FAILED)
+        # 发生错误（使用 CANCEL 作为错误状态）
+        await task.handle_event(TaskEvent.CANCEL)
+        self.assertEqual(task.get_current_state(), TaskState.CANCELED)
 
-        # 在builder.py中，on_error回调没有自动设置is_error
         # 需要手动设置错误状态进行测试
         error_msg = "Test error"
         task.set_error(error_msg)
@@ -541,8 +575,10 @@ class TestErrorRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(task.is_error())
         self.assertEqual(task.get_error_info(), error_msg)
 
-        # 恢复重试（测试使用的是简化的transitions，没有on_retry回调）
-        await task.handle_event(TaskEvent.RETRY)
+        # 恢复重试（通过 INIT 事件回到 CREATED，然后到 RUNNING）
+        await task.handle_event(TaskEvent.INIT)
+        self.assertEqual(task.get_current_state(), TaskState.CREATED)
+        await task.handle_event(TaskEvent.INIT)
         self.assertEqual(task.get_current_state(), TaskState.RUNNING)
 
         # 测试使用的是get_base_task_transitions()，没有回调函数，需要手动清除错误状态
@@ -558,20 +594,20 @@ class TestErrorRecovery(unittest.IsolatedAsyncioTestCase):
     async def test_partial_state_recovery(self) -> None:
         """测试部分状态恢复"""
         task = create_base_task(
-            protocol="partial_recovery_test",
+            unique_protocol="partial_recovery_test",
             tags={"test", "partial_recovery"},
             task_type="partial_recovery_task",
             completion_config=self.completion_config
         )
 
         # 执行一些操作
-        await task.handle_event(TaskEvent.IDENTIFIED)
+        await task.handle_event(TaskEvent.INIT)
         task.set_title("Test Title")
         task.set_input("Test Input")
 
         # 进入错误状态（通过创建新任务模拟）
         error_task = create_base_task(
-            protocol="error_task",
+            unique_protocol="error_task",
             tags={"error"},
             task_type="error_task",
             completion_config=self.completion_config

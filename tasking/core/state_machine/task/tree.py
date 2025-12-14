@@ -34,7 +34,7 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
             tuple[StateT, EventT],
             tuple[StateT, Callable[[ITreeTaskNode[StateT, EventT]], Awaitable[None] | None] | None],
         ],
-        protocol: list[MultimodalContent],
+        unique_protocol: list[MultimodalContent],
         tags: set[str],
         task_type: str,
         max_depth: int,
@@ -69,7 +69,7 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
             init_state=init_state,
             transitions=converted_transitions,
             # ITask参数
-            protocol=protocol,
+            unique_protocol=unique_protocol,
             tags=tags,
             task_type=task_type,
             context_cls=context_cls,

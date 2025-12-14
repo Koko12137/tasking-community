@@ -5,6 +5,7 @@ from ...model import Message, Role, IQueue, AsyncQueue, TextBlock, MultimodalCon
 from ...core.state_machine.task import ITask, TaskState, TaskEvent
 from ...utils.io import read_markdown
 from ...utils.string.extract import extract_by_label
+from ...utils.content import extract_text_from_message
 
 
 class HumanInterfere(Exception):
@@ -217,9 +218,7 @@ class BaseHumanInterfereHooks(IHumanInterfereHooks):
         if not last_message.role == Role.ASSISTANT:
             raise ValueError("The last message in context must be from ASSISTANT role")
         human_interfere_content = extract_by_label(
-            "".join([
-                block.text for block in last_message.content if isinstance(block, TextBlock)
-            ]),
+            extract_text_from_message(last_message),
             "human_interfere",
         )
         if human_interfere_content.strip().lower() == "":

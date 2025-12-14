@@ -15,11 +15,13 @@ from tasking.core.state_machine.task.interface import ITask
 from tasking.core.state_machine.workflow.interface import IWorkflow
 from tasking.core.agent.react import ReActStage, ReActEvent
 from tasking.llm.interface import ILLM
-from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue
 from tasking.llm.const import Provider
+from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue
+from tasking.model import TextBlock, ImageBlock, VideoBlock
+from tasking.model.setting import LLMConfig
 
 
-class TestState(str):
+class MockState(str):
     """测试状态实现，符合StateProtocol"""
 
     def __new__(cls, value: str):
@@ -30,7 +32,7 @@ class TestState(str):
         return str(self)
 
 
-class TestEvent(str):
+class MockEvent(str):
     """测试事件实现，符合EventProtocol"""
 
     def __new__(cls, value: str):
@@ -90,14 +92,26 @@ class MockLLM(ILLM):
             stop_reason=completion_config.stop_words[0] if completion_config.stop_words else None
         )
 
+    @classmethod
+    def from_config(cls, config: LLMConfig) -> "MockLLM":
+        """根据配置创建 MockLLM 实例"""
+        provider_value = config.provider
+        provider_enum = provider_value if isinstance(provider_value, Provider) else Provider(provider_value)
+        return cls(
+            model_name=config.model,
+            response_content="Test response",
+            provider=provider_enum,
+            base_url=config.base_url
+        )
+
 
 class MockTask(ITask):
     """模拟任务实现"""
 
     def __init__(
         self,
-        initial_state: TestState,
-        valid_states: set[TestState],
+        initial_state: MockState,
+        valid_states: set[MockState],
         task_id: str = "test-task"
     ) -> None:
         self._id = task_id
@@ -112,7 +126,7 @@ class MockTask(ITask):
         self._max_revisit_limit = 3
         self._title = "Test Task"
         self._task_type = "test_type"
-        self._protocol = "test_protocol"
+        self._unique_protocol: list[TextBlock | ImageBlock | VideoBlock] = []
         self._is_compiled = True
         self._state_visit_count = {state: 1 for state in valid_states}
         self._contexts = []
@@ -121,13 +135,13 @@ class MockTask(ITask):
     def get_id(self) -> str:
         return self._id
 
-    def get_current_state(self) -> TestState:
+    def get_current_state(self) -> MockState:
         return self._current_state
 
-    def get_valid_states(self) -> set[TestState]:
+    def get_valid_states(self) -> set[MockState]:
         return self._valid_states.copy()
 
-    def get_transitions(self) -> dict[tuple[TestState, TestEvent], tuple[TestState, Callable[["IStateMachine"], Awaitable[None] | None] | None]]:
+    def get_transitions(self) -> dict[tuple[MockState, MockEvent], tuple[MockState, Callable[["IStateMachine"], Awaitable[None] | None] | None]]:
         return {}
 
     def compile(self) -> None:
@@ -136,7 +150,7 @@ class MockTask(ITask):
     def is_compiled(self) -> bool:
         return self._is_compiled
 
-    async def handle_event(self, event: TestEvent) -> None:
+    async def handle_event(self, event: MockEvent) -> None:
         # Simple mock implementation
         pass
 
@@ -145,7 +159,7 @@ class MockTask(ITask):
         pass
 
     # ITask interface implementation
-    def get_state_visit_count(self, state: TestState) -> int:
+    def get_state_visit_count(self, state: MockState) -> int:
         return self._state_visit_count.get(state, 0)
 
     def set_max_revisit_count(self, count: int) -> None:
@@ -166,8 +180,15 @@ class MockTask(ITask):
     def set_title(self, title: str) -> None:
         self._title = title
 
-    def get_protocol(self) -> str | dict[str, Any]:
-        return self._protocol
+    @classmethod
+    def get_protocol(cls) -> list[TextBlock | ImageBlock | VideoBlock]:
+        return []
+
+    def get_unique_protocol(self) -> list[TextBlock | ImageBlock | VideoBlock]:
+        return self._unique_protocol.copy()
+
+    def set_unique_protocol(self, protocol: list[TextBlock | ImageBlock | VideoBlock]) -> None:
+        self._unique_protocol = protocol
 
     def get_input(self) -> str | dict[str, Any]:
         return self._input_data
@@ -227,12 +248,13 @@ class MockWorkflow(IWorkflow):
         self._is_compiled = True
         self._action = None
         self._prompt = "Test prompt"
-        self._observe_fn = lambda task, kwargs: Message(role=Role.USER, content="Mock observation")
+        self._observe_fn = lambda task, kwargs: Message(role=Role.USER, content=[TextBlock(text="Mock observation")])
         self._actions = {}
         self._prompts = {current_state: self._prompt}
         self._observe_funcs = {current_state: self._observe_fn}
         self._tools = {}
         self._end_workflow_tool = Mock()
+        self._completion_config = CompletionConfig()
 
     # IStateMachine interface implementation
     def get_id(self) -> str:
@@ -282,7 +304,7 @@ class MockWorkflow(IWorkflow):
             "IWorkflow[ReActStage, ReActEvent, StateT, EventT]",
             dict[str, Any],
             IQueue[Message],
-            ITask[TestState, TestEvent],
+            ITask[MockState, MockEvent],
         ],
         Awaitable[ReActEvent]
     ]]:
@@ -297,7 +319,7 @@ class MockWorkflow(IWorkflow):
     def get_prompt(self) -> str:
         return self._prompts.get(self._current_state, self._prompt)
 
-    def get_observe_funcs(self) -> dict[ReActStage, Callable[[ITask[TestState, TestEvent], dict[str, Any]], Message]]:
+    def get_observe_funcs(self) -> dict[ReActStage, Callable[[ITask[MockState, MockEvent], dict[str, Any]], Message]]:
         return self._observe_funcs.copy()
 
     def get_observe_fn(self):
@@ -314,7 +336,7 @@ class MockWorkflow(IWorkflow):
     def get_tools(self) -> dict[str, tuple[Any, set[str]]]:
         return {"test_tool": (Mock(), set())}
 
-    async def call_tool(self, name: str, task: ITask[TestState, TestEvent], inject: dict[str, Any], kwargs: dict[str, Any]):
+    async def call_tool(self, name: str, task: ITask[MockState, MockEvent], inject: dict[str, Any], kwargs: dict[str, Any]):
         # Mock tool call implementation
         result = Mock()
         result.content = [Mock()]
@@ -322,6 +344,9 @@ class MockWorkflow(IWorkflow):
         result.isError = False
         result.structuredContent = {}
         return result
+
+    def get_completion_config(self) -> CompletionConfig:
+        return self._completion_config
 
 
 class MockQueue(IQueue[Message]):
@@ -376,8 +401,8 @@ class AgentTestMixin:
 
     @staticmethod
     def create_mock_task(
-        initial_state: TestState,
-        valid_states: set[TestState],
+        initial_state: MockState,
+        valid_states: set[MockState],
         task_id: str = "test-task"
     ) -> MockTask:
         """创建模拟任务"""
@@ -415,7 +440,7 @@ class AgentTestMixin:
         role: Role = Role.USER
     ) -> Message:
         """创建测试消息"""
-        return Message(role=role, content=content)
+        return Message(role=role, content=[TextBlock(text=content)])
 
     @staticmethod
     async def run_with_timeout(coro: Awaitable[Any], timeout: float = 5.0) -> Any:
@@ -426,11 +451,11 @@ class AgentTestMixin:
             raise AssertionError(f"Test timed out after {timeout} seconds")
 
 
-def create_react_agent_test_state() -> tuple[TestState, set[TestState]]:
+def create_react_agent_test_state() -> tuple[MockState, set[MockState]]:
     """创建ReAct Agent的测试状态"""
     # Using string literals as mock states for testing
-    init_state = TestState("PROCESSING")
-    valid_states: set[TestState] = {TestState("PROCESSING"), TestState("COMPLETED")}
+    init_state = MockState("PROCESSING")
+    valid_states: set[MockState] = {MockState("PROCESSING"), MockState("COMPLETED")}
     return init_state, valid_states
 
 

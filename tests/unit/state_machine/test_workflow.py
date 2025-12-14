@@ -21,7 +21,7 @@ from tasking.core.agent.react import ReActStage, ReActEvent
 from tasking.core.state_machine.workflow.interface import IWorkflow
 from tasking.core.state_machine.task.interface import ITask
 from tasking.core.state_machine.task.const import TaskState, TaskEvent
-from tasking.model import Message, Role
+from tasking.model import Message, Role, CompletionConfig
 
 # Type aliases for complex types
 ReActTransition = tuple[
@@ -50,6 +50,12 @@ class TestBaseWorkflow(unittest.IsolatedAsyncioTestCase):
             (ReflectStage.REFLECTING, ReflectEvent.FINISH): (ReflectStage.REASONING, None),
         }
 
+        # 创建完成配置
+        completion_config = CompletionConfig(
+            temperature=0.7,
+            max_tokens=1000
+        )
+
         # 创建工作流
         self.workflow = BaseWorkflow[
             ReflectStage,  # WorkflowStageT
@@ -57,11 +63,14 @@ class TestBaseWorkflow(unittest.IsolatedAsyncioTestCase):
             TaskState,   # StateT
             TaskEvent    # EventT
         ](
-            valid_states={ReflectStage.REASONING, ReflectStage.REASONING, ReflectStage.REFLECTING},
+            valid_states={ReflectStage.REASONING, ReflectStage.REFLECTING},
             init_state=ReflectStage.REASONING,
             transitions=self.transitions,
             name="test_workflow",
-            labels={"test": "test_workflow", "output": "workflow_output"},
+            completion_configs={
+                ReflectStage.REASONING: completion_config,
+                ReflectStage.REFLECTING: completion_config,
+            },
             actions={
                 ReflectStage.REASONING: self._mock_action,
                 ReflectStage.REFLECTING: self._mock_action,
@@ -75,7 +84,7 @@ class TestBaseWorkflow(unittest.IsolatedAsyncioTestCase):
                 ReflectStage.REFLECTING: self._mock_observe,
             },
             event_chain=[ReflectEvent.REASON, ReflectEvent.REFLECT, ReflectEvent.FINISH],
-            end_workflow=self.end_workflow_tool
+            tools=None
         )
 
     async def _mock_action(
@@ -127,44 +136,6 @@ class TestBaseWorkflow(unittest.IsolatedAsyncioTestCase):
 class TestWorkflowIntegration(unittest.IsolatedAsyncioTestCase):
     """工作流集成测试"""
 
-    async def test_workflow_creation(self) -> None:
-        """测试工作流创建"""
-        # 创建模拟的end_workflow工具
-        end_workflow_tool = Mock(spec=FastMcpTool)
-        end_workflow_tool.name = "end_workflow"
-
-        workflow = BaseWorkflow[
-            ReActStage,   # WorkflowStageT
-            ReActEvent,   # WorkflowEventT
-            TaskState,     # StateT
-            TaskEvent      # EventT
-        ](
-            valid_states={ReActStage.PROCESSING, ReActStage.COMPLETED},
-            init_state=ReActStage.PROCESSING,
-            transitions={
-                (ReActStage.PROCESSING, ReActEvent.COMPLETE): (ReActStage.COMPLETED, None),
-            },
-            name="simple_workflow",
-            labels={"simple": "test_workflow", "output": "simple_output"},
-            actions={
-                ReActStage.PROCESSING: self._mock_simple_action,
-                ReActStage.COMPLETED: self._mock_simple_action,
-            },
-            prompts={
-                ReActStage.PROCESSING: "Process",
-                ReActStage.COMPLETED: "Complete",
-            },
-            observe_funcs={
-                ReActStage.PROCESSING: self._mock_simple_observe,
-                ReActStage.COMPLETED: self._mock_simple_observe,
-            },
-            event_chain=[ReActEvent.COMPLETE],
-            end_workflow=end_workflow_tool
-        )
-
-        self.assertIsNotNone(workflow)
-        self.assertEqual(workflow.get_name(), "simple_workflow")
-
     async def _mock_simple_action(
         self,
         _workflow: IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
@@ -182,6 +153,49 @@ class TestWorkflowIntegration(unittest.IsolatedAsyncioTestCase):
     ) -> Message:
         """模拟观察函数"""
         return Message(role=Role.ASSISTANT, content="Simple observation")
+
+    async def test_workflow_creation(self) -> None:
+        """测试工作流创建"""
+        # 创建完成配置
+        completion_config = CompletionConfig(
+            temperature=0.7,
+            max_tokens=1000
+        )
+
+        workflow = BaseWorkflow[
+            ReActStage,   # WorkflowStageT
+            ReActEvent,   # WorkflowEventT
+            TaskState,     # StateT
+            TaskEvent      # EventT
+        ](
+            valid_states={ReActStage.PROCESSING, ReActStage.COMPLETED},
+            init_state=ReActStage.PROCESSING,
+            transitions={
+                (ReActStage.PROCESSING, ReActEvent.COMPLETE): (ReActStage.COMPLETED, None),
+            },
+            name="simple_workflow",
+            completion_configs={
+                ReActStage.PROCESSING: completion_config,
+                ReActStage.COMPLETED: completion_config,
+            },
+            actions={
+                ReActStage.PROCESSING: self._mock_simple_action,
+                ReActStage.COMPLETED: self._mock_simple_action,
+            },
+            prompts={
+                ReActStage.PROCESSING: "Process",
+                ReActStage.COMPLETED: "Complete",
+            },
+            observe_funcs={
+                ReActStage.PROCESSING: self._mock_simple_observe,
+                ReActStage.COMPLETED: self._mock_simple_observe,
+            },
+            event_chain=[ReActEvent.COMPLETE],
+            tools=None
+        )
+
+        self.assertIsNotNone(workflow)
+        self.assertEqual(workflow.get_name(), "simple_workflow")
 
 
 if __name__ == "__main__":

@@ -31,8 +31,7 @@ setup(
             "prompt/memory/episode_compress.md",
         ]),
         ("share/tasking/prompt/task", [
-            "prompt/task/default.xml",
-            "prompt/task/plan_and_exec.xml",
+            "prompt/task/default.md",
         ]),
         ("share/tasking/prompt/workflow/orchestrate", [
             "prompt/workflow/orchestrate/orchestrating.md",
