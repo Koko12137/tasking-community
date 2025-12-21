@@ -1,8 +1,10 @@
 import inspect
 from uuid import uuid4
-from typing import Callable, Any, List, Awaitable
+from typing import Any
+from collections.abc import Callable, Awaitable
 
 from asyncer import asyncify
+from loguru import logger
 
 from .interface import IStateMachine, StateT, EventT
 
@@ -117,7 +119,7 @@ class BaseStateMachine(IStateMachine[StateT, EventT]):
         # 1. 初始化可达状态集合（从初始状态开始）
         reachable_states: set[StateT] = {self._initial_state}
         # 2. 用BFS遍历所有可达状态（队列实现，FIFO）
-        queue: List[StateT] = [self._initial_state]
+        queue: list[StateT] = [self._initial_state]
 
         while queue:
             # 取出当前待处理的可达状态
@@ -174,6 +176,7 @@ class BaseStateMachine(IStateMachine[StateT, EventT]):
         """
         key = (self._current_state, event)
         if key not in self._transitions:
+            logger.error(f"No transition defined for state {self._current_state} with event {event}")
             raise ValueError(
                 f"No transition defined for state {self._current_state} with event {event}"
             )
@@ -187,5 +190,6 @@ class BaseStateMachine(IStateMachine[StateT, EventT]):
     def reset(self) -> None:
         """重置状态机到初始状态"""
         if not self._is_compiled:
+            logger.error("Cannot reset before compilation")
             raise RuntimeError("Cannot reset before compilation")
         self._current_state = self._initial_state

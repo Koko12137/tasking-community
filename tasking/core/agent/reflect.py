@@ -1,7 +1,9 @@
 from enum import Enum, auto
-from typing import Any, Callable, Awaitable
+from typing import Any
+from collections.abc import Callable, Awaitable
 
 from loguru import logger
+from mcp.types import Tool as McpTool
 from fastmcp import Client
 from fastmcp.client.transports import ClientTransportT
 from fastmcp.tools import Tool as FastMcpTool
@@ -13,11 +15,11 @@ from ..middleware import HumanInterfere
 from ..state_machine.workflow import IWorkflow, BaseWorkflow
 from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView
 from ...llm import ILLM, build_llm
-from ...model import Message, StopReason, Role, IQueue, CompletionConfig, get_settings
+from ...model import Message, StopReason, Role, IAsyncQueue, CompletionConfig, get_settings
 from ...model.message import TextBlock
 from ...utils.io import read_markdown
-from ...utils.string.extract import extract_by_label
-from ...utils.content import extract_text_from_message
+from ...utils.string.xml import extract_by_label
+from ...utils.string.message import extract_text_from_message
 
 
 class ReflectStage(str, Enum):
@@ -140,7 +142,7 @@ def get_reflect_actions(
         [
             IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
             dict[str, Any],
-            IQueue[Message],
+            IAsyncQueue[Message],
             ITask[TaskState, TaskEvent],
         ],
         Awaitable[ReflectEvent]
@@ -161,7 +163,7 @@ def get_reflect_actions(
         [
             IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
             dict[str, Any],
-            IQueue[Message],
+            IAsyncQueue[Message],
             ITask[TaskState, TaskEvent],
         ],
         Awaitable[ReflectEvent]]
@@ -171,7 +173,7 @@ def get_reflect_actions(
     async def reason(
         workflow: IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> ReflectEvent:
         """REASONING 阶段动作函数
@@ -189,6 +191,17 @@ def get_reflect_actions(
         current_state = workflow.get_current_state()
         if current_state != ReflectStage.REASONING:
             raise RuntimeError(f"当前工作流状态错误，期望：{ReflectStage.REASONING}，实际：{current_state}")
+
+        # 获取任务的推理配置信息
+        completion_config = workflow.get_completion_config()
+        # 更新工具服务器工具信息
+        service_tools = await agent.get_tools_with_tags(
+            task.get_tags(),
+        )
+        # 更新推理配置中的工具列表
+        completion_config.update(
+            stop_words=["</final_flag>", "</finish>", "</finish_flag>", "</end_flag>"],
+        )
 
         # 获取当前工作流的提示词
         prompt = workflow.get_prompt()
@@ -209,6 +222,7 @@ def get_reflect_actions(
                 context=context,
                 queue=queue,
                 task=task,
+                valid_tools=service_tools,
                 completion_config=workflow.get_completion_config(),
             )
         except HumanInterfere as e:
@@ -278,7 +292,7 @@ def get_reflect_actions(
     async def reflect(
         workflow: IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> ReflectEvent:
         """REFLECTION 阶段动作函数
@@ -296,11 +310,16 @@ def get_reflect_actions(
         current_state = workflow.get_current_state()
         if current_state != ReflectStage.REFLECTING:
             raise RuntimeError(f"当前工作流状态错误，期望：{ReflectStage.REFLECTING}，实际：{current_state}")
-        # 获取任务的推理配置
+        
+        # 获取任务的推理配置信息
         completion_config = workflow.get_completion_config()
-        # 更新推理配置以适应反思阶段
+        # 获取推理配置中的工具信息
+        tools: dict[str, McpTool] = {}
+        # 更新工作流工具信息
+        workflow_tools = workflow.get_tools()
+        for _, (tool, _) in workflow_tools.items():
+            tools[tool.name] = tool.to_mcp_tool()
         completion_config.update(
-            tools=[workflow.get_tool("end_workflow")],
             stop_words=["</final_flag>", "</finish>", "</finish_flag>", "</end_flag>"],
         )
 
@@ -322,6 +341,7 @@ def get_reflect_actions(
             context=context,
             queue=queue,
             task=task,
+            valid_tools=tools,
             completion_config=completion_config,
         )
         # 推理结果反馈到任务
@@ -391,7 +411,7 @@ def build_reflect_agent(
             [
                 IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent],
                 dict[str, Any],
-                IQueue[Message],
+                IAsyncQueue[Message],
                 ITask[TaskState, TaskEvent],
             ],
             Awaitable[ReflectEvent]
@@ -487,7 +507,7 @@ def build_reflect_agent(
         llm_cfg = agent_cfg.get_llm_config(stage.value)
         completion_configs[stage] = CompletionConfig(
             max_tokens=llm_cfg.max_tokens,
-            tools=[],
+            stream=llm_cfg.stream,
         )
 
     # 构建工作流实例

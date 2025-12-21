@@ -1,4 +1,5 @@
-from typing import Any, Callable, Awaitable, TypeVar
+from typing import Any, TypeVar
+from collections.abc import Callable, Awaitable
 
 from loguru import logger
 from fastmcp.client.transports import ClientTransportT
@@ -8,7 +9,7 @@ from .base import BaseScheduler
 from ..agent import IAgent
 from ..state_machine.task import ITask, ITreeTaskNode, TaskState, TaskEvent
 from ..state_machine.workflow.const import WorkflowStageProtocol, WorkflowEventProtocol
-from ...model import Message, IQueue, TextBlock, Role
+from ...model import Message, IAsyncQueue, TextBlock, Role
 
 
 ExecStage = TypeVar("ExecStage", bound=WorkflowStageProtocol)
@@ -24,7 +25,7 @@ def get_tree_on_state_fn(
     [
         IScheduler[TaskState, TaskEvent],
         dict[str, Any],
-        IQueue[Message],
+        IAsyncQueue[Message],
         ITask[TaskState, TaskEvent]
     ],
     Awaitable[TaskEvent]
@@ -43,20 +44,20 @@ def get_tree_on_state_fn(
         [
             IScheduler[TaskState, TaskEvent],
             dict[str, Any],
-            IQueue[Message],
+            IAsyncQueue[Message],
             ITask[TaskState, TaskEvent]
         ],
         Awaitable[TaskEvent]
     ]] = {}
 
-    # 1. CREATED -> RUNNING
-    async def created_to_running_task(
+    # 1. CREATED -> CREATED / RUNNING / CANCELED
+    async def on_created(
         scheduler: IScheduler[TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> TaskEvent:
-        """CREATED -> RUNNING 任务调度函数"""
+        """CREATED -> RUNNING / CREATED 任务调度函数"""
         # 强制转换为 ITreeTaskNode 以使用树形特定方法
         assert isinstance(task, ITreeTaskNode)
 
@@ -64,17 +65,23 @@ def get_tree_on_state_fn(
             # 调用 orchestrator 进行任务规划
             await orchestrator.run_task_stream(context=context, queue=queue, task=task)
 
+        # 检查任务状态
+        if task.is_error():
+            if task.get_state_visit_count(TaskState.CREATED) >= scheduler.get_max_revisit_count():
+                # 达到最大重试次数，取消任务
+                return TaskEvent.CANCEL
+            # 任务执行出错，返回 INIT 事件，状态机重试执行
+            return TaskEvent.INIT
+
         # 返回 PLANED 事件，驱动状态机转换状态
         return TaskEvent.PLANED
-
-    # 注册状态调度函数
-    on_state_fn[TaskState.CREATED] = created_to_running_task
+    on_state_fn[TaskState.CREATED] = on_created
 
     # 2. RUNNING -> RUNNING / FINISHED / INITED / CANCELED
-    async def running_to_finished_task(
+    async def on_running(
         scheduler: IScheduler[TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> TaskEvent:
         """RUNNING -> RUNNING / FINISHED / INITED / CANCELED 任务调度函数。
@@ -107,9 +114,7 @@ def get_tree_on_state_fn(
 
         # 返回 DONE 事件，驱动状态机转换状态
         return TaskEvent.DONE
-
-    # 注册状态调度函数
-    on_state_fn[TaskState.RUNNING] = running_to_finished_task
+    on_state_fn[TaskState.RUNNING] = on_running
 
     return on_state_fn
 
@@ -121,7 +126,7 @@ def get_tree_on_state_changed_fn(
     [
         IScheduler[TaskState, TaskEvent],
         dict[str, Any],
-        IQueue[Message],
+        IAsyncQueue[Message],
         ITask[TaskState, TaskEvent]
     ],
     Awaitable[None]
@@ -139,7 +144,7 @@ def get_tree_on_state_changed_fn(
         [
             IScheduler[TaskState, TaskEvent],
             dict[str, Any],
-            IQueue[Message],
+            IAsyncQueue[Message],
             ITask[TaskState, TaskEvent]
         ],
         Awaitable[None]
@@ -149,40 +154,71 @@ def get_tree_on_state_changed_fn(
     async def on_created_to_running(
         scheduler: IScheduler[TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> None:
         """任务状态从 CREATED 变更到 RUNNING 时的调度函数"""
         logger.info(f"Task {task.get_title()} state changed from CREATED to RUNNING.")
     on_state_changed_fn[(TaskState.CREATED, TaskState.RUNNING)] = on_created_to_running
     
-    # 2. TaskState.RUNNING -> TaskState.FINISHED
+    # 2. TaskState.CREATED -> TaskState.CREATED
+    async def on_created_to_created(
+        scheduler: IScheduler[TaskState, TaskEvent],
+        context: dict[str, Any],
+        queue: IAsyncQueue[Message],
+        task: ITask[TaskState, TaskEvent],
+    ) -> None:
+        """任务状态从 CREATED 变更到 CREATED 时的调度函数"""
+        logger.info(f"Task {task.get_title()} state changed from CREATED to CREATED for retry.")
+        # 获取错误信息
+        error_info = task.get_error_info()
+        if len(task.get_context().get_context_data()) > 0:
+            role = Role.USER
+        else:
+            role = Role.SYSTEM
+        # 创建错误信息消息
+        error_message = Message(
+            role=role,
+            content=[
+                TextBlock(text=f"任务在上一轮执行过程中出错，该阶段访问次数限制为{task.get_state_visit_count(TaskState.CREATED)} / {scheduler.get_max_revisit_count()}，错误信息如下："),
+                TextBlock(text=error_info)
+            ],
+        )
+        # 将错误信息放入任务上下文中
+        task.append_context(error_message)
+        # 重置错误信息
+        task.clean_error_info()
+    on_state_changed_fn[(TaskState.CREATED, TaskState.CREATED)] = on_created_to_created
+    
+    # 3. TaskState.RUNNING -> TaskState.FINISHED
     async def on_running_to_finished(
         scheduler: IScheduler[TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> None:
         """任务状态从 RUNNING 变更到 FINISHED 时的调度函数"""
         logger.info(f"Task {task.get_title()} state changed from RUNNING to FINISHED.")
-
-    # 注册状态变更调度函数
     on_state_changed_fn[(TaskState.RUNNING, TaskState.FINISHED)] = on_running_to_finished
     
-    # 3. TaskState.RUNNING -> TaskState.RUNNING (RETRY)
+    # 4. TaskState.RUNNING -> TaskState.RUNNING (RETRY)
     async def on_running_to_running(
         scheduler: IScheduler[TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> None:
         """任务状态从 RUNNING 变更到 RUNNING 时的调度函数"""
         logger.error(f"Task {task.get_title()} state changed from RUNNING to RUNNING. Error info: {task.get_error_info()}")
         # 获取错误信息
         error_info = task.get_error_info()
+        if len(task.get_context().get_context_data()) > 0:
+            role = Role.USER
+        else:
+            role = Role.SYSTEM
         # 新建 Message 记录错误日志
         error_message = Message(
-            role=Role.SYSTEM,
+            role=role,
             content=[
                 TextBlock(text="任务在上一轮执行过程中出错，错误信息如下："),
                 TextBlock(text=error_info)
@@ -194,15 +230,13 @@ def get_tree_on_state_changed_fn(
         task.append_context(error_message)
         # 清空错误信息
         task.clean_error_info()
-
-    # 注册状态变更调度函数
     on_state_changed_fn[(TaskState.RUNNING, TaskState.RUNNING)] = on_running_to_running
     
-    # 4. TaskState.RUNNING -> TaskState.CREATED
+    # 5. TaskState.RUNNING -> TaskState.CREATED
     async def on_running_to_created(
         scheduler: IScheduler[TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> None:
         """任务状态从 RUNNING 变更到 CREATED 时的调度函数"""
@@ -236,22 +270,17 @@ def get_tree_on_state_changed_fn(
 
         # 重置状态机
         task.reset()
-        task.clean_error_info()
-
-    # 注册状态变更调度函数
     on_state_changed_fn[(TaskState.RUNNING, TaskState.CREATED)] = on_running_to_created
     
-    # 5. TaskState.RUNNING -> TaskState.CANCELED
+    # 6. TaskState.RUNNING -> TaskState.CANCELED
     async def on_running_to_canceled(
         scheduler: IScheduler[TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> None:
         """任务状态从 RUNNING 变更到 CANCELED 时的调度函数"""
         logger.info(f"Task {task.get_title()} state changed from RUNNING to CANCELED.")
-
-    # 注册状态变更调度函数
     on_state_changed_fn[(TaskState.RUNNING, TaskState.CANCELED)] = on_running_to_canceled
 
     return on_state_changed_fn

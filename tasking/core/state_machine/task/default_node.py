@@ -1,4 +1,4 @@
-from typing import Callable, Awaitable
+from collections.abc import Callable, Awaitable
 
 from loguru import logger
 

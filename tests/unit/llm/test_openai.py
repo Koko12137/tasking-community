@@ -152,7 +152,7 @@ class TestOpenAiLLM:
         ]
 
         import asyncio
-        result = asyncio.run(llm.completion(messages, completion_config))
+        result = asyncio.run(llm.completion(messages, None, None, completion_config))
 
         # Verify client was called with correct parameters
         mock_client.chat.completions.create.assert_called_once()
@@ -209,7 +209,7 @@ class TestOpenAiLLM:
         completion_config = CompletionConfig()
 
         import asyncio
-        result = asyncio.run(llm.completion(messages, completion_config))
+        result = asyncio.run(llm.completion(messages, None, None, completion_config))
 
         # OpenAI LLM returns a Message object, not a completion result object
         assert isinstance(result, Message)

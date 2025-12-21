@@ -13,7 +13,7 @@ from tasking.core.agent.orchestrate import (
 )
 from tasking.core.state_machine.task import ITreeTaskNode, TaskState, TaskEvent
 from tasking.core.state_machine.workflow import IWorkflow
-from tasking.model import Message, Role, TextBlock, IQueue, CompletionConfig
+from tasking.model import Message, Role, TextBlock, IAsyncQueue, CompletionConfig
 
 
 class TestOrchestrateAgentWorkflow:
@@ -105,7 +105,7 @@ class TestOrchestrateAgentWorkflowExecution:
         mock_task.get_context.return_value.append_context_data = Mock()
 
         # Mock queue
-        mock_queue = Mock(spec=IQueue)
+        mock_queue = Mock(spec=IAsyncQueue)
 
         # Mock valid tasks
         valid_tasks = {
@@ -156,7 +156,7 @@ class TestOrchestrateAgentWorkflowExecution:
         mock_task.set_error = Mock()
 
         # Mock queue
-        mock_queue = Mock(spec=IQueue)
+        mock_queue = Mock(spec=IAsyncQueue)
 
         # Mock valid tasks
         valid_tasks = {
@@ -274,7 +274,7 @@ class TestOrchestrateErrorHandling:
         mock_task.set_error = Mock()
 
         # Mock queue
-        mock_queue = Mock(spec=IQueue)
+        mock_queue = Mock(spec=IAsyncQueue)
 
         # Mock valid tasks
         valid_tasks = {

@@ -1,0 +1,44 @@
+# 包含项目源代码
+include tasking/**/*.py
+include README.md
+include LICENSE
+include pyproject.toml
+include setup.py
+
+# 包含类型信息
+include tasking/py.typed
+include typings/**/*.pyi
+
+# 排除缓存文件
+recursive-exclude * __pycache__
+recursive-exclude * *.pyc
+recursive-exclude * *.pyo
+recursive-exclude * *.pyd
+global-exclude *.py[co]
+global-exclude __pycache__
+
+# 排除测试文件（除非特别需要）
+recursive-exclude tests *
+
+# 排除开发工具文件
+exclude .env
+exclude .env.template
+exclude .vscode/
+exclude .pytest_cache/
+exclude .git/
+exclude .claude/
+
+# 排除临时文件
+global-exclude *.tmp
+global-exclude *.log
+global-exclude .DS_Store
+global-exclude Thumbs.db
+
+# 排除构建产物
+recursive-exclude dist *
+recursive-exclude build *
+
+# 排除大型数据文件（如果有）
+exclude *.db
+exclude *.sqlite
+exclude *.sqlite3

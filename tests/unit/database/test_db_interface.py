@@ -179,7 +179,7 @@ class TestInterfaceMethodSignatures(unittest.TestCase):
         # 检查 add 方法签名
         add_sig = inspect.signature(IDatabase.add)
         params = list(add_sig.parameters.keys())
-        expected_params = ['self', 'context', 'memory']
+        expected_params = ['self', 'context', 'memory', 'timeout']
         self.assertEqual(params, expected_params)
 
         # 检查 delete 方法签名

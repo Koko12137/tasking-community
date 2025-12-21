@@ -4,10 +4,10 @@ import getpass
 import json
 from typing import Any, cast
 
+from json_repair import repair_json
 from loguru import logger
 from pydantic import SecretStr
-from mcp import Tool as McpTool
-from fastmcp.tools import Tool as FastMcpTool
+from mcp.types import Tool as McpTool
 from zai import ZhipuAiClient as ZhipuAI
 from zai.types.chat.chat_completion import (
     Completion as ZhipuCompletion,
@@ -28,16 +28,17 @@ from ..model import (
 )
 from ..model.setting import LLMConfig
 from ..model.message import TextBlock, ImageBlock, VideoBlock, MultimodalContent
+from ..model.queue import IAsyncQueue
 
 
 def tool_schema(
-    tool: McpTool | FastMcpTool,
+    tool: McpTool,
 ) -> dict[str, Any]:
     """
     Get the schema of the tool for Zhipu AI.
 
     Args:
-        tool: McpTool | FastMcpTool
+        tool: McpTool
             The tool to get the description of.
 
     Returns:
@@ -55,24 +56,13 @@ def tool_schema(
         }
     }
 
-    if isinstance(tool, FastMcpTool):
-        # Extract parameters from FastMcpTool
-        if hasattr(tool, 'parameters') and tool.parameters:
-            function_schema["parameters"]["properties"] = tool.parameters.get("properties", {})
-            function_schema["parameters"]["required"] = tool.parameters.get("required", [])
-            # Add type if available
-            if "type" in tool.parameters:
-                function_schema["parameters"]["type"] = tool.parameters["type"]
-    elif isinstance(tool, McpTool): # pyright: ignore[reportUnnecessaryIsInstance]
-        # Extract parameters from McpTool inputSchema
-        if hasattr(tool, 'inputSchema') and tool.inputSchema:
-            function_schema["parameters"]["properties"] = tool.inputSchema.get("properties", {})
-            function_schema["parameters"]["required"] = tool.inputSchema.get("required", [])
-            # Add type if available
-            if "type" in tool.inputSchema:
-                function_schema["parameters"]["type"] = tool.inputSchema["type"]
-    else:
-        raise ValueError(f"Unsupported tool type: {type(tool)}")
+    # Extract parameters from McpTool inputSchema
+    if hasattr(tool, 'inputSchema') and tool.inputSchema:
+        function_schema["parameters"]["properties"] = tool.inputSchema.get("properties", {})
+        function_schema["parameters"]["required"] = tool.inputSchema.get("required", [])
+        # Add type if available
+        if "type" in tool.inputSchema:
+            function_schema["parameters"]["type"] = tool.inputSchema["type"]
 
     # Build the complete tool schema in Zhipu AI format
     return {
@@ -81,8 +71,12 @@ def tool_schema(
     }
 
 
-def to_zhipu(config: CompletionConfig) -> dict[str, Any]:
+def to_zhipu(config: CompletionConfig, tools: list[McpTool] | None = None) -> dict[str, Any]:
     """Convert the completion config to the Zhipu AI format.
+
+    Args:
+        config (CompletionConfig): The completion configuration.
+        tools (list[McpTool] | None): The tools to convert.
 
     Returns:
         dict:
@@ -104,23 +98,8 @@ def to_zhipu(config: CompletionConfig) -> dict[str, Any]:
         kwargs["response_format"] = {"type": "json_object"}
 
     # tools (Zhipu AI uses OpenAI-like format)
-    tools: list[dict[str, Any]] = [
-        tool_schema(tool) for tool in config.tools
-        if tool.name not in config.exclude_tools
-    ]
-    if len(tools) > 0:
-        kwargs["tools"] = tools
-
-        # tool_choice
-        if config.tool_choice is not None:
-            tool_choice: list[FastMcpTool] = [
-                tool for tool in config.tools
-                if tool.name == config.tool_choice
-            ]
-
-            if len(tool_choice) > 0:
-                tool_choice_schema = tool_schema(tool_choice[0])
-                kwargs["tool_choice"] = tool_choice_schema
+    if tools:
+        kwargs["tools"] = [tool_schema(tool) for tool in tools]
 
     return kwargs
 
@@ -202,70 +181,72 @@ def to_zhipu_messages(messages: list[Message]) -> list[dict[str, Any]]:
     for message in messages:
         message_dict: dict[str, str | list[dict[str, Any]]] = {}
 
-        if not message.content:
-            raise ValueError("Message content cannot be empty")
-
+    
         # Process Role and Content
         message_dict['role'] = message.role.value
 
-        # Handle different role logic
-        if message.role == Role.SYSTEM:
-            if len(history) > 0:
-                # Modify message_dict role to user for system messages after first
-                message_dict['role'] = Role.USER.value
-            # For system messages, use text content with block wrapper
-            text_content = _extract_text_from_content(message.content)
-            message_dict['content'] = f"<block>{text_content}</block>"
-
-        elif message.role == Role.USER:
-            # Extract text for block wrapping
-            text_content = _extract_text_from_content(message.content)
-
-            # Convert to Zhipu AI format with block wrappers
-            if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
-                # Pure text message
-                message_dict['content'] = f"<block>{text_content}</block>"
-            else:
-                # Multimodal message with block wrappers
-                zhipu_blocks = _convert_content_to_zhipu_format(message.content)
-                # Add block markers
-                message_dict['content'] = [
-                    {'type': 'text', 'text': "<block>"},
-                    *zhipu_blocks,
-                    {'type': 'text', 'text': "</block>"},
-                ]
-
-        elif message.role == Role.ASSISTANT:
-            if len(history) > 0 and history[-1]['role'] != Role.USER.value:
-                raise ValueError("Assistant message must be followed by a user message.")
-
-            # Extract text content for assistant message with block wrapper
-            text_content = _extract_text_from_content(message.content)
-            message_dict['content'] = f"<block>{text_content}</block>"
-
-            # If the message is a tool call, add the tool call to the history
-            if message.tool_calls:
-                message_dict["tool_calls"] = []
-
-                for tool_call in message.tool_calls:
-                    message_dict["tool_calls"].append({
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.name,
-                            "arguments": json.dumps(tool_call.args, ensure_ascii=False),
-                        }
-                    })
-
-        elif message.role == Role.TOOL:
-            message_dict['role'] = message.role.value
-            # Extract text from content for tool result
-            tool_result_text = _extract_text_from_content(message.content)
-            message_dict['content'] = tool_result_text
-            message_dict['tool_call_id'] = message.tool_call_id
-
+        # Handle empty content
+        if not message.content:
+            message_dict['content'] = ""
         else:
-            raise ValueError(f"Unsupported message role: {message.role}")
+            # Handle different role logic
+            if message.role == Role.SYSTEM:
+                if len(history) > 0:
+                    # Modify message_dict role to user for system messages after first
+                    message_dict['role'] = Role.USER.value
+                # For system messages, use text content with block wrapper
+                text_content = _extract_text_from_content(message.content)
+                message_dict['content'] = f"<block>{text_content}</block>"
+
+            elif message.role == Role.USER:
+                # Extract text for block wrapping
+                text_content = _extract_text_from_content(message.content)
+
+                # Convert to Zhipu AI format with block wrappers
+                if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
+                    # Pure text message
+                    message_dict['content'] = f"<block>{text_content}</block>"
+                else:
+                    # Multimodal message with block wrappers
+                    zhipu_blocks = _convert_content_to_zhipu_format(message.content)
+                    # Add block markers
+                    message_dict['content'] = [
+                        {'type': 'text', 'text': "<block>"},
+                        *zhipu_blocks,
+                        {'type': 'text', 'text': "</block>"},
+                    ]
+
+            elif message.role == Role.ASSISTANT:
+                if len(history) > 0 and history[-1]['role'] != Role.USER.value:
+                    raise ValueError("Assistant message must be followed by a user message.")
+
+                # Extract text content for assistant message with block wrapper
+                text_content = _extract_text_from_content(message.content)
+                message_dict['content'] = f"<block>{text_content}</block>"
+
+                # If the message is a tool call, add the tool call to the history
+                if message.tool_calls:
+                    message_dict["tool_calls"] = []
+
+                    for tool_call in message.tool_calls:
+                        message_dict["tool_calls"].append({
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call.name,
+                                "arguments": json.dumps(tool_call.args, ensure_ascii=False),
+                            }
+                        })
+
+            elif message.role == Role.TOOL:
+                message_dict['role'] = message.role.value
+                # Extract text from content for tool result
+                tool_result_text = _extract_text_from_content(message.content)
+                message_dict['content'] = tool_result_text
+                message_dict['tool_call_id'] = message.tool_call_id
+
+            else:
+                raise ValueError(f"Unsupported message role: {message.role}")
 
         # Check if we can merge with previous message (same role, not TOOL/ASSISTANT)
         last_role: str | None = None
@@ -348,6 +329,8 @@ class ZhipuLLM(ILLM):
     async def completion(
         self,
         messages: list[Message],
+        tools: list[McpTool] | None,
+        stream_queue: IAsyncQueue[Message] | None,
         completion_config: CompletionConfig,
         **kwargs: Any,
     ) -> Message:
@@ -356,6 +339,10 @@ class ZhipuLLM(ILLM):
         Args:
             messages (list[Message]):
                 The messages to complete.
+            tools (list[McpTool] | None):
+                可用的工具列表，如果没有工具则为 None
+            stream_queue (IQueue[Message] | None):
+                流式数据队列，用于输出补全过程中产生的流式数据，如果不需要流式输出则为 None
             completion_config (CompletionConfig):
                 The completion configuration.
             **kwargs:
@@ -369,9 +356,10 @@ class ZhipuLLM(ILLM):
             Message:
                 The completed message.
         """
+        logger.info(f"[Zhipu] Starting completion with model {self._model}, messages: {len(messages)}, max_tokens: {completion_config.max_tokens}, streaming: {stream_queue is not None}")
+
         # Convert completion config to Zhipu AI format using the conversion function
-        zhipu_kwargs = to_zhipu(completion_config)
-        zhipu_kwargs["stream"] = False
+        zhipu_kwargs = to_zhipu(completion_config, tools)
 
         # Add any extra kwargs while preserving defaults
         for key, value in kwargs.items():
@@ -381,68 +369,174 @@ class ZhipuLLM(ILLM):
         # Convert messages to Zhipu AI format
         history = to_zhipu_messages(messages)
 
+        # Initialize accumulators for streaming response
+        accumulated_content = ""
+        accumulated_tool_calls: dict[int, ToolCallRequest] = {}
+
         try:
-            # Call Zhipu AI API using asyncify for better sync-to-async conversion
-            create_completion = asyncify(self._client.chat.completions.create)
-            response = await create_completion(
-                model=self._model,
-                messages=history,
-                **zhipu_kwargs,
-            )
+            if stream_queue is not None:
+                # Streaming mode
+                zhipu_kwargs["stream"] = True
+
+                # Create a streaming completion using asyncify
+                create_completion = asyncify(self._client.chat.completions.create)
+                stream = await create_completion(
+                    model=self._model,
+                    messages=history,
+                    **zhipu_kwargs,
+                )
+
+                # Process the stream
+                stream = cast(Any, stream)  # Cast to Any to handle streaming properly
+                async for chunk in stream:  # type: ignore[reportGeneralTypeIssues]
+                    # Zhipu AI streaming format might be different
+                    if hasattr(chunk, 'choices') and chunk.choices:
+                        choice = chunk.choices[0]
+
+                        # Handle content delta
+                        if hasattr(choice, 'delta') and hasattr(choice.delta, 'content'):
+                            if choice.delta.content:
+                                content_delta = choice.delta.content
+                                accumulated_content += content_delta
+                                # Send chunk message to stream queue
+                                chunk_message = Message(
+                                    role=Role.ASSISTANT,
+                                    content=[TextBlock(text=content_delta)],
+                                    is_chunking=True,
+                                    stop_reason=StopReason.NONE,
+                                )
+                                await stream_queue.put(chunk_message)
+
+                        # Handle tool call delta
+                        if hasattr(choice, 'delta') and hasattr(choice.delta, 'tool_calls'):
+                            if choice.delta.tool_calls:
+                                for tool_call_delta in choice.delta.tool_calls:
+                                    if hasattr(tool_call_delta, 'index'):
+                                        tool_index = tool_call_delta.index
+                                    else:
+                                        tool_index = 0
+
+                                    if tool_index not in accumulated_tool_calls:
+                                        # Initialize new tool call
+                                        tool_call = ToolCallRequest(
+                                            id=getattr(tool_call_delta, 'id', f"tool_call_{tool_index}"),
+                                            name=getattr(tool_call_delta, 'function', {}).get('name', ''),
+                                            type="function",
+                                            args=json.loads(repair_json(getattr(tool_call_delta, 'function', {}).get('arguments') or '{}'))
+                                        )
+                                        accumulated_tool_calls[tool_index] = tool_call
+                                    else:
+                                        # Update existing tool call
+                                        existing_tool_call = accumulated_tool_calls[tool_index]
+                                        if hasattr(tool_call_delta, 'id') and tool_call_delta.id:
+                                            existing_tool_call.id = tool_call_delta.id
+                                        if hasattr(tool_call_delta, 'function'):
+                                            if hasattr(tool_call_delta.function, 'name') and tool_call_delta.function.name:
+                                                existing_tool_call.name = tool_call_delta.function.name
+                                            if hasattr(tool_call_delta.function, 'arguments') and tool_call_delta.function.arguments:
+                                                new_args = json.loads(repair_json(tool_call_delta.function.arguments or '{}'))
+                                                existing_tool_call.args.update(new_args)
+
+                # For Zhipu AI, we need to make a non-streaming call to get final usage
+                # This is a common pattern for APIs that don't provide usage in streaming
+                zhipu_kwargs_final = to_zhipu(completion_config, tools)
+                zhipu_kwargs_final["stream"] = False
+                create_completion_final = asyncify(self._client.chat.completions.create)
+                final_response = await create_completion_final(
+                    model=self._model,
+                    messages=history,
+                    **zhipu_kwargs_final,
+                )
+
+                final_response = cast(ZhipuCompletion, final_response)  # Type assertion for proper usage access
+                logger.info(f"[Zhipu] Streaming completion successful, input_tokens: {final_response.usage.prompt_tokens if final_response.usage else 'unknown'}, output_tokens: {final_response.usage.completion_tokens if final_response.usage else 'unknown'}")
+
+            else:
+                # Non-streaming mode
+                zhipu_kwargs["stream"] = False
+                create_completion = asyncify(self._client.chat.completions.create)
+                response = await create_completion(
+                    model=self._model,
+                    messages=history,
+                    **zhipu_kwargs,
+                )
+
+                # Extract usage information for logging
+                if isinstance(response, ZhipuCompletion) and response.usage:
+                    logger.info(f"[Zhipu] Completion successful, input_tokens: {response.usage.prompt_tokens}, output_tokens: {response.usage.completion_tokens}")
+                else:
+                    logger.info("[Zhipu] Completion successful (usage info unavailable)")
+
+                final_response = response
 
         except Exception as e:
-            logger.error(e)
+            logger.error(f"[Zhipu] Completion failed: {e}")
             raise e
 
-        # Extract content from response using proper types
-        content_text: str = ""
-        zhipu_usage: ZhipuUsage | None = None
-        tool_calls_response: list[ZhipuToolCall] = []
-        finish_reason = "stop"
-
-        # Use the actual types from zai package
-        if isinstance(response, ZhipuCompletion) and response.choices:
-            choice = response.choices[0]
-            message = choice.message
-            content_text = message.content or ""
-            tool_calls_response = message.tool_calls or []
-            finish_reason = choice.finish_reason
-
-            # Extract usage information
-            zhipu_usage = response.usage
-        else:
-            # Fallback for unexpected response format
-            content_text = str(response) if response else ""
-
-        # Convert to list[TextBlock] format
-        content_blocks = [TextBlock(text=content_text)] if content_text else []
-
-        # Create the usage using proper types
-        if zhipu_usage:
+        # Extract final content and tool calls
+        if stream_queue is not None:
+            # For streaming mode, use accumulated data
+            content_blocks = [TextBlock(text=accumulated_content)] if accumulated_content else []
+            tool_calls = list(accumulated_tool_calls.values())
+            final_response = cast(ZhipuCompletion, final_response)  # Type assertion for proper usage access
             usage = CompletionUsage(
-                prompt_tokens=zhipu_usage.prompt_tokens,
-                completion_tokens=zhipu_usage.completion_tokens,
-                total_tokens=zhipu_usage.total_tokens
+                prompt_tokens=final_response.usage.prompt_tokens if final_response.usage else -1,
+                completion_tokens=final_response.usage.completion_tokens if final_response.usage else -1,
+                total_tokens=final_response.usage.total_tokens if final_response.usage else -1
             )
+            finish_reason = final_response.choices[0].finish_reason if final_response.choices else "stop"
         else:
-            # Fallback usage when actual usage data is not available
-            usage = CompletionUsage(
-                prompt_tokens=-1,
-                completion_tokens=-1,
-                total_tokens=-1
-            )
+            # For non-streaming mode, extract from response
+            # Extract content from response using proper types
+            content_text: str = ""
+            zhipu_usage: ZhipuUsage | None = None
+            tool_calls_response: list[ZhipuToolCall] = []
+            finish_reason = "stop"
 
-        # Extract tool calls from response
-        tool_calls: list[ToolCallRequest] = []
-        if tool_calls_response:
-            # Traverse all the tool calls and create tool call requests
-            for tool_call in tool_calls_response:
-                tool_calls.append(ToolCallRequest(
-                    id=tool_call.id,
-                    name=tool_call.function.name,
-                    type="function",
-                    args=json.loads(tool_call.function.arguments)
-                ))
+            # Use the actual types from zai package
+            if isinstance(final_response, ZhipuCompletion) and final_response.choices:
+                choice = final_response.choices[0]
+                message = choice.message
+                content_text = message.content or ""
+                tool_calls_response = message.tool_calls or []
+                finish_reason = choice.finish_reason
+
+                # Extract usage information
+                zhipu_usage = final_response.usage
+            else:
+                # Fallback for unexpected response format
+                content_text = str(final_response) if final_response else ""
+
+            # Convert to list[TextBlock] format
+            content_blocks = [TextBlock(text=content_text)] if content_text else []
+
+            # Create the usage using proper types
+            if zhipu_usage:
+                usage = CompletionUsage(
+                    prompt_tokens=zhipu_usage.prompt_tokens,
+                    completion_tokens=zhipu_usage.completion_tokens,
+                    total_tokens=zhipu_usage.total_tokens
+                )
+            else:
+                # Fallback usage when actual usage data is not available
+                usage = CompletionUsage(
+                    prompt_tokens=-1,
+                    completion_tokens=-1,
+                    total_tokens=-1
+                )
+
+            # Extract tool calls from response
+            tool_calls: list[ToolCallRequest] = []
+            if tool_calls_response:
+                # Traverse all the tool calls and create tool call requests
+                for tool_call in tool_calls_response:
+                    tool_calls.append(ToolCallRequest(
+                        id=tool_call.id,
+                        name=tool_call.function.name,
+                        type="function",
+                        args=json.loads(repair_json(tool_call.function.arguments or '{}'))
+                    ))
+
         if finish_reason == "length":
             stop_reason = StopReason.LENGTH
         elif finish_reason == "content_filter":
@@ -542,6 +636,8 @@ class ZhipuEmbeddingLLM(IEmbedModel):
         if not text:
             raise ValueError("Cannot embed empty content")
 
+        logger.info(f"[Zhipu Embedding] Starting embedding with model {self._model}, text_length: {len(text)}, dimensions: {dimensions}")
+
         # Prepare API parameters
         # Add dimensions if specified (supported by embedding-3 model)
         embed_kwargs: dict[str, Any] = {}
@@ -558,10 +654,12 @@ class ZhipuEmbeddingLLM(IEmbedModel):
 
             # Return the embedding vector, truncated to requested dimensions if necessary
             embedding = response.data[0].embedding
-            return embedding[:dimensions] if len(embedding) > dimensions else embedding
+            result_embedding = embedding[:dimensions] if len(embedding) > dimensions else embedding
+            logger.info(f"[Zhipu Embedding] Embedding successful, dimensions: {len(result_embedding)}")
+            return result_embedding
 
         except Exception as e:
-            logger.error(e)
+            logger.error(f"[Zhipu Embedding] Embedding failed: {e}")
             raise e
 
     async def embed_batch(
@@ -599,6 +697,8 @@ class ZhipuEmbeddingLLM(IEmbedModel):
                 text = ""  # Allow empty strings in batch processing
             texts.append(text)
 
+        logger.info(f"[Zhipu Embedding] Starting batch embedding with model {self._model}, batch_size: {len(texts)}, dimensions: {dimensions}")
+
         # Prepare API parameters
         # Add dimensions if specified (supported by embedding-3 model)
         embed_kwargs: dict[str, Any] = {}
@@ -624,8 +724,9 @@ class ZhipuEmbeddingLLM(IEmbedModel):
                     processed_embedding = embedding
                 embeddings.append(processed_embedding)
 
-        except Exception as e:
-            logger.error(e)
-            raise e
+            logger.info(f"[Zhipu Embedding] Batch embedding successful, generated {len(embeddings)} embeddings")
+            return embeddings
 
-        return embeddings
+        except Exception as e:
+            logger.error(f"[Zhipu Embedding] Batch embedding failed: {e}")
+            raise e

@@ -22,14 +22,13 @@ class TestContextInterface(unittest.TestCase):
 
         # 验证必需的抽象方法
         abstract_methods = IContext.__abstractmethods__
-        expected_methods = {'get', 'set', 'has', 'delete', 'clear', 'keys', 'values', 'items'}
+        expected_methods = {'get_context_data', 'append_context_data', 'clear_context_data'}
         self.assertEqual(abstract_methods, expected_methods)
 
     def test_icontext_method_names(self) -> None:
         """测试 IContext 方法名称"""
         expected_methods = [
-            'get', 'set', 'has', 'delete', 'clear',
-            'keys', 'values', 'items'
+            'get_context_data', 'append_context_data', 'clear_context_data'
         ]
 
         for method_name in expected_methods:

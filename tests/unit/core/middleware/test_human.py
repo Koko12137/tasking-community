@@ -13,7 +13,7 @@ from tasking.core.middleware.human import (
     BaseHumanInterfereHooks,
     HumanInterfere
 )
-from tasking.model import Message, Role, IQueue, AsyncQueue, TextBlock, MultimodalContent, ImageBlock, VideoBlock
+from tasking.model import Message, Role, IAsyncQueue, AsyncQueue, TextBlock, MultimodalContent, ImageBlock, VideoBlock
 from tasking.core.state_machine.task import ITask, TaskState, TaskEvent
 from tasking.core.context import IContext
 
@@ -378,7 +378,7 @@ class TestBaseHumanInterfereHooks:
         
         hooks = BaseHumanInterfereHooks(mock_client)
         context = {"user_id": "123", "trace_id": "456"}
-        queue = Mock(spec=IQueue)
+        queue = Mock(spec=IAsyncQueue)
         task = MockTask()
 
         await hooks.on_pre_human_interfere(context, queue, task)
@@ -405,7 +405,7 @@ class TestBaseHumanInterfereHooks:
         
         hooks = BaseHumanInterfereHooks(mock_client)
         context = {"user_id": "123"}
-        queue = Mock(spec=IQueue)
+        queue = Mock(spec=IAsyncQueue)
         task = MockTask()
 
         await hooks.on_pre_human_interfere(context, queue, task)
@@ -425,7 +425,7 @@ class TestBaseHumanInterfereHooks:
         
         hooks = BaseHumanInterfereHooks(mock_client)
         context = {"user_id": "123", "trace_id": "456"}
-        queue = Mock(spec=IQueue)
+        queue = Mock(spec=IAsyncQueue)
         task = MockTask()
 
         # Add a message without human_interfere tag
@@ -449,7 +449,7 @@ class TestBaseHumanInterfereHooks:
         
         hooks = BaseHumanInterfereHooks(mock_client)
         context = {"user_id": "123", "trace_id": "456"}
-        queue = Mock(spec=IQueue)
+        queue = Mock(spec=IAsyncQueue)
         task = MockTask()
 
         # Add a message with empty human_interfere tag
@@ -476,7 +476,7 @@ class TestBaseHumanInterfereHooks:
         
         hooks = BaseHumanInterfereHooks(mock_client)
         context = {"user_id": "123", "trace_id": "456"}
-        queue = Mock(spec=IQueue)
+        queue = Mock(spec=IAsyncQueue)
         task = MockTask()
 
         # Add a message with human_interfere tag
@@ -510,7 +510,7 @@ class TestBaseHumanInterfereHooks:
         
         hooks = BaseHumanInterfereHooks(mock_client, approve_resp={"yes", "ok"})
         context = {"user_id": "123", "trace_id": "456"}
-        queue = Mock(spec=IQueue)
+        queue = Mock(spec=IAsyncQueue)
         task = MockTask()
 
         # Add a message with human_interfere tag
@@ -537,7 +537,7 @@ class TestBaseHumanInterfereHooks:
         
         hooks = BaseHumanInterfereHooks(mock_client)
         context = {"user_id": "123", "trace_id": "456"}
-        queue = Mock(spec=IQueue)
+        queue = Mock(spec=IAsyncQueue)
         task = MockTask()
 
         # Add a message with human_interfere tag
@@ -560,7 +560,7 @@ class TestBaseHumanInterfereHooks:
         
         hooks = BaseHumanInterfereHooks(mock_client)
         context = {"user_id": "123", "trace_id": "456"}
-        queue = Mock(spec=IQueue)
+        queue = Mock(spec=IAsyncQueue)
         task = MockTask()
 
         # Add a message with USER role (should be ASSISTANT)

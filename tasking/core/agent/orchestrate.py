@@ -1,6 +1,7 @@
 import json
 from enum import Enum, auto
-from typing import Any, Callable, Awaitable, cast, Type
+from typing import Any, cast
+from collections.abc import Callable, Awaitable
 
 from json_repair import repair_json
 from loguru import logger
@@ -22,12 +23,12 @@ from ..state_machine.task import (
 )
 from ...llm import ILLM, build_llm
 from ...model import (
-    TextBlock, ToolCallRequest, Message, Role, IQueue, CompletionConfig, get_settings
+    TextBlock, ToolCallRequest, Message, Role, IAsyncQueue, CompletionConfig, get_settings
 )
 from ...model.message import TextBlock
 from ...utils.io import read_markdown
-from ...utils.string.extract import extract_by_label
-from ...utils.content import extract_text_from_message
+from ...utils.string.xml import extract_by_label
+from ...utils.string.message import extract_text_from_message
 
 
 CREATE_DOC = """根据 JSON 字符串创建子任务列表，并将其添加到指定的父任务中。该函数不会返回值，而是直接修改传入的父任务实例。
@@ -41,20 +42,23 @@ CREATE_DOC = """根据 JSON 字符串创建子任务列表，并将其添加到�
 """
 
 
-def create_sub_tasks(json_str: str, kwargs: dict[str, Any] | None = None) -> None:
+def create_sub_tasks(json_str: str, kwargs: dict[str, Any] | None = None) -> str:
     """根据 JSON 字符串创建子任务列表，并将其添加到指定的父任务中。该函数不会返回值，而是直接修改传入的父任务实例。
 
     Args:
-        valid_tasks (dict[str, Type[ITask]]): 有效任务类型映射，键为任务类型名称，值为任务类型
+        valid_tasks (dict[str, type[ITask]]): 有效任务类型映射，键为任务类型名称，值为任务类型
         task (ITreeTaskNode): 父任务实例
         json_str (str): 包含子任务信息的 JSON 字符串
+        
+    Returns:
+        str: 创建子任务的结果描述字符串
 
     Raises:
         ValueError: 如果无法解析 JSON 字符串
         AssertionError: 如果子任务数据缺少必要字段
     """
     assert kwargs is not None, "kwargs 参数不能为空"
-    valid_tasks: dict[str, Type[ITreeTaskNode[TaskState, TaskEvent]]] = kwargs["valid_tasks"]
+    valid_tasks: dict[str, type[ITreeTaskNode[TaskState, TaskEvent]]] = kwargs["valid_tasks"]
     task: ITreeTaskNode[TaskState, TaskEvent] = kwargs["task"]
 
     repaired_json = repair_json(json_str)
@@ -73,6 +77,11 @@ def create_sub_tasks(json_str: str, kwargs: dict[str, Any] | None = None) -> Non
         sub_task.set_title(title)
         # 将子任务添加到父任务
         task.add_sub_task(sub_task)
+
+    titles = [f"Sub-Task: {title}" for title in sub_tasks_data.keys()]
+    res = f"成功创建 {len(titles)} 个子任务:\n" + "\n".join(titles)
+    logger.debug(res)
+    return res
 
 
 class OrchestrateStage(str, Enum):
@@ -133,14 +142,14 @@ def get_orch_event_chain() -> list[OrchestrateEvent]:
 
 def get_orch_actions(
     agent: IAgent[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent, ClientTransportT],
-    valid_tasks: dict[str, Type[ITreeTaskNode[TaskState, TaskEvent]]],
+    valid_tasks: dict[str, type[ITreeTaskNode[TaskState, TaskEvent]]],
 ) -> dict[
     OrchestrateStage,
     Callable[
         [
             IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
             dict[str, Any],
-            IQueue[Message],
+            IAsyncQueue[Message],
             ITask[TaskState, TaskEvent],
         ],
         Awaitable[OrchestrateEvent]
@@ -162,7 +171,7 @@ def get_orch_actions(
         [
             IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
             dict[str, Any],
-            IQueue[Message],
+            IAsyncQueue[Message],
             ITask[TaskState, TaskEvent],
         ],
         Awaitable[OrchestrateEvent]]
@@ -172,7 +181,7 @@ def get_orch_actions(
     async def think(
         workflow: IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> OrchestrateEvent:
         """THINKING 阶段动作函数
@@ -210,6 +219,7 @@ def get_orch_actions(
                 context=context,
                 queue=queue,
                 task=task,
+                valid_tools={},
                 completion_config=workflow.get_completion_config(),
             )
         except HumanInterfere as e:
@@ -238,7 +248,6 @@ def get_orch_actions(
 
         # 正常完成思考，开始编排
         return OrchestrateEvent.ORCHESTRATE
-
     # 添加到动作定义字典
     actions[OrchestrateStage.THINKING] = think
 
@@ -246,7 +255,7 @@ def get_orch_actions(
     async def orchestrate(
         workflow: IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> OrchestrateEvent:
         """ORCHESTRATING 阶段动作函数
@@ -288,6 +297,7 @@ def get_orch_actions(
             context=context,
             queue=queue,
             task=task,
+            valid_tools={},
             completion_config=completion_config,
         )
 
@@ -310,7 +320,6 @@ def get_orch_actions(
         if result.is_error:
             # 设置任务错误状态
             task.set_error(extract_text_from_message(message))
-            return OrchestrateEvent.THINK
 
         return OrchestrateEvent.FINISH
 
@@ -328,9 +337,10 @@ def get_orch_transition() -> dict[
     ]
 ]:
     """获取常用工作流转换规则
-    -  INIT + REASON -> THINKING
-    -  THINKING + orch -> orchION
-    -  orchION + FINISH -> FINISHED
+    -  THINKING + THINK -> THINKING
+    -  THINKING + ORCHESTRATE -> ORCHESTRATING
+    -  THINKING + FINISH -> FINISHED
+    -  ORCHESTRATING + FINISH -> FINISHED
 
     Returns:
         常用工作流转换规则
@@ -363,15 +373,15 @@ def get_orch_transition() -> dict[
     # 添加转换规则
     transition[(OrchestrateStage.THINKING, OrchestrateEvent.ORCHESTRATE)] = (OrchestrateStage.ORCHESTRATING, on_thinking_to_orchestrating)
 
-    # 3. ORCHESTRATING -> THINKING (事件： THINK)
-    async def on_orchestrating_to_THINKING(
+    # 3. THINKING -> FINISHED (事件： FINISH)
+    async def on_thinking_to_finished(
         workflow: IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
     ) -> None:
-        """从 ORCHESTRATING 到 THINKING 的转换回调函数"""
-        logger.debug(f"Workflow {workflow.get_id()} Transition: {OrchestrateStage.ORCHESTRATING} -> {OrchestrateStage.THINKING}.")
+        """从 THINKING 到 FINISHED 的转换回调函数"""
+        logger.debug(f"Workflow {workflow.get_id()} Transition: {OrchestrateStage.THINKING} -> {OrchestrateStage.FINISHED}.")
 
     # 添加转换规则
-    transition[(OrchestrateStage.ORCHESTRATING, OrchestrateEvent.THINK)] = (OrchestrateStage.THINKING, on_orchestrating_to_THINKING)
+    transition[(OrchestrateStage.THINKING, OrchestrateEvent.FINISH)] = (OrchestrateStage.FINISHED, on_thinking_to_finished)
 
     # 4. ORCHESTRATING -> FINISHED (事件： FINISH)
     async def on_orchestrating_to_finished(
@@ -388,7 +398,7 @@ def get_orch_transition() -> dict[
 
 def build_orch_agent(
     name: str,
-    valid_tasks: dict[str, Type[ITreeTaskNode[TaskState, TaskEvent]]],
+    valid_tasks: dict[str, type[ITreeTaskNode[TaskState, TaskEvent]]],
     tool_service: Client[ClientTransportT] | None = None,
     actions: dict[
         OrchestrateStage,
@@ -396,7 +406,7 @@ def build_orch_agent(
             [
                 IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent],
                 dict[str, Any],
-                IQueue[Message],
+                IAsyncQueue[Message],
                 ITask[TaskState, TaskEvent],
             ],
             Awaitable[OrchestrateEvent]
@@ -466,7 +476,8 @@ def build_orch_agent(
     prompts = prompts if prompts is not None else {
         OrchestrateStage.THINKING: read_markdown("workflow/orchestrate/thinking.md").format(
             task_types="\n\n".join([
-                f"<option>\n<name>\n{option_name}\n</name>\n<description>\n{ProtocolTaskView()(cast(ITask[TaskState, TaskEvent], option_desc))}\n</description>\n</option>" 
+                f"<option>\n<name>\n{option_name}\n</name>\n"
+                f"<description>\n{ProtocolTaskView()(cast(ITask[TaskState, TaskEvent], option_desc))}\n</description>\n</option>" 
                 for option_name, option_desc in valid_tasks.items()]),
         ),
         OrchestrateStage.ORCHESTRATING: read_markdown("workflow/orchestrate/orchestrating.md"),
@@ -490,7 +501,7 @@ def build_orch_agent(
         llm_cfg = agent_cfg.get_llm_config(stage.value)
         completion_configs[stage] = CompletionConfig(
             max_tokens=llm_cfg.max_tokens,
-            tools=[],
+            stream=llm_cfg.stream,
         )
         
     # 构建创建子任务工具

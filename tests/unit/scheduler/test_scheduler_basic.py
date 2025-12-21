@@ -25,12 +25,17 @@ class MockTask:
         self._sub_tasks = []
         self._event_log = []
         self._max_revisit_count = 0
+        self._title = f"Task_{task_id}"  # Add title property
         # Default valid states
         self._valid_states = valid_states or {TaskState.CREATED, TaskState.RUNNING, TaskState.FINISHED, TaskState.CANCELED}
 
     def get_id(self) -> str:
         """Get task ID."""
         return self._task_id
+
+    def get_title(self) -> str:
+        """Get task title."""
+        return self._title
 
     def get_valid_states(self) -> set[TaskState]:
         """Get valid states."""

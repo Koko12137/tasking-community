@@ -1,6 +1,7 @@
 import json
 import copy
-from typing import Any, Callable, cast, Awaitable
+from typing import Any, cast
+from collections.abc import Callable, Awaitable
 
 from loguru import logger
 
@@ -196,7 +197,15 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
 
         Args:
             output: 输出数据内容
+            
+        Raises:
+            RuntimeError: 如果任务当前处于错误状态则抛出该异常
         """
+        # 检查当前是否为 error 状态
+        if self.is_error():
+            # 错误状态不允许设置为完成状态
+            raise RuntimeError("Cannot set task to completed state when it is in error state, clear error first")
+
         self._output_data = output
         self._is_completed = True
         logger.info(f"[{self._id}] 任务已标记为完成")
@@ -223,6 +232,13 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
         Args:
             error_info: 错误信息字符串
         """
+        # 检查当前是否已完成
+        if self.is_completed():
+            # 清除完成状态
+            self._is_completed = False
+            self._output_data = ""
+            logger.warning(f"[{self._title}] 任务已从完成状态切换为错误状态，清除输出数据")
+
         self._error_info = error_info
         self._is_error = True  # 新增：设置错误状态为True
         logger.info(f"[{self._id}] 任务错误信息已更新")
@@ -346,6 +362,8 @@ class BaseTask(BaseStateMachine[StateT, EventT], ITask[StateT, EventT]):
         self._state_visit_counts = {state: 0 for state in self._valid_states}
         # 初始状态访问计数设为1
         self._state_visit_counts[self._initial_state] = 1
+        # 清空错误信息等其他状态相关数据
+        self.clean_error_info()
 
 
 class TodoTaskView(ITaskView[StateT, EventT]):

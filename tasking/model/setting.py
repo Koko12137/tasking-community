@@ -11,6 +11,8 @@ from typing import Literal, Any
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .llm import CompletionConfig
+
 
 def _find_env_file() -> str | None:
     """
@@ -132,35 +134,32 @@ def _load_env_file(env_file_path: str) -> None:
                     os.environ[key] = value
 
 
-class LLMConfig(BaseModel):
+class LLMConfig(CompletionConfig):
     """LLM configuration settings."""
 
     provider: str = Field(
         default="openai",
         description="LLM provider name"
     )
+    """LLM 提供商名称，当前支持 'openai'、'anthropic'、'zhipu'、'ark'"""
 
     api_key: SecretStr = Field(
         description="API key for the LLM provider",
         default=SecretStr("")
     )
+    """LLM 提供商的 API 密钥"""
 
     base_url: str = Field(
         default="https://open.bigmodel.cn/api/coding/paas/v4",
         description="Base URL for LLM API (optional for custom endpoints)"
     )
+    """LLM 提供商的基础 URL，某些提供商可选自定义端点地址, 默认为 ZhipuAI 接入点"""
 
     model: str = Field(
         default="GLM-4.6",
         description="Model name to use"
     )
-
-    max_tokens: int = Field(
-        default=8192,
-        ge=1,
-        le=128000,
-        description="Maximum tokens in response"
-    )
+    """使用的模型名称，默认为 'GLM-4.6'"""
 
     timeout: int = Field(
         default=60,
@@ -168,9 +167,10 @@ class LLMConfig(BaseModel):
         le=600,
         description="Request timeout in seconds"
     )
-    
+    """请求超时时间，单位为秒，默认值为 60 秒"""
+
     extra_body: dict[str, Any] = Field(
-        default_factory=dict,
+        default_factory=dict[str, Any],
         description="Extra body parameters to include in LLM requests"
     )
 

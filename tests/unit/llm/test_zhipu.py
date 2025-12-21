@@ -1,7 +1,7 @@
 """Zhipu LLM implementation unit tests."""
 
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from typing import Any
 
 from tasking.llm.zhipu import ZhipuLLM, ZhipuEmbeddingLLM, to_zhipu_messages
@@ -115,7 +115,7 @@ class TestZhipuLLM:
             completion_tokens=20,
             total_tokens=30
         )
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_completion)
+        mock_client.chat.completions.create = Mock(return_value=mock_completion)
         mock_zhipu_ai.return_value = mock_client
 
         # Create ZhipuLLM instance
@@ -139,7 +139,7 @@ class TestZhipuLLM:
         ]
 
         import asyncio
-        result = asyncio.run(llm.completion(messages, completion_config))
+        result = asyncio.run(llm.completion(messages, None, None, completion_config))
 
         # Verify client was called with correct parameters
         mock_client.chat.completions.create.assert_called_once()
@@ -169,7 +169,11 @@ class TestZhipuLLM:
         """Test that mock client return values are correctly parsed."""
         # Setup mock client with specific return value
         mock_client = Mock()
-        mock_completion = Mock()
+
+        # Import ZhipuCompletion to make mock pass isinstance check
+        from zai.types.chat.chat_completion import Completion as ZhipuCompletion
+
+        mock_completion = Mock(spec=ZhipuCompletion)  # Make it pass isinstance check
         mock_completion.choices = [
             Mock(
                 message=Mock(
@@ -184,7 +188,8 @@ class TestZhipuLLM:
             completion_tokens=25,
             total_tokens=40
         )
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_completion)
+        # Mock the sync method since ZhipuLLM uses asyncify
+        mock_client.chat.completions.create = Mock(return_value=mock_completion)
         mock_zhipu_ai.return_value = mock_client
 
         # Create ZhipuLLM and call it
@@ -195,14 +200,15 @@ class TestZhipuLLM:
         completion_config = CompletionConfig()
 
         import asyncio
-        result = asyncio.run(llm.completion(messages, completion_config))
+        result = asyncio.run(llm.completion(messages, None, None, completion_config))
 
-        # Verify result parsing
-        assert len(result.choices) == 1
-        choice = result.choices[0]
-        assert choice.message.content == "Hello! This is a test response."
-        assert choice.stop_reason == StopReason.STOP
-        assert choice.message.tool_calls is None
+        # Verify result parsing - result should be a Message object
+        assert isinstance(result, Message)
+        assert result.role == Role.ASSISTANT
+        assert len(result.content) == 1
+        assert result.content[0].text == "Hello! This is a test response."
+        assert result.stop_reason == StopReason.STOP
+        assert result.tool_calls == []  # Empty list for no tool calls
 
         # Verify usage parsing
         assert result.usage.prompt_tokens == 15
@@ -215,21 +221,19 @@ class TestZhipuEmbeddingLLM:
 
     @patch('tasking.llm.zhipu.asyncio.to_thread')
     @patch('tasking.llm.zhipu.ZhipuAI')
-    def test_embedding_parameters_passed_to_client(self, mock_to_thread, mock_zhipu_ai):
+    def test_embedding_parameters_passed_to_client(self, mock_zhipu_ai, mock_to_thread):
         """Test that embedding parameters are correctly passed to Zhipu client."""
+        # Setup mock embedding response that to_thread will return
+        mock_embedding_response = Mock()
+        # Create proper mock structure for response.data[0].embedding access
+        mock_data_item = Mock()
+        mock_data_item.embedding = [0.1, 0.2, 0.3, 0.4]
+        mock_embedding_response.data = [mock_data_item]
+        mock_to_thread.return_value = mock_embedding_response
+
         # Setup mock client
         mock_client = Mock()
-        mock_embedding = Mock()
-        mock_embedding.data = [
-            Mock(embedding=[0.1, 0.2, 0.3, 0.4]),
-            Mock(embedding=[0.5, 0.6, 0.7, 0.8])
-        ]
-        mock_client.embeddings.create = AsyncMock()
-        mock_client.embeddings.create.return_value = mock_embedding
         mock_zhipu_ai.return_value = mock_client
-
-        # Setup to_thread mock to return the mock embedding directly
-        mock_to_thread.return_value = mock_embedding
 
         # Create ZhipuEmbeddingLLM instance
         config = LLMConfig(
@@ -245,38 +249,35 @@ class TestZhipuEmbeddingLLM:
         import asyncio
         result = asyncio.run(embedding_llm.embed(contents, dimensions=1536))
 
-        # Verify client was called with correct parameters
-        mock_client.embeddings.create.assert_called_once()
-        call_args = mock_client.embeddings.create.call_args
+        # Verify asyncio.to_thread was called with correct parameters
+        mock_to_thread.assert_called_once()
+        call_args = mock_to_thread.call_args
 
-        # Check model parameter
+        # Check that the client method and parameters were passed correctly
+        assert call_args.args[0] == mock_client.embeddings.create  # First arg should be the client method
         assert call_args.kwargs["model"] == "embedding-2"
-
-        # Check input parameter (should be joined text)
         assert call_args.kwargs["input"] == "Hello world"
 
-        # Verify result (embed method returns a single list for the batch)
-        # The actual implementation returns embedding vectors for the batch combined
-        # Let's check that it returns some embedding vectors
+        # Verify result (embed method returns the embedding vector)
         assert len(result) > 0
         assert isinstance(result[0], (float, int))
+        assert result == [0.1, 0.2, 0.3, 0.4]  # Should match our mock setup
 
     @patch('tasking.llm.zhipu.asyncio.to_thread')
     @patch('tasking.llm.zhipu.ZhipuAI')
-    def test_embedding_mock_client_return_value(self, mock_to_thread, mock_zhipu_ai):
+    def test_embedding_mock_client_return_value(self, mock_zhipu_ai, mock_to_thread):
         """Test that embedding mock client return values are correctly parsed."""
-        # Setup mock with specific embedding values
-        mock_client = Mock()
-        mock_embedding = Mock()
-        mock_embedding.data = [
-            Mock(embedding=[0.9, 0.8, 0.7, 0.6, 0.5])
-        ]
-        mock_client.embeddings.create = AsyncMock()
-        mock_client.embeddings.create.return_value = mock_embedding
-        mock_zhipu_ai.return_value = mock_client
+        # Setup mock embedding response that to_thread will return
+        mock_embedding_response = Mock()
+        # Create proper mock structure for response.data[0].embedding access
+        mock_data_item = Mock()
+        mock_data_item.embedding = [0.9, 0.8, 0.7, 0.6, 0.5]
+        mock_embedding_response.data = [mock_data_item]
+        mock_to_thread.return_value = mock_embedding_response
 
-        # Setup to_thread mock to return the mock embedding directly
-        mock_to_thread.return_value = mock_embedding
+        # Setup mock client
+        mock_client = Mock()
+        mock_zhipu_ai.return_value = mock_client
 
         # Create and test
         config = LLMConfig(provider="zhipu", model="embedding-2", api_key="test-key")

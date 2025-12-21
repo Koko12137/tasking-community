@@ -3,10 +3,10 @@ import getpass
 import json
 from typing import Any, cast
 
+from json_repair import repair_json
 from loguru import logger
 from pydantic import SecretStr
-from mcp import Tool as McpTool
-from fastmcp.tools import Tool as FastMcpTool
+from mcp.types import Tool as McpTool
 from volcenginesdkarkruntime import AsyncArk
 from volcenginesdkarkruntime.types.chat import (
     ChatCompletion,
@@ -49,16 +49,17 @@ from ..model import (
 )
 from ..model.setting import LLMConfig
 from ..model.message import MultimodalContent, TextBlock, ImageBlock, VideoBlock
+from ..model.queue import IAsyncQueue
 
 
 def tool_schema(
-    tool: McpTool | FastMcpTool,
+    tool: McpTool,
 ) -> dict[str, Any]:
     """
     Get the schema of the tool for Ark.
 
     Args:
-        tool: McpTool | FastMcpTool
+        tool: McpTool
             The tool to get the description of.
 
     Returns:
@@ -71,22 +72,19 @@ def tool_schema(
         "function": {
             "name": tool.name,
             "description": tool.description,
+            "parameters": tool.inputSchema,
         }
     }
-
-    if isinstance(tool, FastMcpTool):
-        parameters = tool.parameters
-        description['function']['parameters'] = parameters
-    elif isinstance(tool, McpTool):  # pyright: ignore[reportUnnecessaryIsInstance]
-        description['function']['parameters'] = tool.inputSchema
-    else:
-        raise ValueError(f"Unsupported tool type: {type(tool)}")
 
     return description
 
 
-def to_ark(config: CompletionConfig) -> dict[str, Any]:
+def to_ark(config: CompletionConfig, tools: list[McpTool] | None = None) -> dict[str, Any]:
     """Convert the completion config to the Ark format.
+
+    Args:
+        config (CompletionConfig): The completion configuration.
+        tools (list[McpTool] | None): The tools to convert.
 
     Returns:
         dict:
@@ -114,22 +112,8 @@ def to_ark(config: CompletionConfig) -> dict[str, Any]:
         kwargs["thinking"] = {"type": "disabled"}
 
     # tools (Ark uses OpenAI-like format)
-    tools: list[dict[str, Any]] = [
-        tool_schema(tool) for tool in config.tools
-        if tool.name not in config.exclude_tools
-    ]
-    if len(tools) > 0:
-        kwargs["tools"] = tools
-
-        # tool_choice
-        if config.tool_choice is not None:
-            tool_choice: list[FastMcpTool] = [
-                tool for tool in config.tools if tool.name == config.tool_choice
-            ]
-
-            if len(tool_choice) > 0:
-                tool_choice_schema = tool_schema(tool_choice[0])
-                kwargs["tool_choice"] = tool_choice_schema
+    if tools:
+        kwargs["tools"] = [tool_schema(tool) for tool in tools]
 
     return kwargs
 
@@ -210,26 +194,30 @@ def to_ark_dict(messages: list[Message]) -> list[ChatCompletionMessageParam]:
     for message in messages:
         content: list[ChatCompletionContentPartParam]
 
+        # Handle empty content
         if not message.content:
-            raise ValueError("Message content cannot be empty")
-
-        # Extract text for block wrapping
-        text_content = _extract_text_from_content(message.content)
-
-        # Convert to Ark format with block wrappers
-        if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
-            # Pure text message
             content = [ChatCompletionContentPartTextParam(
                 type="text",
-                text=f"<block>{text_content}</block>"
+                text=""
             )]
         else:
-            # Multimodal message
-            content = [
-                ChatCompletionContentPartTextParam(type="text", text="<block>"),
-                *_convert_content_to_ark_format(message.content),
-                ChatCompletionContentPartTextParam(type="text", text="</block>"),
-            ]
+            # Extract text for block wrapping
+            text_content = _extract_text_from_content(message.content)
+
+            # Convert to Ark format with block wrappers
+            if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
+                # Pure text message
+                content = [ChatCompletionContentPartTextParam(
+                    type="text",
+                    text=f"<block>{text_content}</block>"
+                )]
+            else:
+                # Multimodal message
+                content = [
+                    ChatCompletionContentPartTextParam(type="text", text="<block>"),
+                    *_convert_content_to_ark_format(message.content),
+                    ChatCompletionContentPartTextParam(type="text", text="</block>"),
+                ]
 
         last_role: str | None = history[-1]["role"] if history else None
 
@@ -357,6 +345,8 @@ class ArkLLM(ILLM):
     async def completion(
         self,
         messages: list[Message],
+        tools: list[McpTool] | None,
+        stream_queue: IAsyncQueue[Message] | None,
         completion_config: CompletionConfig,
         **kwargs: Any,
     ) -> Message:
@@ -365,6 +355,10 @@ class ArkLLM(ILLM):
         Args:
             messages (list[Message]):
                 The messages to complete.
+            tools (list[McpTool] | None):
+                可用的工具列表，如果没有工具则为 None
+            stream_queue (IQueue[Message] | None):
+                流式数据队列，用于输出补全过程中产生的流式数据，如果不需要流式输出则为 None
             completion_config (CompletionConfig):
                 The completion configuration.
             **kwargs:
@@ -380,39 +374,136 @@ class ArkLLM(ILLM):
         """
         assert self._client is not None, "Client not initialized"
 
-        kwargs = to_ark(completion_config)
+        logger.info(f"[Ark] Starting completion with model {self._model}, messages: {len(messages)}, max_tokens: {completion_config.max_tokens}, streaming: {stream_queue is not None}")
+
+        kwargs = to_ark(completion_config, tools)
         history = to_ark_dict(messages)
 
+        # Initialize accumulators for streaming response
+        accumulated_content = ""
+        accumulated_tool_calls: dict[int, ToolCallRequest] = {}
+
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=history,
-                stream=False,
-                **kwargs,
-            )
+            if stream_queue is not None:
+                # Streaming mode
+                response = await self._client.chat.completions.create(
+                    model=self._model,
+                    messages=history,
+                    stream=True,
+                    **kwargs,
+                )
 
-            # Type assertion: stream=False returns ChatCompletion, not AsyncStream
-            response = cast(ChatCompletion, response)
+                # Type assertion: stream=True returns AsyncStream
+                # Process the stream - Ark streaming format might be different
+                stream = cast(Any, response)  # Cast to Any to handle AsyncStream properly
+                async for chunk in stream:  # type: ignore[reportGeneralTypeIssues]
+                    if hasattr(chunk, 'choices') and chunk.choices:
+                        choice = chunk.choices[0]
 
-            content_text: str = response.choices[0].message.content or ""
+                        # Handle content delta
+                        if hasattr(choice, 'delta') and hasattr(choice.delta, 'content'):
+                            if choice.delta.content:
+                                content_delta = choice.delta.content
+                                accumulated_content += content_delta
+                                # Send chunk message to stream queue
+                                chunk_message = Message(
+                                    role=Role.ASSISTANT,
+                                    content=[TextBlock(text=content_delta)],
+                                    is_chunking=True,
+                                    stop_reason=StopReason.NONE,
+                                )
+                                await stream_queue.put(chunk_message)
+
+                        # Handle tool call delta
+                        if hasattr(choice, 'delta') and hasattr(choice.delta, 'tool_calls'):
+                            if choice.delta.tool_calls:
+                                for tool_call_delta in choice.delta.tool_calls:
+                                    if hasattr(tool_call_delta, 'index'):
+                                        tool_index = tool_call_delta.index
+                                    else:
+                                        tool_index = 0
+
+                                    if tool_index not in accumulated_tool_calls:
+                                        # Initialize new tool call
+                                        tool_call = ToolCallRequest(
+                                            id=getattr(tool_call_delta, 'id', f"tool_call_{tool_index}"),
+                                            name=getattr(tool_call_delta, 'function', {}).get('name', ''),
+                                            type="function",
+                                            args=json.loads(repair_json(getattr(tool_call_delta, 'function', {}).get('arguments') or '{}'))
+                                        )
+                                        accumulated_tool_calls[tool_index] = tool_call
+                                    else:
+                                        # Update existing tool call
+                                        existing_tool_call = accumulated_tool_calls[tool_index]
+                                        if hasattr(tool_call_delta, 'id') and tool_call_delta.id:
+                                            existing_tool_call.id = tool_call_delta.id
+                                        if hasattr(tool_call_delta, 'function'):
+                                            if hasattr(tool_call_delta.function, 'name') and tool_call_delta.function.name:
+                                                existing_tool_call.name = tool_call_delta.function.name
+                                            if hasattr(tool_call_delta.function, 'arguments') and tool_call_delta.function.arguments:
+                                                new_args = json.loads(repair_json(tool_call_delta.function.arguments or '{}'))
+                                                existing_tool_call.args.update(new_args)
+
+                # For Ark, we need to make a non-streaming call to get final usage
+                # This is a common pattern for APIs that don't provide usage in streaming
+                final_response = await self._client.chat.completions.create(
+                    model=self._model,
+                    messages=history,
+                    stream=False,
+                    **kwargs,
+                )
+                final_response = cast(ChatCompletion, final_response)
+
+                logger.info(f"[Ark] Streaming completion successful, input_tokens: {final_response.usage.prompt_tokens if final_response.usage else 'unknown'}, output_tokens: {final_response.usage.completion_tokens if final_response.usage else 'unknown'}")
+
+            else:
+                # Non-streaming mode
+                response = await self._client.chat.completions.create(
+                    model=self._model,
+                    messages=history,
+                    stream=False,
+                    **kwargs,
+                )
+
+                # Type assertion: stream=False returns ChatCompletion, not AsyncStream
+                response = cast(ChatCompletion, response)
+
+                # Log successful completion with usage info
+                if response.usage:
+                    logger.info(f"[Ark] Completion successful, input_tokens: {response.usage.prompt_tokens}, output_tokens: {response.usage.completion_tokens}")
+                else:
+                    logger.info("[Ark] Completion successful (usage info unavailable)")
+
+                final_response = response
+
+        except Exception as e:
+            logger.error(f"[Ark] Completion failed: {e}")
+            raise e
+
+        # Extract final content and tool calls
+        if stream_queue is not None:
+            # For streaming mode, use accumulated data
+            content_blocks = [TextBlock(text=accumulated_content)] if accumulated_content else []
+            tool_calls = list(accumulated_tool_calls.values())
+            usage = _create_usage(final_response)
+            stop_reason = _map_stop_reason(final_response, tool_calls)
+        else:
+            # For non-streaming mode, extract from response
+            content_text: str = final_response.choices[0].message.content or ""
             # Convert to list[TextBlock] format
             content_blocks = [TextBlock(text=content_text)] if content_text else []
 
-            usage = _create_usage(response)
-            tool_calls = _extract_tool_calls(response)
-            stop_reason = _map_stop_reason(response, tool_calls)
+            usage = _create_usage(final_response)
+            tool_calls = _extract_tool_calls(final_response)
+            stop_reason = _map_stop_reason(final_response, tool_calls)
 
-            return Message(
-                role=Role.ASSISTANT,
-                content=cast(list[MultimodalContent], content_blocks),
-                tool_calls=tool_calls,
-                stop_reason=stop_reason,
-                usage=usage,
-            )
-
-        except Exception as e:
-            logger.error(e)
-            raise e
+        return Message(
+            role=Role.ASSISTANT,
+            content=cast(list[MultimodalContent], content_blocks),
+            tool_calls=tool_calls,
+            stop_reason=stop_reason,
+            usage=usage,
+        )
 
 
 def _create_usage(response: ChatCompletion) -> CompletionUsage:
@@ -442,7 +533,7 @@ def _extract_tool_calls(response: ChatCompletion) -> list[ToolCallRequest]:
                 id=tool_call.id,
                 name=tool_call.function.name,
                 type="function",
-                args=json.loads(tool_call.function.arguments),
+                args=json.loads(repair_json(tool_call.function.arguments or '{}')),
             ))
 
     return tool_calls
@@ -607,6 +698,8 @@ class ArkEmbeddingLLM(IEmbedModel):
         if not ark_input:
             raise ValueError("No valid content found for embedding")
 
+        logger.info(f"[Ark Embedding] Starting embedding with model {self._model}, content_items: {len(content)}, dimensions: {dimensions}")
+
         try:
             # Call the API using proper Ark embedding format
             response = await self._client.multimodal_embeddings.create(
@@ -617,10 +710,12 @@ class ArkEmbeddingLLM(IEmbedModel):
 
             # Extract the embedding vector
             # response.data is a MultimodalEmbedding object with an embedding field
-            return response.data.embedding
+            embedding = response.data.embedding
+            logger.info(f"[Ark Embedding] Embedding successful, dimensions: {len(embedding)}")
+            return embedding
 
         except Exception as e:
-            logger.error(e)
+            logger.error(f"[Ark Embedding] Embedding failed: {e}")
             raise e
 
     async def embed_batch(
@@ -645,12 +740,15 @@ class ArkEmbeddingLLM(IEmbedModel):
         """
         assert self._client is not None, "Client not initialized"
 
+        logger.info(f"[Ark Embedding] Starting batch embedding with model {self._model}, batch_size: {len(contents)}, dimensions: {dimensions}")
+
         # Process each content individually and collect embeddings
         embeddings: list[list[float]] = []
 
         for content in contents:
             # Use the single embed method for each content
-            embedding = await self.embed(content, dimensions)
-            embeddings.append(embedding)
+            result = await self.embed(content, dimensions)
+            embeddings.append(result)
 
+        logger.info(f"[Ark Embedding] Batch embedding successful, generated {len(embeddings)} embeddings")
         return embeddings

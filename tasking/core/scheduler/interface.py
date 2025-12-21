@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Generic, Callable, Awaitable, Any
+from typing import Generic, Any
+from collections.abc import Callable, Awaitable
 
 from ..state_machine.const import EventT, StateT
 from ..state_machine.task import ITask
-from ...model import Message, IQueue
+from ...model import Message, IAsyncQueue
 
 
 class IScheduler(ABC, Generic[StateT, EventT]):
@@ -32,7 +33,7 @@ class IScheduler(ABC, Generic[StateT, EventT]):
         self,
         state_transition: tuple[StateT, StateT],
     ) -> Callable[
-        ["IScheduler[StateT, EventT]", dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+        ["IScheduler[StateT, EventT]", dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
         Awaitable[None]
     ] | None:
         """获取指定状态转换的调度规则任务。
@@ -50,7 +51,7 @@ class IScheduler(ABC, Generic[StateT, EventT]):
 
     @abstractmethod
     def get_on_state_fn(self, state: StateT) -> Callable[
-        ["IScheduler[StateT, EventT]", dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+        ["IScheduler[StateT, EventT]", dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
         Awaitable[EventT]
     ] | None:
         """获取指定状态的任务调用函数
@@ -72,7 +73,7 @@ class IScheduler(ABC, Generic[StateT, EventT]):
     async def on_state(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
         current_state: StateT,
     ) -> None:
@@ -93,7 +94,7 @@ class IScheduler(ABC, Generic[StateT, EventT]):
     async def on_state_changed(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
         prev_state: StateT,
         current_state: StateT,
@@ -113,7 +114,7 @@ class IScheduler(ABC, Generic[StateT, EventT]):
         """
 
     @abstractmethod
-    async def schedule(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[StateT, EventT]) -> None:
+    async def schedule(self, context: dict[str, Any], queue: IAsyncQueue[Message], task: ITask[StateT, EventT]) -> None:
         """调度任务状态机，根据其当前状态执行相应任务，直到进入结束状态
 
         Args:

@@ -1,7 +1,9 @@
 from enum import Enum, auto
-from typing import Any, Callable, Awaitable
+from typing import Any
+from collections.abc import Callable, Awaitable
 
 from loguru import logger
+from mcp.types import Tool as McpTool
 from fastmcp import Client
 from fastmcp.client.transports import ClientTransportT
 from fastmcp.tools import Tool as FastMcpTool
@@ -12,11 +14,11 @@ from ..middleware import HumanInterfere
 from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView, DocumentTreeTaskView
 from ..state_machine.workflow import IWorkflow, BaseWorkflow
 from ...llm import ILLM, build_llm
-from ...model import Message, StopReason, Role, IQueue, CompletionConfig, get_settings
+from ...model import Message, StopReason, Role, IAsyncQueue, CompletionConfig, get_settings
 from ...model.message import TextBlock
 from ...utils.io import read_document
-from ...utils.string.extract import extract_by_label
-from ...utils.content import extract_text_from_message
+from ...utils.string.xml import extract_by_label
+from ...utils.string.message import extract_text_from_message
 
 
 NO_OUTPUT_TEMPLATE = """没有从标签 '{label}' 中提取到任何内容，但工作流被请求结束，请确保输出内容被正确包裹在该标签内。
@@ -134,7 +136,7 @@ def get_react_actions(
         [
             IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
             dict[str, Any],
-            IQueue[Message],
+            IAsyncQueue[Message],
             ITask[TaskState, TaskEvent],
         ],
         Awaitable[ReActEvent]
@@ -152,7 +154,7 @@ def get_react_actions(
         [
             IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
             dict[str, Any],
-            IQueue[Message],
+            IAsyncQueue[Message],
             ITask[TaskState, TaskEvent],
         ],
         Awaitable[ReActEvent]]
@@ -162,7 +164,7 @@ def get_react_actions(
     async def reason(
         workflow: IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[TaskState, TaskEvent],
     ) -> ReActEvent:
         """REASONING 阶段动作函数
@@ -176,21 +178,29 @@ def get_react_actions(
         Returns:
             reactEvent: 触发的事件类型
         """
-        # 获取任务的推理配置信息
-        completion_config = workflow.get_completion_config()
-        # 获取推理配置中的工具信息
-        tools = completion_config.tools
-        # 更新工具信息
-        workflow_tools = workflow.get_tools()
-        # 更新工具信息
-        for _, (tool, _) in workflow_tools.items():
-            tools.append(tool)
-        completion_config.update(tools=tools)
-
         # 获取当前工作流的状态
         current_state = workflow.get_current_state()
         if current_state != ReActStage.PROCESSING:
             raise RuntimeError(f"当前工作流状态错误，期望：{ReActStage.PROCESSING}，实际：{current_state}")
+
+        # 获取任务的推理配置信息
+        completion_config = workflow.get_completion_config()
+        # 获取推理配置中的工具信息
+        tools: dict[str, McpTool] = {}
+        # 更新工作流工具信息
+        workflow_tools = workflow.get_tools()
+        for _, (tool, _) in workflow_tools.items():
+            tools[tool.name] = tool.to_mcp_tool()
+        # 更新工具服务器工具信息
+        service_tools = await agent.get_tools_with_tags(
+            task.get_tags(),
+        )
+        tools.update(service_tools)
+        # 更新推理配置中的工具列表
+        completion_config.update(
+            stop_words=["</final_flag>", "</finish>", "</finish_flag>", "</end_flag>"],
+        )
+
         # 获取当前工作流的提示词
         prompt = workflow.get_prompt()
         # 创建新的任务消息
@@ -211,6 +221,7 @@ def get_react_actions(
                 context=context,
                 queue=queue,
                 task=task,
+                valid_tools=tools,
                 completion_config=completion_config,
             )
         except HumanInterfere as e:
@@ -252,7 +263,6 @@ def get_react_actions(
                         queue=queue,
                         tool_call=tool_call,
                         task=task,
-                        message=message,
                     )
                 except HumanInterfere as e:
                     # 将人类介入信息反馈到任务
@@ -280,7 +290,7 @@ def get_react_actions(
             # 任务已完成或出错，触发 COMPLETE 事件
             return ReActEvent.COMPLETE
 
-        return ReActEvent.PROCESS
+        return ReActEvent.PROCESS   # BUG: 这里返回 PROCESS 可能会造成多次循环，不应让 Workflow 进入同一状态多次
 
     # 添加到动作定义字典
     actions[ReActStage.PROCESSING] = reason
@@ -295,7 +305,7 @@ def get_react_transition() -> dict[
         Callable[[IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent]], Awaitable[None] | None] | None
     ]
 ]:
-    """获取常用工作流转换规则   # BUG: 规则会造成死循环
+    """获取常用工作流转换规则
     -  PROCESSING + PROCESS -> PROCESSING
     -  PROCESSING + COMPLETE -> COMPLETED
 
@@ -348,7 +358,7 @@ def build_react_agent(
             [
                 IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent],
                 dict[str, Any],
-                IQueue[Message],
+                IAsyncQueue[Message],
                 ITask[TaskState, TaskEvent],
             ],
             Awaitable[ReActEvent]
@@ -458,7 +468,7 @@ def build_react_agent(
         llm_cfg = agent_cfg.get_llm_config(stage.value)
         completion_configs[stage] = CompletionConfig(
             max_tokens=llm_cfg.max_tokens,
-            tools=[],
+            stream=llm_cfg.stream,
         )
 
     # 构建工作流实例

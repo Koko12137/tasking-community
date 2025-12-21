@@ -1,8 +1,12 @@
 from abc import abstractmethod, ABC
 from typing import Any
 
+from mcp.types import Tool as McpTool
+
 from .const import Provider
-from ..model import CompletionConfig, Message, MultimodalContent
+from ..model.message import Message, MultimodalContent
+from ..model.queue import IAsyncQueue
+from ..model.llm import CompletionConfig
 from ..model.setting import LLMConfig
 
 
@@ -47,6 +51,8 @@ class ILLM(IModel):
     async def completion(
         self,
         messages: list[Message],
+        tools: list[McpTool] | None,
+        stream_queue: IAsyncQueue[Message] | None,
         completion_config: CompletionConfig,
         **kwargs: Any,
     ) -> Message:
@@ -55,6 +61,10 @@ class ILLM(IModel):
         参数:
             messages (list[Message]):
                 要补全的消息
+            tools (list[McpTool] | None):
+                可用的工具列表，如果没有工具则为 None
+            stream_queue (IQueue[Message] | None):
+                流式数据队列，用于输出补全过程中产生的流式数据，如果不需要流式输出则为 None
             completion_config (CompletionConfig):
                 补全消息配置
             **kwargs:

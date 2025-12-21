@@ -1,6 +1,7 @@
 import inspect
 from collections import defaultdict
-from typing import Any, Callable, Awaitable, cast
+from typing import Any, cast
+from collections.abc import Callable, Awaitable
 
 from loguru import logger
 from asyncer import asyncify
@@ -8,7 +9,7 @@ from asyncer import asyncify
 from .interface import IScheduler
 from ..state_machine.const import StateT, EventT
 from ..state_machine.task import ITask
-from ...model import Message, IQueue
+from ...model import Message, IAsyncQueue
 
 
 class BaseScheduler(IScheduler[StateT, EventT]):
@@ -19,12 +20,12 @@ class BaseScheduler(IScheduler[StateT, EventT]):
     _end_states: set[StateT] = set()
     # 状态调用函数
     _on_state_fn: dict[StateT, Callable[
-        [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+        [IScheduler[StateT, EventT], dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
         Awaitable[EventT]
     ]] = {}
     # 状态转换到任务的映射表
     _on_state_changed_fn: dict[tuple[StateT, StateT], Callable[
-        [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+        [IScheduler[StateT, EventT], dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
         Awaitable[None]
     ]] = {}
     # 编译状态
@@ -34,11 +35,11 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         self,
         end_states: set[StateT],
         on_state_fn: dict[StateT, Callable[
-            [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+            [IScheduler[StateT, EventT], dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
             Awaitable[EventT]
         ]],
         on_state_changed_fn: dict[tuple[StateT, StateT], Callable[
-            [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+            [IScheduler[StateT, EventT], dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
             Awaitable[None]
         ]],
         max_revisit_count: int = 0,
@@ -92,7 +93,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         self,
         state_transition: tuple[StateT, StateT],
     ) -> Callable[
-        [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+        [IScheduler[StateT, EventT], dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
         Awaitable[None]
     ] | None:
         """获取指定状态转换的调度规则任务，允许"编译"和"未编译"状态调用。
@@ -110,7 +111,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         return self._on_state_changed_fn.get(state_transition, None)
 
     def get_on_state_fn(self, state: StateT) -> Callable[
-        [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+        [IScheduler[StateT, EventT], dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
         Awaitable[EventT]
     ] | None:
         """获取指定状态变更触发的任务函数
@@ -132,9 +133,9 @@ class BaseScheduler(IScheduler[StateT, EventT]):
     async def _call_wrapper(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         action: Callable[
-            [IScheduler[StateT, EventT], dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+            [IScheduler[StateT, EventT], dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
             Awaitable[EventT] | Awaitable[None]
         ] | None,
         task: ITask[StateT, EventT],
@@ -168,7 +169,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
     async def on_state(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
         current_state: StateT,
     ) -> None:
@@ -199,7 +200,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
     async def on_state_changed(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
         prev_state: StateT,
         current_state: StateT,
@@ -228,7 +229,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         await self._call_wrapper(context, queue, action, task)
         logger.info(f"[调度器] 回调任务完成：{prev_state.name}→{current_state.name}")
 
-    async def schedule(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[StateT, EventT]) -> Any:
+    async def schedule(self, context: dict[str, Any], queue: IAsyncQueue[Message], task: ITask[StateT, EventT]) -> Any:
         """调度任务状态机，根据其当前状态执行相应任务，直到进入结束状态
 
         Args:
@@ -243,10 +244,9 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         if not self._compiled:
             raise RuntimeError("调度器未编译，无法调度任务")
 
-        current_state = task.get_current_state() # pyright: ignore[reportAssignmentType]
+        current_state = task.get_current_state()
         if current_state is None: # pyright: ignore[reportUnnecessaryComparison]
             raise ValueError("任务状态机当前状态未知，无法调度任务")
-        logger.info(f"\n[调度器] 调度任务：{task.get_id()[:8]} | 当前状态：{current_state.name}")
 
         # 检查是否为结束状态
         if current_state in self._end_states:
@@ -296,7 +296,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
         # 查找可用的状态任务
         while current_state not in self._end_states:
             current_state: StateT
-            logger.info(f"\n[调度器] 调度任务：{task.get_id()[:8]} | 当前状态：{current_state.name}")
+            logger.info(f"\n[调度器] 调度任务：{task.get_id()[:8]} - {task.get_title()} | 当前状态：{current_state.name}")
             # 执行当前状态任务
             await self.on_state(context, queue, task, current_state)
             # 获取下一个状态
@@ -305,7 +305,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
             await self.on_state_changed(context, queue, task, current_state, next_state)
             # 重新读取状态，确保任何后处理产生的状态变更被采纳
             current_state = task.get_current_state()
-            logger.info(f"\n[调度器] 调度任务：{task.get_id()[:8]} | 任务状态更新为：{current_state.name}")
+            logger.info(f"\n[调度器] 调度任务：{task.get_id()[:8]} - {task.get_title()} | 任务状态更新为：{current_state.name}")
 
         return None
 

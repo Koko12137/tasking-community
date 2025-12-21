@@ -3,8 +3,7 @@ import getpass
 from typing import Any, cast
 
 from loguru import logger
-from mcp import Tool as McpTool
-from fastmcp.tools import Tool as FastMcpTool
+from mcp.types import Tool as McpTool
 from anthropic import AsyncAnthropic
 from anthropic.types import (
     Message as AnthropicMessage,
@@ -29,16 +28,17 @@ from ..model import (
 )
 from ..model.setting import LLMConfig
 from ..model.message import TextBlock, ImageBlock, VideoBlock, MultimodalContent
+from ..model.queue import IAsyncQueue
 
 
 def tool_schema(
-    tool: McpTool | FastMcpTool,
+    tool: McpTool,
 ) -> dict[str, Any]:
     """
     Get the schema of the tool for Anthropic.
 
     Args:
-        tool: McpTool | FastMcpTool
+        tool: McpTool
             The tool to get the description of.
 
     Returns:
@@ -51,19 +51,17 @@ def tool_schema(
         "description": tool.description,
     }
 
-    if isinstance(tool, FastMcpTool):
-        parameters = tool.parameters
-        description['input_schema'] = parameters
-    elif isinstance(tool, McpTool):  # pyright: ignore[reportUnnecessaryIsInstance]
-        description['input_schema'] = tool.inputSchema
-    else:
-        raise ValueError(f"Unsupported tool type: {type(tool)}")
+    description['input_schema'] = tool.inputSchema
 
     return description
 
 
-def to_anthropic(config: CompletionConfig) -> dict[str, Any]:
+def to_anthropic(config: CompletionConfig, tools: list[McpTool] | None = None) -> dict[str, Any]:
     """Convert the completion config to the Anthropic format.
+
+    Args:
+        config (CompletionConfig): The completion configuration.
+        tools (list[McpTool] | None): The tools to convert.
 
     Returns:
         dict:
@@ -84,27 +82,18 @@ def to_anthropic(config: CompletionConfig) -> dict[str, Any]:
         kwargs["response_format"] = {"type": "json_object"}
 
     # tools（Anthropic: [{name, description, input_schema}]）
-    tools: list[dict[str, Any]] = []
-    if config.tools:
-        for tool in config.tools:
-            if tool.name in config.exclude_tools:
-                continue
-            # FastMcpTool has name/description/parameters
-            tools.append(
+    if tools:
+        anthropic_tools: list[dict[str, str | dict[str, Any]]] = []
+        for tool in tools:
+            # McpTool has name/description/inputSchema
+            anthropic_tools.append(
                 {
                     "name": tool.name,
-                    "description": getattr(tool, "description", "") or "",
-                    "input_schema": getattr(tool, "parameters", {}) or {},
+                    "description": tool.description or "",
+                    "input_schema": tool.inputSchema or {},
                 }
             )
-    if len(tools) > 0:
-        kwargs["tools"] = tools
-
-        # tool_choice（Anthropic: {"type":"tool","name":"..."} or "auto"/"any"）
-        if config.tool_choice is not None:
-            # Only set when this tool exists in tools
-            if any(t["name"] == config.tool_choice for t in tools):
-                kwargs["tool_choice"] = {"type": "tool", "name": config.tool_choice}
+        kwargs["tools"] = anthropic_tools
 
     return kwargs
 
@@ -183,24 +172,27 @@ def to_anthropic_messages(messages: list[Message]) -> list[MessageParam]:
     for message in messages:
         content: str | list[ContentBlockParam]
 
+  
+        # Handle empty content
         if not message.content:
-            raise ValueError("Message content cannot be empty")
-
-        # Extract text from content blocks
-        text_content = _extract_text_from_content(message.content)
-
-        # Convert to Anthropic format with block wrappers
-        if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
-            # Pure text message
-            content = f"<block>{text_content}</block>"
+            content = ""
+            text_content = ""
         else:
-            # Multimodal message
-            anthropic_blocks: list[ContentBlockParam] = [
-                TextBlockParam(type="text", text="<block>"),
-                *_convert_content_to_anthropic_format(message.content),
-                TextBlockParam(type="text", text="</block>"),
-            ]
-            content = anthropic_blocks
+            # Extract text from content blocks
+            text_content = _extract_text_from_content(message.content)
+
+            # Convert to Anthropic format with block wrappers
+            if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
+                # Pure text message
+                content = f"<block>{text_content}</block>"
+            else:
+                # Multimodal message
+                anthropic_blocks: list[ContentBlockParam] = [
+                    TextBlockParam(type="text", text="<block>"),
+                    *_convert_content_to_anthropic_format(message.content),
+                    TextBlockParam(type="text", text="</block>"),
+                ]
+                content = anthropic_blocks
 
         last_role: str | None = history[-1]["role"] if history else None
 
@@ -313,6 +305,8 @@ class AnthropicLLM(ILLM):
     async def completion(
         self,
         messages: list[Message],
+        tools: list[McpTool] | None,
+        stream_queue: IAsyncQueue[Message] | None,
         completion_config: CompletionConfig,
         **kwargs: Any,
     ) -> Message:
@@ -321,6 +315,10 @@ class AnthropicLLM(ILLM):
         Args:
             messages (list[Message]):
                 The messages to complete.
+            tools (list[McpTool] | None):
+                可用的工具列表，如果没有工具则为 None
+            stream_queue (IQueue[Message] | None):
+                流式数据队列，用于输出补全过程中产生的流式数据，如果不需要流式输出则为 None
             completion_config (CompletionConfig):
                 The completion configuration.
             **kwargs:
@@ -334,25 +332,84 @@ class AnthropicLLM(ILLM):
             Message:
                 The completed message.
         """
-        kwargs = to_anthropic(completion_config)
+        logger.info(f"[Anthropic] Starting completion with model {self._model}, messages: {len(messages)}, max_tokens: {completion_config.max_tokens}, streaming: {stream_queue is not None}")
+
+        kwargs = to_anthropic(completion_config, tools)
         history = to_anthropic_messages(messages)
 
+        # Initialize accumulators for streaming response
+        accumulated_content = ""
+        accumulated_tool_calls: dict[int, ToolCallRequest] = {}
+
         try:
-            response: AnthropicMessage = cast(
-                AnthropicMessage,
-                await self._client.messages.create(
+            if stream_queue is not None:
+                # Streaming mode
+                async with self._client.messages.stream(
                     model=self._model,
                     messages=history,
                     **kwargs,
-            ))
+                ) as stream:
+                    async for event in stream:
+                        if event.type == "text":
+                            accumulated_content += event.text
+                            # Send chunk message to stream queue
+                            chunk_message = Message(
+                                role=Role.ASSISTANT,
+                                content=[TextBlock(text=event.text)],
+                                is_chunking=True,
+                                stop_reason=StopReason.NONE,
+                            )
+                            await stream_queue.put(chunk_message)
+
+                        elif event.type == "tool_use":
+                            # Accumulate tool call
+                            tool_call = ToolCallRequest(
+                                id=event.id,
+                                name=event.name,
+                                type="function",
+                                args=event.input,
+                            )
+                            accumulated_tool_calls[event.index] = tool_call
+
+                        elif event.type == "content_block_stop":
+                            # Content block finished
+                            if hasattr(event, 'content_block') and hasattr(event.content_block, 'type'):
+                                if event.content_block.type == "tool_use":
+                                    logger.debug(f"[Anthropic] Tool use block finished: {event.content_block}")
+
+                # Get the final accumulated message
+                final_response = await stream.get_final_message()
+                logger.info(f"[Anthropic] Streaming completion successful, input_tokens: {final_response.usage.input_tokens if final_response.usage else 'unknown'}, output_tokens: {final_response.usage.output_tokens if final_response.usage else 'unknown'}")
+
+            else:
+                # Non-streaming mode
+                response: AnthropicMessage = cast(
+                    AnthropicMessage,
+                    await self._client.messages.create(
+                        model=self._model,
+                        messages=history,
+                        **kwargs,
+                ))
+
+                logger.info(f"[Anthropic] Completion successful, input_tokens: {response.usage.input_tokens if response.usage else 'unknown'}, output_tokens: {response.usage.output_tokens if response.usage else 'unknown'}")
+                final_response = response
 
         except Exception as e:
-            logger.error(e)
+            logger.error(f"[Anthropic] Completion failed: {e}")
             raise e
 
-        content, tool_calls = _extract_response_content(response)
-        usage = _create_usage(response.usage)
-        stop_reason = _map_stop_reason(response.stop_reason)
+        # Extract final content and tool calls
+        if stream_queue is not None:
+            # For streaming mode, use accumulated data
+            content = [TextBlock(text=accumulated_content)] if accumulated_content else []
+            tool_calls = list(accumulated_tool_calls.values())
+            usage = _create_usage(final_response.usage)
+            stop_reason = _map_stop_reason(final_response.stop_reason)
+        else:
+            # For non-streaming mode, extract from response
+            content, tool_calls = _extract_response_content(final_response)
+            usage = _create_usage(final_response.usage)
+            stop_reason = _map_stop_reason(final_response.stop_reason)
 
         return Message(
             role=Role.ASSISTANT,

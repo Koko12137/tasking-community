@@ -1,6 +1,7 @@
 import datetime as dt
 from abc import ABC, abstractmethod
-from typing import Any, Generic, Callable, Awaitable
+from typing import Any, Generic
+from collections.abc import Callable, Awaitable
 
 from fastmcp.client.transports import ClientTransportT
 
@@ -8,7 +9,7 @@ from ..agent import IAgent
 from ..state_machine import StateT, EventT
 from ..state_machine.task import ITask
 from ..state_machine.workflow import WorkflowStageT, WorkflowEventT
-from ...model import IQueue, Message, Role, TextBlock, MultimodalContent
+from ...model import IAsyncQueue, Message, Role, TextBlock, MultimodalContent
 from ...model.memory import MemoryT, EpisodeMemory, StateMemory
 from ...database.interface import IVectorDatabase, IKVDatabase
 from ...utils.io import read_markdown
@@ -21,7 +22,7 @@ class IMemoryHooks(ABC, Generic[MemoryT]):
     async def pre_run_once_hook(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
     ) -> None:
         """在记忆中间件运行前执行的钩子
@@ -37,7 +38,7 @@ class IMemoryHooks(ABC, Generic[MemoryT]):
     async def post_run_once_hook(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
     ) -> None:
         """在记忆中间件运行后执行的钩子
@@ -72,7 +73,7 @@ class StateMemoryHooks(IMemoryHooks[StateMemory]):
     async def pre_run_once_hook(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
     ) -> None:
         """在任务运行前的状态记忆钩子实现（默认无操作）
@@ -82,6 +83,13 @@ class StateMemoryHooks(IMemoryHooks[StateMemory]):
             queue: 消息队列
             task: 当前任务实例
         """
+        if len(task.get_context().get_context_data()) == 0:
+            role = Role.SYSTEM
+        elif task.get_context().get_context_data()[-1].role == Role.SYSTEM:
+            role = Role.SYSTEM
+        else:
+            role = Role.USER
+
         # 获取 context 中的 UserID / ProjectID / TraceID / TaskID
         user_id = context.get("user_id")
         assert user_id, "User ID is required in context"
@@ -104,14 +112,14 @@ class StateMemoryHooks(IMemoryHooks[StateMemory]):
             return
         # 将状态记忆内容添加到任务上下文中
         task.get_context().append_context_data(Message(
-            role=Role.USER,
+            role=role,
             content=state_memory.content
         ))
 
     async def post_run_once_hook(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
     ) -> None:
         """在任务运行后的状态记忆钩子实现（默认无操作）
@@ -188,7 +196,7 @@ class EpisodeMemoryHooks(IMemoryHooks[EpisodeMemory]):
     async def pre_run_once_hook(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
     ) -> None:
         """在任务运行前检索相关情节记忆并添加到上下文中
@@ -239,7 +247,7 @@ class EpisodeMemoryHooks(IMemoryHooks[EpisodeMemory]):
     async def post_run_once_hook(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
     ) -> None:
         """在任务运行后压缩并存储情节记忆
@@ -325,7 +333,7 @@ def register_memory_fold_hooks(
     # 清空任务上下文的钩子
     async def clear_state_memory_hook(
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
     ) -> None:
         """清理任务上下文中的状态记忆内容，避免重复累积

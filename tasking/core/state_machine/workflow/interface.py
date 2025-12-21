@@ -1,5 +1,6 @@
 from abc import abstractmethod
-from typing import Any, Generic, Awaitable, Callable
+from typing import Any, Generic
+from collections.abc import Callable, Awaitable
 
 from fastmcp.tools import Tool as FastMcpTool
 from mcp.types import CallToolResult
@@ -7,7 +8,7 @@ from mcp.types import CallToolResult
 from ..interface import IStateMachine
 from ..task.interface import ITask, StateT, EventT
 from .const import WorkflowStageT, WorkflowEventT
-from ....model import Message, IQueue, CompletionConfig
+from ....model import Message, IAsyncQueue, CompletionConfig
 
 
 class IWorkflow(IStateMachine[WorkflowStageT, WorkflowEventT], Generic[WorkflowStageT, WorkflowEventT, StateT, EventT]):
@@ -58,7 +59,7 @@ class IWorkflow(IStateMachine[WorkflowStageT, WorkflowEventT], Generic[WorkflowS
         [
             "IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]",  # workflow
             dict[str, Any],  # context
-            IQueue[Message],  # queue
+            IAsyncQueue[Message],  # queue
             ITask[StateT, EventT],  # task
         ],
         Awaitable[WorkflowEventT]
@@ -79,7 +80,7 @@ class IWorkflow(IStateMachine[WorkflowStageT, WorkflowEventT], Generic[WorkflowS
         [
             "IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]",  # workflow
             dict[str, Any],  # context
-            IQueue[Message],  # queue
+            IAsyncQueue[Message],  # queue
             ITask[StateT, EventT],  # task
         ],
         Awaitable[WorkflowEventT]

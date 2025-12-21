@@ -3,13 +3,10 @@ import getpass
 import json
 from typing import Any, cast
 
+from json_repair import repair_json
 from loguru import logger
-
 from pydantic import SecretStr
-
-from mcp import Tool as McpTool
-from fastmcp.tools import Tool as FastMcpTool
-
+from mcp.types import Tool as McpTool
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 from openai.types.completion_usage import CompletionUsage as OpenAICompletionUsage
@@ -26,16 +23,17 @@ from ..model import (
 )
 from ..model.setting import LLMConfig
 from ..model.message import TextBlock, ImageBlock, VideoBlock, MultimodalContent
+from ..model.queue import IAsyncQueue
 
 
 def tool_schema(
-    tool: McpTool | FastMcpTool,
+    tool: McpTool,
 ) -> dict[str, Any]:
     """
     Get the schema of the tool for OpenAI.
 
     Args:
-        tool: McpTool | FastMcpTool
+        tool: McpTool
             The tool to get the description of.
 
     Returns:
@@ -49,24 +47,20 @@ def tool_schema(
             "name": tool.name,
             "description": tool.description,
             "strict": True,
+            "parameters": tool.inputSchema,
+            "annotations": tool.annotations,
         }
     }
-
-    if isinstance(tool, FastMcpTool):
-        parameters = tool.parameters
-        description['function']['annotations'] = tool.annotations
-        description['function']["parameters"] = parameters
-    elif isinstance(tool, McpTool):  # pyright: ignore[reportUnnecessaryIsInstance]
-        description['function']["parameters"] = tool.inputSchema
-        description['function']['annotations'] = tool.annotations
-    else:
-        raise ValueError(f"Unsupported tool type: {type(tool)}")
 
     return description
 
 
-def to_openai(config: CompletionConfig) -> dict[str, Any]:
+def to_openai(config: CompletionConfig, tools: list[McpTool] | None = None) -> dict[str, Any]:
     """Convert the completion config to the OpenAI format.
+
+    Args:
+        config (CompletionConfig): The completion configuration.
+        tools (list[McpTool] | None): The tools to convert.
 
     Returns:
         dict:
@@ -99,18 +93,8 @@ def to_openai(config: CompletionConfig) -> dict[str, Any]:
         }
 
     # Add tools
-    tools: list[dict[str, Any]] = [tool_schema(tool) for tool in config.tools if tool.name not in config.exclude_tools]
-    if len(tools) > 0:
-        kwargs["tools"] = tools
-
-        # Add tool_choice
-        if config.tool_choice is not None:
-            tool_choice: list[FastMcpTool] = [tool for tool in config.tools if tool.name == config.tool_choice]
-
-            if len(tool_choice) > 0:
-                # Get tool_choice schema
-                tool_choice_schema = tool_schema(tool_choice[0])
-                kwargs["tool_choice"] = tool_choice_schema
+    if tools:
+        kwargs["tools"] = [tool_schema(tool) for tool in tools]
 
     return kwargs
 
@@ -182,26 +166,27 @@ def to_openai_dict(messages: list[Message]) -> list[ChatCompletionMessageParam]:
     for message in messages:
         message_dict: dict[str, Any] = {}
 
-        if not message.content:
-            raise ValueError("Message content cannot be empty")
-
-        # Process Role and Content
+      # Process Role and Content
         message_dict['role'] = message.role.value
 
-        # Extract text for block wrapping
-        text_content = _extract_text_from_content(message.content)
-
-        # Convert to OpenAI format with block wrappers
-        if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
-            # Pure text message
-            message_dict['content'] = [{'type': 'text', 'text': f"<block>{text_content}</block>"}]
+        # Handle empty content
+        if not message.content:
+            message_dict['content'] = ""
         else:
-            # Multimodal message
-            message_dict['content'] = [
-                {'type': 'text', 'text': f"<block>"},
-                *_convert_content_to_openai_format(message.content),
-                {'type': 'text', 'text': f"</block>"},
-            ]
+            # Extract text for block wrapping
+            text_content = _extract_text_from_content(message.content)
+
+            # Convert to OpenAI format with block wrappers
+            if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
+                # Pure text message
+                message_dict['content'] = [{'type': 'text', 'text': f"<block>{text_content}</block>"}]
+            else:
+                # Multimodal message
+                message_dict['content'] = [
+                    {'type': 'text', 'text': f"<block>"},
+                    *_convert_content_to_openai_format(message.content),
+                    {'type': 'text', 'text': f"</block>"},
+                ]
 
         # Get last message sender
         last_role = history[-1]['role'] if len(history) > 0 else None
@@ -313,6 +298,8 @@ class OpenAiLLM(ILLM):
     async def completion(
         self,
         messages: list[Message],
+        tools: list[McpTool] | None,
+        stream_queue: IAsyncQueue[Message] | None,
         completion_config: CompletionConfig,
         **kwargs: Any,
     ) -> Message:
@@ -321,6 +308,10 @@ class OpenAiLLM(ILLM):
         Args:
             messages (list[Message]):
                 The messages to complete.
+            tools (list[McpTool] | None):
+                可用的工具列表，如果没有工具则为 None
+            stream_queue (IQueue[Message] | None):
+                流式数据队列，用于输出补全过程中产生的流式数据，如果不需要流式输出则为 None
             completion_config (CompletionConfig):
                 The completion configuration.
             **kwargs:
@@ -334,61 +325,150 @@ class OpenAiLLM(ILLM):
             Message:
                 The completed message.
         """
-        kwargs = to_openai(completion_config)
+        logger.info(f"[OpenAI] Starting completion with model {self._model}, messages: {len(messages)}, max_tokens: {completion_config.max_tokens}, streaming: {stream_queue is not None}")
+
+        kwargs = to_openai(completion_config, tools)
 
         # Create the generation history
         history = to_openai_dict(messages)
 
+        # Initialize accumulators for streaming response
+        accumulated_content = ""
+        accumulated_tool_calls: dict[str, ToolCallRequest] = {}
+        current_tool_call_index = 0
+
         try:
-            # Call for the completion
-            response = cast(
-                ChatCompletion,
-                await self.client.chat.completions.create(
+            if stream_queue is not None:
+                # Streaming mode
+                stream = await self.client.chat.completions.create(
                     model=self._model,
                     messages=history,
+                    stream=True,
                     **kwargs,
-                ),
-            )
+                )
+                async for chunk in stream:
+                    if chunk.choices:
+                        choice = chunk.choices[0]
+
+                        # Handle content delta
+                        if choice.delta and choice.delta.content:
+                            content_delta = choice.delta.content
+                            accumulated_content += content_delta
+                            # Send chunk message to stream queue
+                            chunk_message = Message(
+                                role=Role.ASSISTANT,
+                                content=[TextBlock(text=content_delta)],
+                                is_chunking=True,
+                                stop_reason=StopReason.NONE,
+                            )
+                            await stream_queue.put(chunk_message)
+
+                        # Handle tool call delta
+                        if choice.delta and choice.delta.tool_calls:
+                            for tool_call_delta in choice.delta.tool_calls:
+                                if tool_call_delta.index is not None: # pyright: ignore[reportUnnecessaryComparison]
+                                    tool_index = tool_call_delta.index
+                                else:
+                                    tool_index = current_tool_call_index
+                                    current_tool_call_index += 1
+
+                                # Use string key for dictionary
+                                tool_key = str(tool_index)
+                                if tool_key not in accumulated_tool_calls:
+                                    function_name = tool_call_delta.function.name if tool_call_delta.function and tool_call_delta.function.name else ""
+                                    accumulated_tool_calls[tool_key] = ToolCallRequest(
+                                        id=tool_call_delta.id or f"tool_call_{tool_index}",
+                                        name=function_name,
+                                        type="function",
+                                        args=json.loads(repair_json(tool_call_delta.function.arguments or '{}')) if tool_call_delta.function and tool_call_delta.function.arguments else {},
+                                    )
+                                else:
+                                    # Update existing tool call
+                                    existing_tool_call = accumulated_tool_calls[tool_key]
+                                    if tool_call_delta.id:
+                                        existing_tool_call.id = tool_call_delta.id
+                                    if tool_call_delta.function and tool_call_delta.function.name:
+                                        existing_tool_call.name = tool_call_delta.function.name
+                                    if tool_call_delta.function and tool_call_delta.function.arguments:
+                                        # Merge arguments
+                                        new_args = json.loads(repair_json(tool_call_delta.function.arguments or '{}'))
+                                        existing_tool_call.args.update(new_args)
+
+                # For streaming, we need to make a separate non-streaming call to get usage info
+                # This is a common pattern when streaming doesn't provide full usage details
+                final_response = await self.client.chat.completions.create(
+                    model=self._model,
+                    messages=history,
+                    stream=False,
+                    **kwargs,
+                )
+                logger.info(f"[OpenAI] Streaming completion successful, input_tokens: {final_response.usage.prompt_tokens if final_response.usage else 'unknown'}, output_tokens: {final_response.usage.completion_tokens if final_response.usage else 'unknown'}")
+
+            else:
+                # Non-streaming mode
+                response = cast(
+                    ChatCompletion,
+                    await self.client.chat.completions.create(
+                        model=self._model,
+                        messages=history,
+                        **kwargs,
+                    ),
+                )
+
+                logger.info(f"[OpenAI] Completion successful, input_tokens: {response.usage.prompt_tokens if response.usage else 'unknown'}, output_tokens: {response.usage.completion_tokens if response.usage else 'unknown'}")
+                final_response = response
 
         except Exception as e:
-            logger.error(e)
+            logger.error(f"[OpenAI] Completion failed: {e}")
             raise e
 
-        content_text: str = response.choices[0].message.content or ""
-        # Convert to list[TextBlock] format
-        content_blocks = [TextBlock(text=content_text)] if content_text else []
+        # Extract final content and tool calls
+        if stream_queue is not None:
+            # For streaming mode, use accumulated data
+            content_blocks = [TextBlock(text=accumulated_content)] if accumulated_content else []
+            tool_calls = list(accumulated_tool_calls.values())
+            usage = CompletionUsage(
+                prompt_tokens=final_response.usage.prompt_tokens if final_response.usage else -100,
+                completion_tokens=final_response.usage.completion_tokens if final_response.usage else -100,
+                total_tokens=final_response.usage.total_tokens if final_response.usage else -100
+            )
+            if final_response.choices:
+                finish_reason = final_response.choices[0].finish_reason
+            else:
+                finish_reason = None
+        else:
+            # For non-streaming mode, extract from response
+            content_text: str = final_response.choices[0].message.content or ""
+            content_blocks = [TextBlock(text=content_text)] if content_text else []
 
-        # Get the usage
-        openai_usage: OpenAICompletionUsage | None = response.usage
-        # Create the usage
-        usage = CompletionUsage(
-            prompt_tokens=openai_usage.prompt_tokens if openai_usage else -100,
-            completion_tokens=openai_usage.completion_tokens if openai_usage else -100,
-            total_tokens=openai_usage.total_tokens if openai_usage else -100
-        )
+            # Get the usage
+            openai_usage: OpenAICompletionUsage | None = final_response.usage
+            usage = CompletionUsage(
+                prompt_tokens=openai_usage.prompt_tokens if openai_usage else -100,
+                completion_tokens=openai_usage.completion_tokens if openai_usage else -100,
+                total_tokens=openai_usage.total_tokens if openai_usage else -100
+            )
 
-        # Extract tool calls from response
-        tool_calls: list[ToolCallRequest] = []
-        if response.choices[0].message.tool_calls is not None:
-            # Traverse all the tool calls and log the tool call
-            for tool_call in response.choices[0].message.tool_calls:
-
-                # Create the tool call request
-                tool_calls.append(ToolCallRequest(
-                    id=tool_call.id,
-                    name=tool_call.function.name,  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportAttributeAccessIssue]
-                    type="function",
-                    args=json.loads(tool_call.function.arguments)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportAttributeAccessIssue]
-                ))
+            # Extract tool calls from response
+            tool_calls: list[ToolCallRequest] = []
+            if final_response.choices[0].message.tool_calls is not None:
+                for tool_call in final_response.choices[0].message.tool_calls:
+                    tool_calls.append(ToolCallRequest(
+                        id=tool_call.id,
+                        name=tool_call.function.name,  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportAttributeAccessIssue]
+                        type="function",
+                        args=json.loads(repair_json(tool_call.function.arguments or '{}'))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportAttributeAccessIssue]
+                    ))
+            finish_reason = final_response.choices[0].finish_reason
 
         # Extract Finish reason
-        if response.choices[0].finish_reason == "length":
+        if finish_reason == "length":
             stop_reason = StopReason.LENGTH
-        elif response.choices[0].finish_reason == "content_filter":
+        elif finish_reason == "content_filter":
             stop_reason = StopReason.CONTENT_FILTER
-        elif response.choices[0].finish_reason != "stop" or len(tool_calls) > 0:
+        elif finish_reason != "stop" or len(tool_calls) > 0:
             stop_reason = StopReason.TOOL_CALL
-        elif response.choices[0].finish_reason == "stop" and len(tool_calls) == 0:
+        elif finish_reason == "stop" and len(tool_calls) == 0:
             stop_reason = StopReason.STOP
         else:
             stop_reason = StopReason.NONE
@@ -479,15 +559,19 @@ class OpenAiEmbeddingLLM(IEmbedModel):
             [item.text if isinstance(item, TextBlock) else "" for item in content]
         )
 
+        logger.info(f"[OpenAI Embedding] Starting embedding with model {self._model}, text_length: {len(text)}, dimensions: {dimensions}")
+
         try:
             response = await self._client.embeddings.create(
                 model=self._model,
                 input=text,
             )
-            return response.data[0].embedding[:dimensions]
+            embedding = response.data[0].embedding[:dimensions]
+            logger.info(f"[OpenAI Embedding] Embedding successful, dimensions: {len(embedding)}")
+            return embedding
 
         except Exception as e:
-            logger.error(e)
+            logger.error(f"[OpenAI Embedding] Embedding failed: {e}")
             raise e
 
     async def embed_batch(
@@ -520,6 +604,8 @@ class OpenAiEmbeddingLLM(IEmbedModel):
             )
             texts.append(text)
 
+        logger.info(f"[OpenAI Embedding] Starting batch embedding with model {self._model}, batch_size: {len(texts)}, dimensions: {dimensions}")
+
         try:
             response = await self._client.embeddings.create(
                 model=self._model,
@@ -528,8 +614,9 @@ class OpenAiEmbeddingLLM(IEmbedModel):
             embeddings: list[list[float | int]] = []
             for data in response.data:
                 embeddings.append(data.embedding[:dimensions])
+            logger.info(f"[OpenAI Embedding] Batch embedding successful, generated {len(embeddings)} embeddings")
             return embeddings
 
         except Exception as e:
-            logger.error(e)
+            logger.error(f"[OpenAI Embedding] Batch embedding failed: {e}")
             raise e

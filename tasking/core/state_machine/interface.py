@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Generic, Callable, Awaitable
+from typing import Generic
+from collections.abc import Callable, Awaitable
 
 from .const import StateT, EventT
 

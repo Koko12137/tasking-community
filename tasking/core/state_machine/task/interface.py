@@ -157,6 +157,9 @@ class ITask(IStateMachine[StateT, EventT]):
 
         Args:
             output: 输出数据内容
+            
+        Raises:
+            RuntimeError: 如果任务当前处于错误状态则抛出该异常
         """
         pass
 

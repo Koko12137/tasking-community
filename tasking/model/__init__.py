@@ -10,9 +10,18 @@ from .message import (
     ToolCallRequest
 )
 from .llm import CompletionConfig
-from .queue import IQueue, T, AsyncQueue
+from .queue import IAsyncQueue, T, AsyncQueue
 from .setting import Settings, get_settings, reload_settings
 from .memory import MemoryProtocol, MemoryT, EpisodeMemory, ProcedureMemory, SemanticMemory, StateMemory
+from .filesystem import (
+    EditOperation,
+    SearchPattern,
+    FileFilter,
+    OutputFormat,
+    SearchParams,
+    MatchInfo,
+    SearchResult
+)
 
 __all__ = [
     # Message block related
@@ -24,7 +33,9 @@ __all__ = [
     # Settings
     "Settings", "get_settings", "reload_settings",
     # Queue
-    "IQueue", "T", "AsyncQueue",
+    "IAsyncQueue", "T", "AsyncQueue",
     # Memory
     "MemoryProtocol", "MemoryT", "EpisodeMemory", "ProcedureMemory", "SemanticMemory", "StateMemory",
+    # File System
+    "EditOperation", "SearchPattern", "FileFilter", "OutputFormat", "SearchParams", "MatchInfo", "SearchResult",
 ]

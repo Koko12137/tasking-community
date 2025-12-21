@@ -138,7 +138,7 @@ class TestAnthropicLLM:
         ]
 
         import asyncio
-        result = asyncio.run(llm.completion(messages, completion_config))
+        result = asyncio.run(llm.completion(messages, None, None, completion_config))
 
         # Verify client was called with correct parameters
         mock_client.messages.create.assert_called_once()
@@ -183,7 +183,7 @@ class TestAnthropicLLM:
         completion_config = CompletionConfig()
 
         import asyncio
-        result = asyncio.run(llm.completion(messages, completion_config))
+        result = asyncio.run(llm.completion(messages, None, None, completion_config))
 
         # Anthropic LLM returns a Message object
         assert isinstance(result, Message)

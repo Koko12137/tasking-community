@@ -1,14 +1,14 @@
 """
 核心上下文基础实现模块测试套件
 
-测试 src.core.context.base 模块中的基础实现
+测试 tasking.core.context.base 模块中的上下文基础实现
 """
 
 import unittest
 from typing import Any
 
-from tasking.core.context.base import BaseContext
-from tasking.core.context.interface import IContext
+from tasking.core.context import BaseContext, IContext
+from tasking.model import Message, Role, TextBlock
 
 
 class TestBaseContext(unittest.TestCase):
@@ -24,188 +24,167 @@ class TestBaseContext(unittest.TestCase):
         self.assertIsInstance(self.context, IContext)
         self.assertIsInstance(self.context, BaseContext)
 
-        # 验证初始状态
-        self.assertEqual(len(list(self.context.keys())), 0)
-        self.assertEqual(len(list(self.context.values())), 0)
-        self.assertEqual(len(list(self.context.items())), 0)
+        # 验证初始状态为空列表
+        self.assertEqual(len(self.context.get_context_data()), 0)
 
-    def test_set_and_get(self) -> None:
-        """测试设置和获取值"""
-        # 测试基本设置和获取
-        self.context.set("key1", "value1")
-        self.assertEqual(self.context.get("key1"), "value1")
+    def test_get_context_data(self) -> None:
+        """测试获取上下文数据"""
+        # 初始状态应该返回空列表
+        self.assertEqual(self.context.get_context_data(), [])
 
-        # 测试默认值
-        self.assertEqual(self.context.get("nonexistent", "default"), "default")
-        self.assertIsNone(self.context.get("nonexistent"))
+        # 添加消息后应该返回包含消息的列表
+        message = Message(role=Role.USER, content=[TextBlock(text="Hello")])
+        self.context.append_context_data(message)
 
-        # 测试覆盖设置
-        self.context.set("key1", "value2")
-        self.assertEqual(self.context.get("key1"), "value2")
+        context_data = self.context.get_context_data()
+        self.assertEqual(len(context_data), 1)
+        self.assertEqual(context_data[0].role, Role.USER)
+        self.assertEqual(context_data[0].content[0].text, "Hello")
 
-        # 测试不同类型的值
-        self.context.set("number", 42)
-        self.context.set("boolean", True)
-        self.context.set("list", [1, 2, 3])
-        self.context.set("dict", {"nested": "value"})
+    def test_append_context_data_user_message(self) -> None:
+        """测试添加用户消息"""
+        message = Message(role=Role.USER, content=[TextBlock(text="User message")])
 
-        self.assertEqual(self.context.get("number"), 42)
-        self.assertEqual(self.context.get("boolean"), True)
-        self.assertEqual(self.context.get("list"), [1, 2, 3])
-        self.assertEqual(self.context.get("dict"), {"nested": "value"})
+        self.context.append_context_data(message)
+        context_data = self.context.get_context_data()
 
-    def test_has(self) -> None:
-        """测试键存在性检查"""
-        # 测试空上下文
-        self.assertFalse(self.context.has("any_key"))
+        self.assertEqual(len(context_data), 1)
+        self.assertEqual(context_data[0], message)
 
-        # 测试添加后的检查
-        self.context.set("existing_key", "value")
-        self.assertTrue(self.context.has("existing_key"))
-        self.assertFalse(self.context.has("nonexistent_key"))
+    def test_append_context_data_system_message(self) -> None:
+        """测试添加系统消息"""
+        message = Message(role=Role.SYSTEM, content=[TextBlock(text="System message")])
 
-    def test_delete(self) -> None:
-        """测试删除键值对"""
-        # 测试删除存在的键
-        self.context.set("key1", "value1")
-        self.context.set("key2", "value2")
+        self.context.append_context_data(message)
+        context_data = self.context.get_context_data()
 
-        self.assertTrue(self.context.has("key1"))
-        self.context.delete("key1")
-        self.assertFalse(self.context.has("key1"))
-        self.assertTrue(self.context.has("key2"))
+        self.assertEqual(len(context_data), 1)
+        self.assertEqual(context_data[0], message)
 
-        # 测试删除不存在的键（不应该抛出错误）
-        self.context.delete("nonexistent")  # 应该静默处理
+    def test_append_context_data_assistant_message(self) -> None:
+        """测试添加助手消息"""
+        # 先添加用户消息
+        user_message = Message(role=Role.USER, content=[TextBlock(text="User message")])
+        self.context.append_context_data(user_message)
 
-    def test_clear(self) -> None:
-        """测试清空上下文"""
-        # 添加一些数据
-        self.context.set("key1", "value1")
-        self.context.set("key2", "value2")
-        self.context.set("key3", "value3")
+        # 然后添加助手消息
+        assistant_message = Message(role=Role.ASSISTANT, content=[TextBlock(text="Assistant response")])
+        self.context.append_context_data(assistant_message)
 
-        self.assertEqual(len(list(self.context.keys())), 3)
+        context_data = self.context.get_context_data()
+        self.assertEqual(len(context_data), 2)
+        self.assertEqual(context_data[1], assistant_message)
 
-        # 清空
-        self.context.clear()
-        self.assertEqual(len(list(self.context.keys())), 0)
-        self.assertIsNone(self.context.get("key1"))
+    def test_append_context_data_tool_message(self) -> None:
+        """测试添加工具消息"""
+        # 添加用户消息
+        user_message = Message(role=Role.USER, content=[TextBlock(text="User message")])
+        self.context.append_context_data(user_message)
 
-    def test_keys_values_items(self) -> None:
-        """测试键、值、键值对迭代器"""
-        # 添加测试数据
-        test_data = {
-            "key1": "value1",
-            "key2": "value2",
-            "key3": "value3"
-        }
+        # 添加助手消息
+        assistant_message = Message(role=Role.ASSISTANT, content=[TextBlock(text="Assistant response")])
+        self.context.append_context_data(assistant_message)
 
-        for key, value in test_data.items():
-            self.context.set(key, value)
+        # 添加工具消息
+        tool_message = Message(role=Role.TOOL, content=[TextBlock(text="Tool result")])
+        self.context.append_context_data(tool_message)
 
-        # 测试 keys
-        keys = list(self.context.keys())
-        self.assertEqual(len(keys), 3)
-        for key in test_data:
-            self.assertIn(key, keys)
+        context_data = self.context.get_context_data()
+        self.assertEqual(len(context_data), 3)
+        self.assertEqual(context_data[2], tool_message)
 
-        # 测试 values
-        values = list(self.context.values())
-        self.assertEqual(len(values), 3)
-        for value in test_data.values():
-            self.assertIn(value, values)
+    def test_message_order_validation_system_after_user(self) -> None:
+        """测试消息顺序验证：系统消息不能接在用户消息后面"""
+        # 添加用户消息
+        user_message = Message(role=Role.USER, content=[TextBlock(text="User message")])
+        self.context.append_context_data(user_message)
 
-        # 测试 items
-        items = list(self.context.items())
-        self.assertEqual(len(items), 3)
-        for key, value in test_data.items():
-            self.assertIn((key, value), items)
+        # 尝试添加系统消息应该失败
+        system_message = Message(role=Role.SYSTEM, content=[TextBlock(text="System message")])
+        with self.assertRaises(ValueError, msg="系统消息不能接在用户/助手/工具消息后面"):
+            self.context.append_context_data(system_message)
 
-        # 验证键值对的对应关系
-        item_dict = dict(items)
-        self.assertEqual(item_dict, test_data)
+    def test_message_order_validation_assistant_without_user(self) -> None:
+        """测试消息顺序验证：助手消息在空上下文中应该被允许（当前实现）"""
+        # 当前实现允许助手消息作为第一条消息
+        assistant_message = Message(role=Role.ASSISTANT, content=[TextBlock(text="Assistant response")])
+        self.context.append_context_data(assistant_message)
 
-    def test_complex_keys(self) -> None:
-        """测试复杂键类型"""
-        # 测试字符串键
-        self.context.set("string_key", "value")
-        self.assertEqual(self.context.get("string_key"), "value")
+        # 验证消息被添加
+        context_data = self.context.get_context_data()
+        self.assertEqual(len(context_data), 1)
+        self.assertEqual(context_data[0], assistant_message)
 
-        # 测试数字键
-        self.context.set(42, "number_key_value")
-        self.assertEqual(self.context.get(42), "number_key_value")
+    def test_message_order_validation_tool_without_assistant(self) -> None:
+        """测试消息顺序验证：工具消息必须接在助手消息后面"""
+        # 添加用户消息
+        user_message = Message(role=Role.USER, content=[TextBlock(text="User message")])
+        self.context.append_context_data(user_message)
 
-        # 测试元组键
-        tuple_key = ("nested", "key")
-        self.context.set(tuple_key, "tuple_key_value")
-        self.assertEqual(self.context.get(tuple_key), "tuple_key_value")
+        # 尝试直接添加工具消息应该失败
+        tool_message = Message(role=Role.TOOL, content=[TextBlock(text="Tool result")])
+        with self.assertRaises(ValueError, msg="工具消息只能接在助手消息后面"):
+            self.context.append_context_data(tool_message)
 
-    def test_none_values(self) -> None:
-        """测试 None 值处理"""
-        # 设置 None 值
-        self.context.set("none_key", None)
+    def test_clear_context_data(self) -> None:
+        """测试清空上下文数据"""
+        # 添加一些消息
+        message1 = Message(role=Role.USER, content=[TextBlock(text="First message")])
+        message2 = Message(role=Role.ASSISTANT, content=[TextBlock(text="Second message")])
 
-        # has 应该返回 True（键存在）
-        self.assertTrue(self.context.has("none_key"))
+        self.context.append_context_data(message1)
+        self.context.append_context_data(message2)
 
-        # get 应该返回 None
-        self.assertIsNone(self.context.get("none_key"))
+        # 验证消息存在
+        self.assertEqual(len(self.context.get_context_data()), 2)
 
-        # 使用默认值测试
-        self.assertEqual(self.context.get("none_key", "default"), None)
-        self.assertEqual(self.context.get("nonexistent", "default"), "default")
+        # 清空上下文
+        self.context.clear_context_data()
+
+        # 验证上下文已清空
+        self.assertEqual(len(self.context.get_context_data()), 0)
 
     def test_context_isolation(self) -> None:
         """测试上下文实例隔离"""
         context1 = BaseContext()
         context2 = BaseContext()
 
-        # 在 context1 中设置值
-        context1.set("shared_key", "value1")
-        context1.set("unique_key1", "unique1")
+        # 在 context1 中添加消息
+        message1 = Message(role=Role.USER, content=[TextBlock(text="Context 1 message")])
+        context1.append_context_data(message1)
 
-        # 在 context2 中设置值
-        context2.set("shared_key", "value2")
-        context2.set("unique_key2", "unique2")
+        # 在 context2 中添加不同的消息
+        message2 = Message(role=Role.USER, content=[TextBlock(text="Context 2 message")])
+        context2.append_context_data(message2)
 
-        # 验证隔离性
-        self.assertEqual(context1.get("shared_key"), "value1")
-        self.assertEqual(context2.get("shared_key"), "value2")
-        self.assertEqual(context1.get("unique_key1"), "unique1")
-        self.assertEqual(context2.get("unique_key2"), "unique2")
+        # 验证两个上下文互不影响
+        self.assertEqual(len(context1.get_context_data()), 1)
+        self.assertEqual(len(context2.get_context_data()), 1)
+        self.assertEqual(context1.get_context_data()[0].content[0].text, "Context 1 message")
+        self.assertEqual(context2.get_context_data()[0].content[0].text, "Context 2 message")
 
-        self.assertFalse(context1.has("unique_key2"))
-        self.assertFalse(context2.has("unique_key1"))
-
-    def test_large_data_handling(self) -> None:
-        """测试大数据处理"""
-        # 测试大量数据
-        large_data = {f"key_{i}": f"value_{i}" for i in range(1000)}
-
-        for key, value in large_data.items():
-            self.context.set(key, value)
-
-        # 验证数据完整性
-        for key, expected_value in large_data.items():
-            self.assertEqual(self.context.get(key), expected_value)
-
-        # 验证计数
-        self.assertEqual(len(list(self.context.keys())), 1000)
-
-    def test_thread_safety_simulation(self) -> None:
-        """模拟线程安全测试（单线程环境）"""
-        # 快速连续操作，模拟并发访问
-        operations = []
+    def test_large_context_handling(self) -> None:
+        """测试大量上下文数据处理"""
+        # 添加大量消息
         for i in range(100):
-            self.context.set(f"temp_key_{i}", f"temp_value_{i}")
-            operations.append(("set", f"temp_key_{i}", f"temp_value_{i}"))
+            if i % 2 == 0:
+                # 偶数索引：用户消息
+                message = Message(role=Role.USER, content=[TextBlock(text=f"User message {i}")])
+            else:
+                # 奇数索引：助手消息
+                message = Message(role=Role.ASSISTANT, content=[TextBlock(text=f"Assistant message {i}")])
 
-        # 验证所有操作都成功
-        for i in range(100):
-            expected_value = f"temp_value_{i}"
-            actual_value = self.context.get(f"temp_key_{i}")
-            self.assertEqual(actual_value, expected_value)
+            self.context.append_context_data(message)
+
+        # 验证所有消息都正确存储
+        self.assertEqual(len(self.context.get_context_data()), 100)
+
+        # 验证特定索引的消息
+        context_data = self.context.get_context_data()
+        self.assertEqual(context_data[0].content[0].text, "User message 0")
+        self.assertEqual(context_data[1].content[0].text, "Assistant message 1")
+        self.assertEqual(context_data[98].content[0].text, "User message 98")
+        self.assertEqual(context_data[99].content[0].text, "Assistant message 99")
 
 
 if __name__ == "__main__":

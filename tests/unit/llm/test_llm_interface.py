@@ -22,13 +22,13 @@ class TestILLMInterface(unittest.TestCase):
 
         # 验证必需的抽象方法
         abstract_methods = ILLM.__abstractmethods__
-        expected_methods = {'chat', 'get_model_name', 'get_config'}
+        expected_methods = {'get_provider', 'get_base_url', 'get_model', 'completion', 'from_config'}
         self.assertEqual(abstract_methods, expected_methods)
 
     def test_illm_method_names(self) -> None:
         """测试 ILLM 方法名称"""
         expected_methods = [
-            'chat', 'get_model_name', 'get_config'
+            'completion', 'from_config', 'get_provider', 'get_base_url', 'get_model'
         ]
 
         for method_name in expected_methods:
@@ -54,13 +54,13 @@ class TestIEmbedModelInterface(unittest.TestCase):
 
         # 验证必需的抽象方法
         abstract_methods = IEmbedModel.__abstractmethods__
-        expected_methods = {'embed', 'get_model_name', 'get_config', 'get_dimension'}
+        expected_methods = {'get_provider', 'get_base_url', 'get_model', 'from_config', 'embed_batch', 'embed'}
         self.assertEqual(abstract_methods, expected_methods)
 
     def test_iembed_model_method_names(self) -> None:
         """测试 IEmbedModel 方法名称"""
         expected_methods = [
-            'embed', 'get_model_name', 'get_config', 'get_dimension'
+            'embed', 'embed_batch', 'from_config', 'get_provider', 'get_base_url', 'get_model'
         ]
 
         for method_name in expected_methods:

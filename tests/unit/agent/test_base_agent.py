@@ -28,7 +28,7 @@ from tasking.core.state_machine.task.interface import ITask
 from tasking.core.state_machine.workflow.interface import IWorkflow
 from tasking.core.agent.react import ReActStage, ReActEvent
 from tasking.llm.interface import ILLM
-from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue, TextBlock
+from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IAsyncQueue, TextBlock
 from tests.unit.agent.test_helpers import (
     AgentTestMixin,
     MockLLM,
@@ -183,22 +183,22 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
         pre_hook_called = []
         post_hook_called = []
 
-        def pre_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[MockState, MockEvent]) -> None:
+        def pre_hook(_context: dict[str, Any], _queue: IAsyncQueue[Message], _task: ITask[MockState, MockEvent]) -> None:
             pre_hook_called.append(True)
 
-        def post_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[MockState, MockEvent]) -> None:
+        def post_hook(_context: dict[str, Any], _queue: IAsyncQueue[Message], _task: ITask[MockState, MockEvent]) -> None:
             post_hook_called.append(True)
 
-        def post_observe_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[MockState, MockEvent], _messages: list[Message]) -> None:
+        def post_observe_hook(_context: dict[str, Any], _queue: IAsyncQueue[Message], _task: ITask[MockState, MockEvent], _messages: list[Message]) -> None:
             post_hook_called.append(True)
 
-        def pre_think_hook(_context: dict[str, Any], _queue: IQueue[Message], _messages: list[Message]) -> None:
+        def pre_think_hook(_context: dict[str, Any], _queue: IAsyncQueue[Message], _messages: list[Message]) -> None:
             post_hook_called.append(True)
 
-        def post_think_hook(_context: dict[str, Any], _queue: IQueue[Message], _messages: list[Message], _result: Message) -> None:
+        def post_think_hook(_context: dict[str, Any], _queue: IAsyncQueue[Message], _messages: list[Message], _result: Message) -> None:
             post_hook_called.append(True)
 
-        def post_act_hook(_context: dict[str, Any], _queue: IQueue[Message], _task: ITask[MockState, MockEvent], _result: Message) -> None:
+        def post_act_hook(_context: dict[str, Any], _queue: IAsyncQueue[Message], _task: ITask[MockState, MockEvent], _result: Message) -> None:
             post_hook_called.append(True)
 
         # 添加钩子
@@ -226,7 +226,7 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
         # 创建异步钩子函数
         async_hook_called = []
 
-        async def async_pre_hook(context: dict[str, Any], queue: IQueue[Message], task: ITask[MockState, MockEvent]) -> None:
+        async def async_pre_hook(context: dict[str, Any], queue: IAsyncQueue[Message], task: ITask[MockState, MockEvent]) -> None:
             await asyncio.sleep(0.01)  # 模拟异步操作
             async_hook_called.append(True)
 

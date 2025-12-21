@@ -1,13 +1,15 @@
 from abc import abstractmethod, ABC
-from typing import Generic, Any, Callable, Awaitable
+from typing import Generic, Any
+from collections.abc import Callable, Awaitable
 
+from mcp.types import Tool as McpTool
 from fastmcp import Client
 from fastmcp.client.transports import ClientTransportT
 
 from ..state_machine.const import StateT, EventT
 from ..state_machine.workflow import IWorkflow, WorkflowStageT, WorkflowEventT
 from ..state_machine.task import ITask
-from ...model import CompletionConfig, Message, ToolCallRequest, IQueue
+from ...model import CompletionConfig, Message, ToolCallRequest, IAsyncQueue
 from ...llm import ILLM
 
 
@@ -74,12 +76,26 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         pass
 
     @abstractmethod
-    def get_tool_service(self) -> Client[ClientTransportT]:
+    def get_tool_service(self) -> Client[ClientTransportT] | None:
         """获取工具服务,用于调用注册到工具服务的工具
 
         Returns:
-            Client[ClientTransportT]:
-                工具服务客户端实例
+            Client[ClientTransportT] | None:
+                工具服务客户端实例，如果未设置则返回 None
+        """
+        pass
+    
+    @abstractmethod
+    async def get_tools_with_tags(self, tags: set[str]) -> dict[str, McpTool]:
+        """获取工具服务中注册的所有工具及其标签
+        
+        Args:
+            tags (set[str]):
+                需要获取的工具标签集合，返回包含这些标签的工具。
+
+        Returns:
+            dict[str, Tool]:
+                工具名称到工具实例的映射字典
         """
         pass
 
@@ -115,7 +131,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     async def run_task_stream(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
     ) -> ITask[StateT, EventT]:
         """以流式方式运行一个任务指定给Agent。
@@ -137,7 +153,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     @abstractmethod
     def add_pre_run_once_hook(
         self,
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
+        hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加单次执行前钩子函数
 
@@ -152,7 +168,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     @abstractmethod
     def add_post_run_once_hook(
         self,
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
+        hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加单次执行后钩子函数
 
@@ -170,7 +186,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     async def observe(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
         observe_fn: Callable[[ITask[StateT, EventT], dict[str, Any]], Message],
         **kwargs: Any,
@@ -198,7 +214,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     @abstractmethod
     def add_pre_observe_hook(
         self,
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
+        hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加观察前钩子函数
 
@@ -214,7 +230,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     @abstractmethod
     def add_post_observe_hook(
         self,
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
+        hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加观察后钩子函数
 
@@ -231,8 +247,9 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     async def think(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
+        valid_tools: dict[str, McpTool],
         completion_config: CompletionConfig,
         **kwargs: Any,
     ) -> Message:
@@ -245,6 +262,8 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
                 数据队列，用于输出任务运行过程中产生的数据
             task (ITask[StateT, EventT]):
                 要思考的任务
+            valid_tools (dict[str, McpTool]):
+                可用的工具名称到工具实例的映射字典
             completion_config (CompletionConfig):
                 Agent的生成配置
             **kwargs:
@@ -259,7 +278,10 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     @abstractmethod
     def add_pre_think_hook(
         self,
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
+        hook: Callable[
+            [dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]], 
+            Awaitable[None] | None
+        ],
     ) -> None:
         """添加思考前钩子函数
 
@@ -276,7 +298,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     def add_post_think_hook(
         self,
         hook: Callable[
-            [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+            [dict[str, Any], IAsyncQueue[Message], IAsyncQueue[Message] | None, ITask[StateT, EventT]],
             Awaitable[None] | None
         ],
     ) -> None:
@@ -287,6 +309,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
                 思考后钩子函数，接受上下文信息/输出队列/观察结果/思考结果/生成配置和额外关键字参数，函数签名如下：
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
+                - stream_queue: IQueue[Message] | None
                 - task: ITask[StateT, EventT]
         """
         pass
@@ -295,7 +318,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     async def act(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         tool_call: ToolCallRequest,
         task: ITask[StateT, EventT],
         **kwargs: Any
@@ -328,7 +351,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     def add_pre_act_hook(
         self,
         hook: Callable[
-            [dict[str, Any], IQueue[Message], ITask[StateT, EventT]],
+            [dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
             Awaitable[None] | None
         ],
     ) -> None:
@@ -346,7 +369,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     @abstractmethod
     def add_post_act_hook(
         self,
-        hook: Callable[[dict[str, Any], IQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
+        hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
     ) -> None:
         """添加行动后钩子函数
 

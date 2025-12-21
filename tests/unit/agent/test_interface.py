@@ -21,7 +21,7 @@ from tasking.core.state_machine.task.interface import ITask
 from tasking.core.state_machine.workflow.interface import IWorkflow
 from tasking.core.agent.react import ReActStage, ReActEvent
 from tasking.llm.interface import ILLM
-from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue, TextBlock
+from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IAsyncQueue, TextBlock
 from tests.unit.agent.test_helpers import AgentTestMixin, MockState, MockEvent
 
 
@@ -110,41 +110,41 @@ class TestIAgentInterface(unittest.TestCase, AgentTestMixin):
                 raise NotImplementedError
 
             # 任务执行
-            async def run_task_stream(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[MockState, MockEvent]) -> ITask[MockState, MockEvent]:
+            async def run_task_stream(self, context: dict[str, Any], queue: IAsyncQueue[Message], task: ITask[MockState, MockEvent]) -> ITask[MockState, MockEvent]:
                 return task
 
-            def add_pre_run_once_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
+            def add_pre_run_once_hook(self, hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
                 pass
 
-            def add_post_run_once_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
+            def add_post_run_once_hook(self, hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
                 pass
 
             # 运行时能力
-            async def observe(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[MockState, MockEvent], observe_fn: Callable[[ITask[MockState, MockEvent], dict[str, Any]], Message], **kwargs: Any) -> list[Message]:
+            async def observe(self, context: dict[str, Any], queue: IAsyncQueue[Message], task: ITask[MockState, MockEvent], observe_fn: Callable[[ITask[MockState, MockEvent], dict[str, Any]], Message], **kwargs: Any) -> list[Message]:
                 return []
 
-            def add_pre_observe_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
+            def add_pre_observe_hook(self, hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
                 pass
 
-            def add_post_observe_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent], list[Message]], Awaitable[None] | None]) -> None:
+            def add_post_observe_hook(self, hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[MockState, MockEvent], list[Message]], Awaitable[None] | None]) -> None:
                 pass
 
-            async def think(self, context: dict[str, Any], queue: IQueue[Message], llm_name: str, observe: list[Message], completion_config: CompletionConfig, **kwargs: Any) -> Message:
+            async def think(self, context: dict[str, Any], queue: IAsyncQueue[Message], llm_name: str, observe: list[Message], completion_config: CompletionConfig, **kwargs: Any) -> Message:
                 return Message(role=Role.ASSISTANT, content=[TextBlock(text="test")])
 
-            def add_pre_think_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], list[Message]], Awaitable[None] | None]) -> None:
+            def add_pre_think_hook(self, hook: Callable[[dict[str, Any], IAsyncQueue[Message], list[Message]], Awaitable[None] | None]) -> None:
                 pass
 
-            def add_post_think_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], list[Message], Message], Awaitable[None] | None]) -> None:
+            def add_post_think_hook(self, hook: Callable[[dict[str, Any], IAsyncQueue[Message], list[Message], Message], Awaitable[None] | None]) -> None:
                 pass
 
-            async def act(self, context: dict[str, Any], queue: IQueue[Message], tool_call: ToolCallRequest, task: ITask[MockState, MockEvent], **kwargs: Any) -> Message:
+            async def act(self, context: dict[str, Any], queue: IAsyncQueue[Message], tool_call: ToolCallRequest, task: ITask[MockState, MockEvent], **kwargs: Any) -> Message:
                 return Message(role=Role.TOOL, content=[TextBlock(text="test result")])
 
-            def add_pre_act_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
+            def add_pre_act_hook(self, hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[MockState, MockEvent]], Awaitable[None] | None]) -> None:
                 pass
 
-            def add_post_act_hook(self, hook: Callable[[dict[str, Any], IQueue[Message], ITask[MockState, MockEvent], Message], Awaitable[None] | None]) -> None:
+            def add_post_act_hook(self, hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[MockState, MockEvent], Message], Awaitable[None] | None]) -> None:
                 pass
 
         # 验证可以实例化最小实现

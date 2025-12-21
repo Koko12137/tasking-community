@@ -109,22 +109,31 @@ class SqliteDatabase(ISqlDatabase[MemoryT]):
             where: WHERE过滤条件列表，每个条件为完整的SQL表达式，如 ["status = 'active'", "created_at > '2024-01-01'"]
             order_by: 排序字段，支持ASC/DESC，如 "id DESC"
             limit: 返回的最大条目数量
-            **kwargs: 其他过滤条件（兼容性保留）
+            **kwargs: 其他SQL参数，SQLite实现支持: group_by, having, offset
 
         Returns:
             符合条件的记忆条目列表
         """
+        # 检查不支持的参数
+        supported_kwargs = {"group_by", "having", "offset"}
+        unsupported_kwargs = set(kwargs.keys()) - supported_kwargs
+        if unsupported_kwargs:
+            raise ValueError(
+                f"SQLite implementation does not support the following parameters: "
+                f"{', '.join(unsupported_kwargs)}. Supported parameters: {', '.join(supported_kwargs)}"
+            )
+
         # 封装搜索参数
         params = SearchParams(
             fields=fields,
             where=where,
             order_by=order_by,
             limit=limit,
-            filters=kwargs if kwargs else None
+            filters=None  # 不再使用kwargs作为filters
         )
 
         # 构建查询和参数
-        query, values = self._build_search_query(params)
+        query, values = self._build_search_query(params, **kwargs)
 
         # 获取SQLite连接并执行查询
         connection = await self._manager.get_sql_database(context)
@@ -137,11 +146,12 @@ class SqliteDatabase(ISqlDatabase[MemoryT]):
             for row in rows
         ]
 
-    def _build_search_query(self, params: SearchParams) -> tuple[str, list[Any]]:
+    def _build_search_query(self, params: SearchParams, **kwargs: Any) -> tuple[str, list[Any]]:
         """构建搜索查询SQL语句和参数
 
         Args:
             params: 搜索参数对象
+            **kwargs: 额外的SQL参数，支持: group_by, having, offset
 
         Returns:
             SQL查询字符串和参数列表的元组
@@ -151,32 +161,37 @@ class SqliteDatabase(ISqlDatabase[MemoryT]):
         # 处理where条件列表
         where_conditions = list(params.where) if params.where else []
 
-        # 兼容旧的kwargs格式，转换为简单的等值条件
-        filters = params.filters or {}
-        for key in filters:
-            where_conditions.append(f"{key} = ?")
-
         # 构建WHERE子句
         where_clause = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else ""
 
-        # 处理参数值（只处理filters中的值，where列表中的值已经是字面量）
-        values = list(filters.values())
-
-        # 处理LIMIT
-        if params.limit is not None:
-            values.append(params.limit)
-            limit_clause = "LIMIT ?"
-        else:
-            limit_clause = ""
+        # 处理参数值列表
+        values = []
 
         # 处理ORDER BY
         order_clause = f"ORDER BY {params.order_by}" if params.order_by else ""
+
+        # 处理GROUP BY
+        group_by_clause = f"GROUP BY {kwargs['group_by']}" if kwargs.get('group_by') else ""
+
+        # 处理HAVING
+        having_clause = f"HAVING {kwargs['having']}" if kwargs.get('having') else ""
+
+        # 处理LIMIT和OFFSET
+        limit_parts = []
+        if params.limit is not None:
+            limit_parts.append(str(params.limit))
+        if kwargs.get('offset') is not None:
+            limit_parts.append(str(kwargs['offset']))
+
+        limit_clause = f"LIMIT {', '.join(limit_parts)}" if limit_parts else ""
 
         # 组装查询
         query_parts = [
             f"SELECT {select_fields}",
             f"FROM {self._table_name}",
             where_clause,
+            group_by_clause,
+            having_clause,
             order_clause,
             limit_clause
         ]

@@ -18,7 +18,7 @@ from tasking.core.middleware.memory import (
 )
 from tasking.model.memory import MemoryProtocol, MemoryT, EpisodeMemory, StateMemory
 from tasking.model.message import Message, Role, TextBlock, MultimodalContent, ImageBlock, VideoBlock
-from tasking.model.queue import IQueue
+from tasking.model.queue import IAsyncQueue
 from tasking.core.state_machine.task.interface import ITask
 from tasking.core.context import IContext
 from tasking.database.interface import IVectorDatabase, IKVDatabase
@@ -221,19 +221,20 @@ class MockContext:
         self._messages.clear()
 
 
-class MockQueue(IQueue[Message]):
+class MockQueue(IAsyncQueue[Message]):
     """模拟消息队列"""
 
     def __init__(self) -> None:
         self.messages: list[Message] = []
+        self._is_closed: bool = False
 
-    async def put(self, item: Message) -> None:
+    async def put(self, item: Message, block: bool = True, timeout: float | None = None) -> None:
         self.messages.append(item)
 
     async def put_nowait(self, item: Message) -> None:
         self.messages.append(item)
 
-    async def get(self) -> Message:
+    async def get(self, block: bool = True, timeout: float | None = None) -> Message:
         if self.messages:
             return self.messages.pop(0)
         raise ValueError("Empty queue")
@@ -243,11 +244,26 @@ class MockQueue(IQueue[Message]):
             return self.messages.pop(0)
         raise ValueError("Empty queue")
 
-    async def is_empty(self) -> bool:
+    def is_empty(self) -> bool:
         return len(self.messages) == 0
 
-    async def is_full(self) -> bool:
+    def is_full(self) -> bool:
         return False
+
+    def qsize(self) -> int:
+        return len(self.messages)
+
+    def is_closed(self) -> bool:
+        return self._is_closed
+
+    async def close(self) -> None:
+        self._is_closed = True
+
+    def size(self) -> int:
+        return len(self.messages)
+
+    def clear(self) -> None:
+        self.messages.clear()
 
 
 class TestMemoryHooksInterface(unittest.TestCase):
@@ -332,7 +348,7 @@ class TestStateMemoryHooks(unittest.IsolatedAsyncioTestCase):
         # 验证状态记忆被添加到任务上下文
         context_data = self.task.get_context().get_context_data()
         self.assertEqual(len(context_data), 1)
-        self.assertEqual(context_data[0].role, Role.USER)
+        self.assertEqual(context_data[0].role, Role.SYSTEM)
         self.assertEqual(len(context_data[0].content), 1)
         self.assertEqual(context_data[0].content[0].text, "Previous state memory")
 

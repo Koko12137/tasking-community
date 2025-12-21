@@ -114,7 +114,7 @@ show_help() {
     agent            - Agent 智能体模块
     scheduler        - Scheduler 调度器模块
     state_machine    - StateMachine 状态机模块
-    terminal         - Terminal 终端模块
+    filesystem       - Filesystem 文件系统模块 (包含terminal测试)
     middleware       - Middleware 中间件模块
     database         - Database 数据库模块
     llm              - LLM 大语言模型模块
@@ -123,9 +123,9 @@ show_help() {
 示例:
     $0 all                           # 运行完整测试套件
     $0 unit                          # 运行所有单元测试
-    $0 unit terminal                 # 运行 terminal 模块单元测试
+    $0 unit filesystem               # 运行 filesystem 模块单元测试（包含terminal）
     $0 quality                        # 运行全局代码质量检查
-    $0 quality terminal              # 运行 terminal 模块质量检查
+    $0 quality filesystem            # 运行 filesystem 模块质量检查（包含terminal）
     $0 agent quality                 # 运行 agent 模块质量检查
     $0 agent unit                     # 运行 agent 模块单元测试
     $0 agent all                      # 运行 agent 模块所有检查
@@ -335,8 +335,8 @@ get_module_paths() {
         "state_machine"|"statemachine")
             echo "tasking/core/state_machine/ tests/unit/state_machine/"
             ;;
-        "terminal")
-            echo "tasking/tool/terminal.py tests/unit/terminal/"
+        "filesystem")
+            echo "tasking/tool/filesystem.py tasking/tool/terminal.py tests/unit/terminal/"
             ;;
         "middleware")
             echo "tasking/core/middleware/ tests/unit/core/middleware/"
@@ -420,9 +420,18 @@ main() {
     local command="${1:-help}"
     local subcommand="${2:-}"
 
+    # 特殊处理：terminal命令重定向到filesystem
+    if [ "$command" = "terminal" ]; then
+        print_message "$YELLOW" "⚠️  terminal 测试已合并到 filesystem 模块中"
+        print_message "$CYAN" "💡 请使用: $0 filesystem ${subcommand:-unit}"
+        echo
+        # 执行filesystem命令
+        command="filesystem"
+    fi
+
     # 处理模块命令
     case "$command" in
-        "agent"|"scheduler"|"state_machine"|"statemachine"|"terminal"|"middleware"|"database"|"llm"|"model")
+        "agent"|"scheduler"|"state_machine"|"statemachine"|"filesystem"|"middleware"|"database"|"llm"|"model")
             local module_name="$command"
             # 统一 state_machine 名称
             if [ "$module_name" = "statemachine" ]; then
@@ -436,19 +445,27 @@ main() {
                 exit 1
             fi
             
-            local module_path=$(echo "$paths" | cut -d' ' -f1)
-            local test_path=$(echo "$paths" | cut -d' ' -f2)
+            # 提取所有文件路径和测试路径
+            local module_files=""
+            local test_path=""
+
+            # 获取所有参数
+            local all_paths="$paths"
+            # 最后一个参数是测试路径（目录）
+            test_path=$(echo "$all_paths" | awk '{print $NF}')
+            # 前面的所有参数是模块文件
+            module_files=$(echo "$all_paths" | sed "s| $test_path$||")
             
             case "$subcommand" in
                 "quality")
-                    run_quality_check "$module_path" "$module_name"
+                    run_quality_check "$module_files" "$module_name"
                     ;;
                 "unit")
                     run_module_unit_tests "$module_name" "$test_path"
                     ;;
                 "all"|"")
                     # 如果没有子命令或子命令为 all，运行完整测试
-                    run_module_all "$module_name" "$module_path" "$test_path"
+                    run_module_all "$module_name" "$module_files" "$test_path"
                     ;;
                 *)
                     print_error "未知子命令: $subcommand"
@@ -472,11 +489,12 @@ main() {
                 local paths=$(get_module_paths "$module_name")
                 if [ -z "$paths" ]; then
                     print_error "未知模块: $subcommand"
-                    echo "支持的模块: agent, scheduler, state_machine, terminal, middleware, database, llm, model"
+                    echo "支持的模块: agent, scheduler, state_machine, filesystem, middleware, database, llm, model"
                     exit 1
                 fi
                 
-                local test_path=$(echo "$paths" | cut -d' ' -f2)
+                # 最后一个参数是测试路径（目录）
+                local test_path=$(echo "$paths" | awk '{print $NF}')
                 run_module_unit_tests "$module_name" "$test_path"
             else
                 # 没有指定模块，运行所有单元测试
@@ -501,12 +519,15 @@ main() {
                 local paths=$(get_module_paths "$module_name")
                 if [ -z "$paths" ]; then
                     print_error "未知模块: $subcommand"
-                    echo "支持的模块: agent, scheduler, state_machine, terminal, middleware, database, llm, model"
+                    echo "支持的模块: agent, scheduler, state_machine, filesystem, middleware, database, llm, model"
                     exit 1
                 fi
                 
-                local module_path=$(echo "$paths" | cut -d' ' -f1)
-                run_quality_check "$module_path" "$module_name"
+                # 获取所有模块文件路径（除了最后一个测试路径）
+                local all_paths="$paths"
+                local test_path=$(echo "$all_paths" | awk '{print $NF}')
+                local module_files=$(echo "$all_paths" | sed "s| $test_path$||")
+                run_quality_check "$module_files" "$module_name"
             else
                 # 没有指定模块，运行全局质量检查
                 run_quality_check "tasking/" "全局"

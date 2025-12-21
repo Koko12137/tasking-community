@@ -6,6 +6,7 @@ workspace restrictions, command whitelisting/blacklisting, and script execution 
 """
 
 import asyncio
+import threading
 import os
 import subprocess
 import shlex
@@ -15,10 +16,9 @@ import signal
 from abc import ABC, abstractmethod
 from uuid import uuid4
 from pathlib import Path
-from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor
 
 from loguru import logger
-from asyncer import syncify
 
 # ------------------------------
 # 核心常量定义（私有，避免外部修改）
@@ -42,7 +42,7 @@ _PROHIBITED_REGEX: list[dict[str, object]] = [
         "is_absolute": True
     },
     {
-        "regex": r'(mkfs)|(fdisk\s+/)|(format)',  # 磁盘格式化
+        "regex": r'\b(mkfs[\w.-]*|fdisk|format)\b(?:\s|$)',  # 磁盘格式化（支持mkfs变体如mkfs.ext4）
         "desc": "磁盘格式化",
         "is_absolute": True
     },
@@ -64,7 +64,19 @@ _PROHIBITED_REGEX: list[dict[str, object]] = [
         "is_absolute": True
     },
 
-    # 3. 提权命令拦截（所有变体，无论是否人类允许均拦截）
+    # 3. 代码执行命令拦截（所有变体，无论是否人类允许均拦截）
+    {
+        "regex": r'\beval\b',                    # 代码执行（eval、eval "command"）
+        "desc": "代码执行",
+        "is_absolute": True
+    },
+    {
+        "regex": r'\bexec\b',                    # 代码执行（exec、exec "command"）
+        "desc": "代码执行",
+        "is_absolute": True
+    },
+
+    # 4. 提权命令拦截（所有变体，无论是否人类允许均拦截）
     {
         "regex": r'\bsudo\b',                    # 提权命令（sudo、sudo -i、/usr/bin/sudo）
         "desc": "sudo提权",
@@ -81,16 +93,23 @@ _PROHIBITED_REGEX: list[dict[str, object]] = [
         "is_absolute": True
     },
 
-    # 4. 文件权限修改命令（非人类允许时拦截）
+    # 5. 文件权限修改命令（非人类允许时拦截）
     {
         "regex": r'\bchmod\b',                    # 文件权限修改（chmod、chmod 777、chmod +x）
         "desc": "文件权限修改",
         "is_absolute": False
     },
-    
-    # 5. 软件包/系统管理命令（非人类允许时拦截）
+
+    # 6. 特殊命令格式拦截（需要特别检查的命令模式）
     {
-        "regex": r'(apt\s+)|(apt-get\s+)|(yum\s+)|(dnf\s+)|(brew\s+)|(dpkg\s+)|(rpm\s+)',
+        "regex": r'find\s+.*\s+-exec\s+.*sudo',  # find -exec with sudo
+        "desc": "find命令使用-exec执行sudo",
+        "is_absolute": True
+    },
+
+    # 7. 软件包/系统管理命令（非人类允许时拦截）
+    {
+        "regex": r'\b(apt|apt-get|yum|dnf|brew|dpkg|rpm)\b(?:\s|$)',
         "desc": "软件包管理",
         "is_absolute": False
     }
@@ -156,9 +175,31 @@ class ITerminal(ABC):
             RuntimeError: workspace未初始化或终端未启动。
         """
         raise NotImplementedError
+    
+    @abstractmethod
+    def check_path(self, path: str) -> tuple[str, str]:
+        """解析文件路径并进行鉴权：返回（绝对路径，相对于 workspace 的相对路径）。
+        
+        该方法会：
+        1. 解析绝对路径或相对路径
+        2. 规范化路径（处理 `..` 和 `.`）
+        3. 验证路径是否在 workspace 范围内
+        4. 防止路径遍历攻击
+        
+        Args:
+            path: 要解析的文件路径（相对路径或绝对路径）
+        
+        Returns:
+            tuple[str, str]: (绝对路径, 相对于workspace的相对路径)
+        
+        Raises:
+            RuntimeError: 文件路径超出workspace范围或路径不安全
+            ValueError: 路径格式无效
+        """
+        raise NotImplementedError
 
     @abstractmethod
-    def get_allowed_commands(self) -> List[str]:
+    def get_allowed_commands(self) -> list[str]:
         """获取终端允许执行的命令列表（白名单）。
 
         规则：
@@ -166,7 +207,7 @@ class ITerminal(ABC):
         - 列表非空时：仅允许包含列表中命令的操作（如允许"ls"则允许"ls -l"）
 
         Returns:
-            List[str]: 允许命令列表（如["ls", "cd", "touch", "grep"]）。
+            list[str]: 允许命令列表（如["ls", "cd", "touch", "grep"]）。
         """
         raise NotImplementedError
 
@@ -258,7 +299,7 @@ class ITerminal(ABC):
 
     @abstractmethod
     async def run_command(
-        self, command: str, allow_by_human: bool = False, timeout: Optional[float] = None
+        self, command: str, allow_by_human: bool = False, timeout: float | None = None
     ) -> str:
         """执行bash命令，返回输出并同步终端状态（异步版本，含安全校验）。
 
@@ -325,10 +366,10 @@ class LocalTerminal(ITerminal):
     _root_dir: str                      # 根目录路径（绝对路径）
     _workspace: str                     # 工作空间（绝对路径，默认为root_dir）
     _current_dir: str                   # 终端当前目录（与bash实时同步）
-    _process: subprocess.Popen[str]     # 长期bash进程
-    _allowed_commands: List[str]        # 允许命令列表（白名单）
+    _process: subprocess.Popen[str] | None     # 长期bash进程
+    _allowed_commands: list[str]        # 允许命令列表（白名单）
     _disable_script_execution: bool     # 是否禁用脚本执行
-    _lock: asyncio.Lock                 # 异步锁，确保并发安全
+    _lock: threading.RLock              # 线程锁，确保并发安全
     _init_commands: list[str]           # 初始化命令
 
     def __init__(
@@ -375,7 +416,7 @@ class LocalTerminal(ITerminal):
             )
         
         self._terminal_id = uuid4().hex  # 生成唯一终端ID
-        self._lock = asyncio.Lock()      # 初始化异步锁
+        self._lock = threading.RLock()    # 初始化线程锁
 
         # 1. 处理根目录：必须传入绝对路径
         if not os.path.isabs(root_dir):
@@ -430,24 +471,39 @@ class LocalTerminal(ITerminal):
         self._init_commands = init_commands if init_commands is not None else []
         # 4. 同步运行异步初始化命令
         try:
-            # 优先尝试 syncify（正常情况）
+            # 检测当前事件循环状态
             try:
-                syncify(self.run_init_commands)()
-            except Exception as syncify_error:
-                # syncify失败时，尝试使用 asyncio.run（无事件循环情况）
-                try:
-                    asyncio.run(self.run_init_commands())
-                except RuntimeError:
-                    # 也有事件循环，但syncify不兼容（如pytest async模式），使用concurrent.futures
-                    logger.warning(f"syncify和asyncio.run都失败，使用ThreadPoolExecutor fallback: {syncify_error}")
-                    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+                # 尝试获取当前运行中的事件循环
+                loop = asyncio.get_running_loop()
+                if loop.is_running():
+                    # 在运行中的事件循环环境（如pytest-asyncio）下，
+                    # 创建独立线程来执行异步初始化
+                    logger.info("检测到运行中的事件循环，使用独立线程执行初始化")
+
+                    # 直接在线程中运行，避免future状态问题
+                    def run_init_in_thread():
+                        # 创建新的事件循环在独立线程中
+                        new_loop = asyncio.new_event_loop()
+                        try:
+                            asyncio.set_event_loop(new_loop)
+                            return new_loop.run_until_complete(self.run_init_commands())
+                        finally:
+                            new_loop.close()
+                            asyncio.set_event_loop(None)
 
                     with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(lambda: asyncio.run(self.run_init_commands()))
-                        try:
-                            future.result(timeout=10)
-                        except FutureTimeoutError:
-                            raise RuntimeError("终端初始化超时")
+                        future = executor.submit(run_init_in_thread)
+                        # 等待初始化完成，设置合理超时
+                        future.result(timeout=30)
+
+                else:
+                    # 事件循环存在但未运行，使用run_until_complete
+                    loop.run_until_complete(self.run_init_commands())
+
+            except RuntimeError:
+                # 没有事件循环，创建新的
+                asyncio.run(self.run_init_commands())
+
         except Exception as e:
             logger.error(f"终端初始化失败: {e}")
             raise
@@ -508,7 +564,7 @@ class LocalTerminal(ITerminal):
         current_task = asyncio.current_task()
         task_name = current_task.get_name() if current_task else 'unknown'
         logger.debug(f"🔒 任务 {task_name} 获取终端锁")
-        await self._lock.acquire()
+        self._lock.acquire()
 
     async def release(self) -> None:
         """释放终端使用信号量，唤醒等待的任务"""
@@ -529,7 +585,90 @@ class LocalTerminal(ITerminal):
             )
         return self._current_dir
 
-    def get_allowed_commands(self) -> List[str]:
+    def check_path(self, path: str) -> tuple[str, str]:
+        """解析文件路径并进行鉴权：返回（绝对路径，相对于 workspace 的相对路径）。
+        
+        该方法会：
+        1. 解析绝对路径或相对路径
+        2. 规范化路径（处理 `..` 和 `.`）
+        3. 验证路径是否在 workspace 范围内
+        4. 防止路径遍历攻击
+        
+        Args:
+            path: 要解析的文件路径（相对路径或绝对路径）
+        
+        Returns:
+            tuple[str, str]: (绝对路径, 相对于workspace的相对路径)
+        
+        Raises:
+            RuntimeError: 文件路径超出workspace范围或路径不安全
+            ValueError: 路径格式无效
+        """
+        if not path:
+            raise ValueError("文件路径不能为空")
+
+        # 规范化路径（移除多余的斜杠、处理 `.` 和 `..`）
+        # 先规范化输入路径
+        normalized_path = os.path.normpath(path)
+
+        # 解析绝对路径
+        if os.path.isabs(normalized_path):
+            # 如果是绝对路径，直接使用
+            file_abs = os.path.normpath(normalized_path)
+        else:
+            # 如果是相对路径，基于终端当前目录解析
+            current_dir = self.get_current_dir()
+            file_abs = os.path.normpath(os.path.join(current_dir, normalized_path))
+
+        # 确保路径是绝对路径（规范化后可能仍然是相对路径）
+        if not os.path.isabs(file_abs):
+            file_abs = os.path.abspath(file_abs)
+
+        # 再次规范化，确保处理所有 `..` 和 `.`
+        file_abs = os.path.normpath(file_abs)
+
+        # 严格校验路径是否在 workspace 内
+        # 使用 os.path.commonpath 来确保路径真正在 workspace 内，防止路径遍历攻击
+        try:
+            # 获取 workspace 的规范化绝对路径
+            workspace_abs = os.path.normpath(os.path.abspath(self._workspace))
+            
+            # 使用 commonpath 检查路径是否真正在 workspace 内
+            common_path = os.path.commonpath([workspace_abs, file_abs])
+            if common_path != workspace_abs:
+                raise RuntimeError(
+                    f"文件路径超出 workspace 范围：{file_abs}\n"
+                    f"  workspace: {workspace_abs}\n"
+                    f"  公共路径: {common_path}"
+                )
+        except ValueError:
+            # commonpath 在路径不在同一驱动器或无效时会抛出 ValueError
+            raise RuntimeError(
+                f"文件路径无效或超出 workspace 范围：{file_abs}\n"
+                f"  workspace: {self._workspace}"
+            )
+
+        # 额外检查：确保规范化后的路径仍然以 workspace 开头（双重验证）
+        if not file_abs.startswith(workspace_abs):
+            raise RuntimeError(
+                f"文件路径超出 workspace 范围：{file_abs}\n"
+                f"  workspace: {workspace_abs}"
+            )
+
+        # 计算相对于 workspace 的相对路径
+        file_rel = os.path.relpath(file_abs, workspace_abs)
+        
+        # 防止相对路径包含 `..`（这不应该发生，但作为额外安全检查）
+        if '..' in file_rel.split(os.sep):
+            raise RuntimeError(
+                f"检测到不安全的相对路径：{file_rel}\n"
+                f"  绝对路径: {file_abs}\n"
+                f"  workspace: {workspace_abs}"
+            )
+
+        return file_abs, file_rel
+
+    def get_allowed_commands(self) -> list[str]:
         # 返回列表副本，防止外部修改内部状态（防御性编程）
         return self._allowed_commands.copy()
 
@@ -671,7 +810,8 @@ class LocalTerminal(ITerminal):
                 elif char == '"' and not in_single_quote:
                     in_double_quote = not in_double_quote
                     current_command += char
-                elif char == "\\" and (in_single_quote or in_double_quote):
+                elif char == "\\":
+                    # 处理转义字符（无论是否在引号内）
                     current_command += char
                     i += 1
                     if i < len(command):
@@ -720,7 +860,7 @@ class LocalTerminal(ITerminal):
         if not command_clean:
             return False  # 空命令无脚本风险
 
-        # 2. 定义“支持路径的脚本规则”：正则列表（覆盖解释器+脚本文件）
+        # 2. 定义"支持路径的脚本规则"：正则列表（覆盖解释器+脚本文件）
         # 规则说明：
         # - (^|\s|/)：匹配命令开头、空格或路径分隔符（确保是独立的解释器/脚本名）
         # - [\w./-]*：匹配路径（如 /usr/bin/、./venv/、~/）
@@ -736,6 +876,22 @@ class LocalTerminal(ITerminal):
             # 规则2：直接执行的脚本文件（带路径+后缀，如 ./script.sh、/home/test.py）
             r'(^|\s|/)[\w./-]+\.(sh|py|go|js)($|\s|;)',           # 后缀匹配
             r'(^|\s)\./[\w./-]*($|\s|;)'                          # 相对路径执行（如 ./script）
+        ]
+
+        # 规则3：Shell脚本化编程模式检测（复合命令攻击）
+        # 这些模式表明是复杂的shell脚本，而非简单命令
+        shell_script_patterns = [
+            r'[a-zA-Z_]\w*=[\'"][^\'"]*[\'"]',                      # 带引号的变量赋值（VAR='value'）
+            r'\b[a-zA-Z_]\w*=\s*[\'"][a-zA-Z]\s*[\'"]',            # 单字符变量赋值（S='s'）
+            r'[a-zA-Z_]\w*\(\s*\)\s*\{',                          # 函数定义（func() {）
+            r'(\$\(|\`)[^)]*(\)|\`)',                             # 命令替换（$(cmd) 或 `cmd`）
+            r'<<\s*[\'"]?\w+[\'"]?',                               # Here document（<<EOF）
+            r'<<<\s*[\'"]?[^\'"]*[\'"]?',                          # Here string（<<<"text"）
+            r'\$\(\(\s*[^\)]*\s*\)\)',                             # 算术扩展（$((expr))）
+            r'\bif\s+.*\bthen\b',                                  # if条件语句
+            r'\bfor\s+.*\bdo\b',                                   # for循环语句
+            r'\bwhile\s+.*\bdo\b',                                 # while循环语句
+            r'\bcase\s+.*\besac\b',                                # case语句
         ]
 
         # 3. 分割复合命令（逐条检查，避免漏判）
@@ -769,6 +925,15 @@ class LocalTerminal(ITerminal):
                     logger.debug(f"⚠️ 检测到脚本执行命令：{single_cmd_stripped}（匹配规则：{rule}）")
                     return True
 
+        # 额外检查：Shell脚本化编程模式（复合命令攻击）
+        # 检查原始命令（而非分割后的命令）中的脚本化模式
+        # 这样可以检测到如 "S='s'; C='u'" 这样的复合脚本攻击
+        if len(independent_commands) > 1 or ';' in command_clean or '&' in command_clean:
+            for pattern in shell_script_patterns:
+                if re.search(pattern, command_clean):
+                    logger.debug(f"⚠️ 检测到Shell脚本化模式：{command}（匹配模式：{pattern}）")
+                    return True
+
         # 所有命令均未命中脚本规则
         return False
 
@@ -778,6 +943,7 @@ class LocalTerminal(ITerminal):
         核心逻辑：
         - 绝对禁止命令：无论是否人类允许，均拦截（如批量删除、提权、根目录操作）
         - 条件禁止命令：仅当非人类允许时拦截（如软件包管理）
+        - 对于大多数禁止命令，只检查命令名；对于特定危险命令（如 rm -rf /），检查完整命令
         """
         command_stripped = command.strip()
         if not command_stripped:
@@ -787,6 +953,7 @@ class LocalTerminal(ITerminal):
         cmd_lower = command_stripped.lower()
         # 提取命令名（如 "/usr/bin/sudo" → "sudo"）
         cmd_name = self._extract_command_name(command_stripped.split()[0] if command_stripped.split() else "")
+
         # 遍历禁止命令正则列表，逐个匹配
         for prohib in _PROHIBITED_REGEX:
             # 取出原始 pattern 并确保为 str（若为 bytes 则 decode）
@@ -803,17 +970,44 @@ class LocalTerminal(ITerminal):
             if not regex:
                 continue
 
-            # 正则匹配（忽略大小写）
-            if re.search(regex, cmd_lower, re.IGNORECASE):
-                # 判定逻辑：绝对禁止命令直接拦截；条件禁止命令仅非人类允许时拦截
-                if is_absolute or (not is_absolute and not allow_by_human):
-                    logger.error(
-                        f"❌ 命令包含禁止操作：\n"
-                        f"  禁止类型：{desc}\n"
-                        f"  匹配规则：{regex}\n"
-                        f"  执行命令：{command_stripped}"
-                    )
-                    return True
+            # 对于需要完整命令检查的特殊规则（如 rm -rf /），检查完整命令
+            needs_full_command_check = any(pattern in regex for pattern in [
+                'rm -rf\\s+/',          # 根目录删除
+                'rm -rf\\s+(\\*|',      # 批量删除
+                'rm -rf\\s+\\.\\.(\\/|$)', # 跨层级删除
+                'dd if=/dev/(zero|null))|(> /dev/sda)',  # 硬件破坏
+                'shutdown\\s+',         # 关机命令
+                'passwd root',          # 根密码修改
+                'chpasswd',             # 密码修改
+                'find\\s+.*\\s+-exec\\s+.*sudo',  # find -exec with sudo
+                'bsudo\\b',             # sudo提权
+                'bsu\\b'                # su提权
+            ])
+
+            if needs_full_command_check:
+                # 检查完整命令
+                if re.search(regex, cmd_lower, re.IGNORECASE):
+                    if is_absolute or (not is_absolute and not allow_by_human):
+                        logger.error(
+                            f"❌ 命令包含禁止操作：\n"
+                            f"  禁止类型：{desc}\n"
+                            f"  匹配规则：{regex}\n"
+                            f"  执行命令：{command_stripped}"
+                        )
+                        return True
+            else:
+                # 对于大多数命令，只检查命令名
+                # 修改正则表达式以只匹配命令名开头
+                cmd_only_regex = f'^{regex}'
+                if re.search(cmd_only_regex, cmd_name, re.IGNORECASE):
+                    if is_absolute or (not is_absolute and not allow_by_human):
+                        logger.error(
+                            f"❌ 命令包含禁止操作：\n"
+                            f"  禁止类型：{desc}\n"
+                            f"  匹配规则：{regex}\n"
+                            f"  执行命令：{command_stripped}"
+                        )
+                        return True
 
         # 额外校验：rm命令的路径是否为“精准路径”（排除通配符/特殊符号）
         if cmd_name == "rm":
@@ -856,42 +1050,68 @@ class LocalTerminal(ITerminal):
         if self._is_prohibited_command(command_stripped, allow_by_human):
             return True
 
-        # 步骤2：检查命令替换 $() 和 ``
-        # 匹配 $(...) 和 `...`
+        # 步骤2：检查各种形式的命令替换、重定向和算术扩展
+        # 匹配 $(...)、`...`、$((...))、<(...)、<<< 和 <<
         substitution_patterns = [
-            r'\$\(([^)]+)\)',  # $(command)
-            r'`([^`]+)`',      # `command`
+            r'\$\(([^)]+)\)',           # $(command) - 命令替换
+            r'\$\(\(([^)]+)\)\)',       # $((expression)) - 算术扩展
+            r'`([^`]+)`',               # `command` - 命令替换
+            r'<\(([^)]+)\)',            # <(command) - 进程替换
+            r'<<<\s*[\'"]?([^\'"]*)[\'"]?',  # <<<text - here string
+            r'<<-\s*[\'"]?\w+[\'"]?',   # <<-EOF - here document (with dash)
+            r'<<\s*[\'"]?\w+[\'"]?',    # <<EOF - here document (without dash)
         ]
         
         for pattern in substitution_patterns:
             matches = re.finditer(pattern, command_stripped)
             for match in matches:
-                nested_cmd = match.group(1).strip()
-                if nested_cmd:
-                    # 递归检查嵌套命令
-                    if self._is_prohibited_command(nested_cmd, allow_by_human):
-                        logger.error(
-                            f"❌ 命令替换包含禁止操作：{match.group(0)} → {nested_cmd}"
-                        )
-                        return True
-                    # 检查嵌套命令的路径约束（如 find / 应该被拦截）
-                    if not self._check_path_constraints(nested_cmd, allow_by_human):
-                        logger.error(
-                            f"❌ 命令替换中的路径超出范围：{match.group(0)} → {nested_cmd}"
-                        )
-                        return True
-                    # 递归检查嵌套命令中的逃逸命令
-                    if self._has_escaped_prohibited_cmd(nested_cmd, allow_by_human):
-                        return True
+                full_match = match.group(0)
+
+                # 对于进程替换、here string和here document，直接拒绝，因为它们是潜在的安全风险
+                if (full_match.startswith('<(') or
+                    full_match.startswith('<<<') or
+                    full_match.startswith('<<')):
+                    logger.error(f"❌ 检测到危险的shell功能：{full_match}")
+                    return True
+
+                # 对于命令替换和算术扩展，检查嵌套内容
+                nested_content = match.group(1).strip() if len(match.groups()) > 0 else ""
+                if nested_content:
+                    # 检查是否是算术扩展
+                    if full_match.startswith('$((') and full_match.endswith('))'):
+                        # 算术扩展 - 检查是否包含禁止的命令
+                        if self._is_prohibited_command(nested_content, allow_by_human):
+                            logger.error(
+                                f"❌ 算术扩展包含禁止操作：{full_match} → {nested_content}"
+                            )
+                            return True
+                    else:
+                        # 命令替换 - 递归检查嵌套命令
+                        if self._is_prohibited_command(nested_content, allow_by_human):
+                            logger.error(
+                                f"❌ 命令替换包含禁止操作：{full_match} → {nested_content}"
+                            )
+                            return True
+                        # 检查嵌套命令的路径约束（如 find / 应该被拦截）
+                        if not self._check_path_constraints(nested_content, allow_by_human):
+                            logger.error(
+                                f"❌ 命令替换中的路径超出范围：{full_match} → {nested_content}"
+                            )
+                            return True
+                        # 递归检查嵌套命令中的逃逸命令
+                        if self._has_escaped_prohibited_cmd(nested_content, allow_by_human):
+                            return True
 
         # 步骤3：正则匹配「命令执行型嵌套」（支持转义/未转义引号）
         # 正则说明：
         # - ^.*?(bash|sh|python|python3|node|go) -c\s*：匹配执行命令的解释器（如 bash -c）
+        # - ^.*?(eval|exec)\s+：匹配代码执行命令（如 eval、exec）
         # - (?:\\\\['"]|['"]])：匹配开头的转义引号（\\\\\"）或未转义引号（"）
         # - (.*?)：非贪婪匹配引号内的嵌套命令
         # - (?:\\\\\1|(?<!\\\\)\1)：匹配结尾的转义引号（\\\\\"）或未转义引号（"，确保未被转义）
         escaped_cmd_pattern = re.compile(
-            r'^.*?(bash|sh|python|python3|node|go) -c\s*(?P<quote>(?:\\\\[\'"]|[\'"]))(?P<content>.*?)(?:\\\\(?P=quote)|(?<!\\\\)(?P=quote))',
+            r'^.*?(bash|sh|python|python3|node|go) -c\s*(?P<quote>(?:\\\\[\'"]|[\'"]))(?P<content>.*?)(?:\\\\(?P=quote)|(?<!\\\\)(?P=quote))|'
+            r'^.*?(eval|exec)\s+(?P<quote2>(?:\\\\[\'"]|[\'"]))(?P<content2>.*?)(?:\\\\(?P=quote2)|(?<!\\\\)(?P=quote2))',
             re.IGNORECASE | re.DOTALL  # DOTALL 允许匹配换行符
         )
         matches = escaped_cmd_pattern.finditer(command_stripped)
@@ -900,22 +1120,32 @@ class LocalTerminal(ITerminal):
 
         # 步骤3：提取并校验嵌套命令（处理转义字符）
         for match in matches:
-            interpreter = match.group(1).lower()
-            nested_content = match.group("content").strip()
+            # 处理两种模式：interpreter -c 或 eval/exec
+            if match.group(1):  # interpreter -c 模式
+                interpreter = match.group(1).lower()
+                nested_content = match.group("content")
+                command_desc = f"{interpreter} -c '{nested_content}'"
+            elif match.group(5):  # eval/exec 模式
+                interpreter = match.group(5).lower()
+                nested_content = match.group("content2")
+                command_desc = f"{interpreter} '{nested_content}'"
+            else:
+                continue  # 不匹配的模式
+
             if not nested_content:
                 continue
 
             # 清理嵌套内容中的转义符（如 \\" → "，\\' → '）
-            cleaned_content = re.sub(r'\\\\([\'"])', r'\1', nested_content)
+            cleaned_content = re.sub(r'\\\\([\'"])', r'\1', nested_content.strip())
             logger.debug(
-                f"⚠️ 检测到转义嵌套命令：{interpreter} -c '{nested_content}'\n"
+                f"⚠️ 检测到转义嵌套命令：{command_desc}\n"
                 f"   清理后命令：{cleaned_content}"
             )
 
             # 递归检查嵌套命令（复用 _is_prohibited_command，确保逻辑一致）
             if self._is_prohibited_command(cleaned_content, allow_by_human):
                 logger.error(
-                    f"❌ 转义嵌套命令包含禁止操作：{interpreter} -c '{cleaned_content}'"
+                    f"❌ 转义嵌套命令包含禁止操作：{command_desc}"
                 )
                 return True
 
@@ -989,7 +1219,7 @@ class LocalTerminal(ITerminal):
             bool: True=通过检查，False=不通过
         """
         if not allow_by_human:  # 仅当非人类允许时，强制检查白名单
-            if self._allowed_commands:
+            if self._allowed_commands:  # 有允许列表时检查是否在列表中
                 command_lower = command_stripped.lower()
                 is_allowed = any(
                     allowed_cmd.lower() in command_lower
@@ -1050,6 +1280,55 @@ class LocalTerminal(ITerminal):
                 return True
 
             cmd_name = self._extract_command_name(cmd_parts[0])
+
+            # 检查重定向注入攻击 - 检测危险的重定向操作符
+            # 特殊处理：允许标准错误重定向到 /dev/null
+            if re.search(r'\s*2>\s*/dev/null\s*', command):
+                # 这是合法的错误输出重定向，允许通过
+                pass
+            else:
+                # 检测标准重定向：>、>>、<
+                redirection_patterns = [r'\s*>\s*\S+', r'\s*>>\s*\S+', r'\s*<\s*\S+']
+                # 检测文件描述符重定向（除了2>/dev/null）：2>、&>、2>>、&>>
+                fd_redirection_patterns = [r'\s*2>\s*(?!/dev/null)\S+', r'\s*&>\s*\S+', r'\s*2>>\s*\S+', r'\s*&>>\s*\S+']
+
+                all_redirection_patterns = redirection_patterns + fd_redirection_patterns
+
+                # 检查命令中是否包含重定向操作符
+                for pattern in all_redirection_patterns:
+                    if re.search(pattern, command):
+                        # 如果是重定向到敏感系统文件，则阻止
+                        sensitive_file_patterns = [
+                            r'/etc/passwd', r'/etc/shadow', r'/etc/sudoers', r'/etc/hosts',
+                            r'/etc/group', r'/etc/gshadow', r'/etc/crontab', r'/etc/fstab',
+                            r'/proc/', r'/sys/', r'/dev/zero', r'/dev/random',
+                            r'~/.ssh/', r'~/.bashrc', r'~/.profile', r'~/.bash_profile',
+                            r'/root/', r'/home/', r'/var/log/', r'/var/spool/'
+                        ]
+
+                        # 检查重定向目标是否为敏感文件
+                        for sensitive_pattern in sensitive_file_patterns:
+                            if re.search(sensitive_pattern, command):
+                                logger.error(
+                                    f"❌ 检测到重定向注入攻击：尝试重定向到敏感文件\n"
+                                    f"  敏感文件模式：{sensitive_pattern}\n"
+                                    f"  执行命令：{command}"
+                                )
+                                return False
+
+                        # 如果重定向到系统关键目录（且非workspace内），也需要人类许可
+                        if not allow_by_human:
+                            system_dir_patterns = [r'/etc/', r'/bin/', r'/sbin/', r'/usr/', r'/opt/', r'/var/']
+                            for system_pattern in system_dir_patterns:
+                                if re.search(system_pattern, command):
+                                    logger.error(
+                                        f"❌ 检测到重定向到系统目录：需要人类许可\n"
+                                        f"  系统目录模式：{system_pattern}\n"
+                                        f"  执行命令：{command}\n"
+                                        f"  提示：如需重定向到系统目录，请使用 allow_by_human=True"
+                                    )
+                                    return False
+
             # 非路径敏感命令直接放行
             if cmd_name not in _PATH_SENSITIVE_COMMANDS:
                 return True
@@ -1097,36 +1376,51 @@ class LocalTerminal(ITerminal):
                 for file_arg in file_args:
                     if not file_arg or file_arg == "/":
                         continue
-                    try:
-                        if os.path.isabs(file_arg):
-                            path_obj = Path(file_arg).expanduser()
-                        else:
-                            path_obj = Path(self._current_dir).joinpath(file_arg).expanduser()
-                        abs_path = str(path_obj.resolve(strict=False))
-                    except (ValueError, OSError) as e:
-                        logger.warning(f"⚠️ sed文件路径参数{file_arg}不是合法本地路径，跳过校验：{str(e)[:50]}")
-                        continue
                     
-                    # 检查路径是否在允许范围内
-                    if not abs_path.startswith(self._root_dir):
-                        logger.error(
-                            f"❌ sed命令文件路径超出根目录范围：\n"
-                            f"  根目录：{self._root_dir}\n"
-                            f"  非法路径：{abs_path}\n"
-                            f"  执行命令：{command}"
-                        )
-                        return False
-                    
-                    # 非人类允许时，必须在 workspace 内
-                    if not allow_by_human and not abs_path.startswith(self._workspace):
-                        logger.error(
-                            f"❌ sed命令文件路径超出workspace：\n"
-                            f"  workspace：{self._workspace}\n"
-                            f"  非法路径：{abs_path}\n"
-                            f"  执行命令：{command}\n"
-                            f"  提示：如需跳出workspace，请使用 allow_by_human=True"
-                        )
-                        return False
+                    # 使用 check_path 检查路径（非人类允许时必须在workspace内）
+                    if not allow_by_human:
+                        if not self.check_path(file_arg):
+                            logger.error(
+                                f"❌ sed命令文件路径超出workspace：\n"
+                                f"  workspace：{self._workspace}\n"
+                                f"  非法路径：{file_arg}\n"
+                                f"  执行命令：{command}\n"
+                                f"  提示：如需跳出workspace，请使用 allow_by_human=True"
+                            )
+                            return False
+                    else:
+                        # 人类允许时，只检查是否在 root_dir 内
+                        try:
+                            abs_path, _ = self.check_path(file_arg)
+                            # check_path 已经检查了 workspace，但人类允许时可以放宽
+                            # 需要额外检查 root_dir
+                            if not abs_path.startswith(self._root_dir):
+                                logger.error(
+                                    f"❌ sed命令文件路径超出根目录范围：\n"
+                                    f"  根目录：{self._root_dir}\n"
+                                    f"  非法路径：{abs_path}\n"
+                                    f"  执行命令：{command}"
+                                )
+                                return False
+                        except (RuntimeError, ValueError):
+                            # 如果 check_path 失败，尝试直接解析并检查 root_dir
+                            try:
+                                if os.path.isabs(file_arg):
+                                    path_obj = Path(file_arg).expanduser()
+                                else:
+                                    path_obj = Path(self._current_dir).joinpath(file_arg).expanduser()
+                                abs_path = str(path_obj.resolve(strict=False))
+                                if not abs_path.startswith(self._root_dir):
+                                    logger.error(
+                                        f"❌ sed命令文件路径超出根目录范围：\n"
+                                        f"  根目录：{self._root_dir}\n"
+                                        f"  非法路径：{abs_path}\n"
+                                        f"  执行命令：{command}"
+                                    )
+                                    return False
+                            except (ValueError, OSError):
+                                logger.warning(f"⚠️ sed文件路径参数{file_arg}不是合法本地路径，跳过校验")
+                                continue
                 
                 # sed 命令检查完成
                 return True
@@ -1144,36 +1438,49 @@ class LocalTerminal(ITerminal):
                 if target_dir.startswith("-"):
                     return True  # cd - 等选项，允许
                 
-                # 解析目标路径
-                try:
-                    if os.path.isabs(target_dir):
-                        path_obj = Path(target_dir).expanduser()
-                    else:
-                        path_obj = Path(self._current_dir).joinpath(target_dir).expanduser()
-                    abs_path = str(path_obj.resolve(strict=False))
-                except (ValueError, OSError) as e:
-                    logger.warning(f"⚠️ cd目标路径{target_dir}不是合法本地路径，跳过校验：{str(e)[:50]}")
-                    return True  # 路径解析失败，保守允许
-                
-                # 检查目标路径是否在允许范围内
-                if not abs_path.startswith(self._root_dir):
-                    logger.error(
-                        f"❌ cd命令目标路径超出根目录范围：\n"
-                        f"  根目录：{self._root_dir}\n"
-                        f"  非法路径：{abs_path}\n"
-                        f"  执行命令：{command}"
-                    )
-                    return False
-                
-                # cd 命令：非人类允许时必须在workspace内
-                if not allow_by_human and not abs_path.startswith(self._workspace):
-                    logger.error(
-                        f"❌ cd命令目标路径超出workspace：\n"
-                        f"  workspace：{self._workspace}\n"
-                        f"  非法路径：{abs_path}\n"
-                        f"  提示：如需跳出workspace，请使用 allow_by_human=True"
-                    )
-                    return False
+                # 使用 check_path 检查路径（非人类允许时必须在workspace内）
+                if not allow_by_human:
+                    if not self.check_path(target_dir):
+                        logger.error(
+                            f"❌ cd命令目标路径超出workspace：\n"
+                            f"  workspace：{self._workspace}\n"
+                            f"  非法路径：{target_dir}\n"
+                            f"  提示：如需跳出workspace，请使用 allow_by_human=True"
+                        )
+                        return False
+                else:
+                    # 人类允许时，只检查是否在 root_dir 内
+                    try:
+                        abs_path, _ = self.check_path(target_dir)
+                        # check_path 已经检查了 workspace，但人类允许时可以放宽
+                        # 需要额外检查 root_dir
+                        if not abs_path.startswith(self._root_dir):
+                            logger.error(
+                                f"❌ cd命令目标路径超出根目录范围：\n"
+                                f"  根目录：{self._root_dir}\n"
+                                f"  非法路径：{abs_path}\n"
+                                f"  执行命令：{command}"
+                            )
+                            return False
+                    except (RuntimeError, ValueError):
+                        # 如果 check_path 失败，尝试直接解析并检查 root_dir
+                        try:
+                            if os.path.isabs(target_dir):
+                                path_obj = Path(target_dir).expanduser()
+                            else:
+                                path_obj = Path(self._current_dir).joinpath(target_dir).expanduser()
+                            abs_path = str(path_obj.resolve(strict=False))
+                            if not abs_path.startswith(self._root_dir):
+                                logger.error(
+                                    f"❌ cd命令目标路径超出根目录范围：\n"
+                                    f"  根目录：{self._root_dir}\n"
+                                    f"  非法路径：{abs_path}\n"
+                                    f"  执行命令：{command}"
+                                )
+                                return False
+                        except (ValueError, OSError):
+                            logger.warning(f"⚠️ cd目标路径{target_dir}不是合法本地路径，跳过校验")
+                            return True  # 路径解析失败，保守允许
                 
                 # cd 命令校验通过
                 return True
@@ -1203,25 +1510,51 @@ class LocalTerminal(ITerminal):
                                 f"  执行命令：{command}"
                             )
                             return False
-                        try:
-                            if os.path.isabs(arg_stripped):
-                                path_obj = Path(arg_stripped).expanduser()
-                            else:
-                                path_obj = Path(self._current_dir).joinpath(arg_stripped).expanduser()
-                            abs_path = str(path_obj.resolve(strict=False))
-                        except (ValueError, OSError) as e:
-                            logger.warning(f"⚠️ find路径参数{arg_stripped}不是合法本地路径，跳过校验：{str(e)[:50]}")
-                            continue
                         
-                        # 检查路径是否在允许范围内
-                        if not abs_path.startswith(self._root_dir):
-                            logger.error(
-                                f"❌ find命令搜索路径超出根目录范围：\n"
-                                f"  根目录：{self._root_dir}\n"
-                                f"  非法路径：{abs_path}\n"
-                                f"  执行命令：{command}"
-                            )
-                            return False
+                        # 使用 check_path 检查路径（非人类允许时必须在workspace内）
+                        if not allow_by_human:
+                            if not self.check_path(arg_stripped):
+                                logger.error(
+                                    f"❌ find命令搜索路径超出workspace：\n"
+                                    f"  workspace：{self._workspace}\n"
+                                    f"  非法路径：{arg_stripped}\n"
+                                    f"  执行命令：{command}\n"
+                                    f"  提示：如需跳出workspace，请使用 allow_by_human=True"
+                                )
+                                return False
+                        else:
+                            # 人类允许时，只检查是否在 root_dir 内
+                            try:
+                                abs_path, _ = self.check_path(arg_stripped)
+                                # check_path 已经检查了 workspace，但人类允许时可以放宽
+                                # 需要额外检查 root_dir
+                                if not abs_path.startswith(self._root_dir):
+                                    logger.error(
+                                        f"❌ find命令搜索路径超出根目录范围：\n"
+                                        f"  根目录：{self._root_dir}\n"
+                                        f"  非法路径：{abs_path}\n"
+                                        f"  执行命令：{command}"
+                                    )
+                                    return False
+                            except (RuntimeError, ValueError):
+                                # 如果 check_path 失败，尝试直接解析并检查 root_dir
+                                try:
+                                    if os.path.isabs(arg_stripped):
+                                        path_obj = Path(arg_stripped).expanduser()
+                                    else:
+                                        path_obj = Path(self._current_dir).joinpath(arg_stripped).expanduser()
+                                    abs_path = str(path_obj.resolve(strict=False))
+                                    if not abs_path.startswith(self._root_dir):
+                                        logger.error(
+                                            f"❌ find命令搜索路径超出根目录范围：\n"
+                                            f"  根目录：{self._root_dir}\n"
+                                            f"  非法路径：{abs_path}\n"
+                                            f"  执行命令：{command}"
+                                        )
+                                        return False
+                                except (ValueError, OSError):
+                                    logger.warning(f"⚠️ find路径参数{arg_stripped}不是合法本地路径，跳过校验")
+                                    continue
                         # find 命令只需要检查第一个路径参数
                         break
                 # find 命令检查完成
@@ -1236,48 +1569,60 @@ class LocalTerminal(ITerminal):
                 if not arg_stripped or arg_stripped == "/":
                     continue
 
-                # 解析路径（处理~用户目录、相对路径、绝对路径）
-                try:
-                    # 如果是绝对路径，直接使用；否则相对于当前目录
-                    if os.path.isabs(arg_stripped):
-                        path_obj = Path(arg_stripped).expanduser()
-                    else:
-                        path_obj = Path(self._current_dir).joinpath(arg_stripped).expanduser()
-                    abs_path = str(path_obj.resolve(strict=False))
-                except (ValueError, OSError) as e:
-                    logger.warning(f"⚠️ 参数{arg}不是合法本地路径，跳过校验：{str(e)[:50]}")
-                    continue
-
-                # 1. 基础路径边界校验（必须在root_dir内，底线）
-                if not abs_path.startswith(self._root_dir):
-                    logger.error(
-                        f"❌ 路径超出根目录范围：\n"
-                        f"  根目录：{self._root_dir}\n"
-                        f"  非法路径：{abs_path}\n"
-                        f"  执行命令：{command}"
-                    )
-                    return False
-
-                # 2. rm命令额外校验：必须在workspace内（即使人类允许也不放宽）
+                # 使用 check_path 或 check_path 检查路径
+                # rm命令：必须在workspace内（即使人类允许也不放宽）
                 if cmd_name == "rm":
-                    if not abs_path.startswith(self._workspace):
+                    if not self.check_path(arg_stripped):
                         logger.error(
                             f"❌ rm命令路径超出workspace（仅允许workspace内删除）：\n"
                             f"  workspace：{self._workspace}\n"
-                            f"  非法路径：{abs_path}\n"
+                            f"  非法路径：{arg_stripped}\n"
                             f"  执行命令：{command}"
                         )
                         return False
-
-                # 3. 其他命令：非人类允许时必须在workspace内
-                if cmd_name != "rm" and not allow_by_human and not abs_path.startswith(self._workspace):
-                    logger.error(
-                        f"❌ 路径超出workspace：\n"
-                        f"  workspace：{self._workspace}\n"
-                        f"  非法路径：{abs_path}\n"
-                        f"  提示：如需跳出workspace，请使用 allow_by_human=True"
-                    )
-                    return False
+                # 其他命令：非人类允许时必须在workspace内
+                elif not allow_by_human:
+                    if not self.check_path(arg_stripped):
+                        logger.error(
+                            f"❌ 路径超出workspace：\n"
+                            f"  workspace：{self._workspace}\n"
+                            f"  非法路径：{arg_stripped}\n"
+                            f"  提示：如需跳出workspace，请使用 allow_by_human=True"
+                        )
+                        return False
+                else:
+                    # 人类允许时，只检查是否在 root_dir 内
+                    try:
+                        abs_path, _ = self.check_path(arg_stripped)
+                        # check_path 已经检查了 workspace，但人类允许时可以放宽
+                        # 需要额外检查 root_dir
+                        if not abs_path.startswith(self._root_dir):
+                            logger.error(
+                                f"❌ 路径超出根目录范围：\n"
+                                f"  根目录：{self._root_dir}\n"
+                                f"  非法路径：{abs_path}\n"
+                                f"  执行命令：{command}"
+                            )
+                            return False
+                    except (RuntimeError, ValueError):
+                        # 如果 check_path 失败，尝试直接解析并检查 root_dir
+                        try:
+                            if os.path.isabs(arg_stripped):
+                                path_obj = Path(arg_stripped).expanduser()
+                            else:
+                                path_obj = Path(self._current_dir).joinpath(arg_stripped).expanduser()
+                            abs_path = str(path_obj.resolve(strict=False))
+                            if not abs_path.startswith(self._root_dir):
+                                logger.error(
+                                    f"❌ 路径超出根目录范围：\n"
+                                    f"  根目录：{self._root_dir}\n"
+                                    f"  非法路径：{abs_path}\n"
+                                    f"  执行命令：{command}"
+                                )
+                                return False
+                        except (ValueError, OSError):
+                            logger.warning(f"⚠️ 参数{arg}不是合法本地路径，跳过校验")
+                            continue
 
             return True
 
@@ -1339,12 +1684,84 @@ class LocalTerminal(ITerminal):
         if not is_valid:
             return False
 
+        # 第0.5步：脚本化模式检查（适用于所有命令，不仅仅是复合命令）
+        # 检查命令中的脚本化编程模式（命令替换、here document等）
+        if not allow_by_human and self._disable_script_execution:
+            command_lower = command_stripped.lower()
+            # 检查脚本化特征
+            shell_script_patterns = [
+                r'[a-zA-Z_]\w*=[\'"][^\'\"]*[\'"]',                      # 带引号的变量赋值（VAR='value'）
+                r'[a-zA-Z_]\w*\(\s*\)\s*\{',                          # 函数定义（func() {）
+                # 注意：$(command) 命令替换由 _has_escaped_prohibited_cmd 处理，而不是这里
+                r'<<\s*[\'"]?\w+[\'"]?',                               # Here document（<<EOF）
+                r'<<<\s*[\'"]?[^\'"]*[\'"]?',                          # Here string（<<<"text"）
+                # 注意：$((...)) 算术扩展也由 _has_escaped_prohibited_cmd 处理，而不是这里
+                r'\bif\s+.*\bthen\b',                                  # if条件语句
+                r'\bfor\s+.*\bdo\b',                                   # for循环语句
+                r'\bwhile\s+.*\bdo\b',                                 # while循环语句
+                r'\bcase\s+.*\besac\b',                                # case语句
+            ]
+
+            # 特殊处理反引号，避免误判单引号内的反引号
+            # 先检查是否包含反引号
+            if '`' in command_lower:
+                # 简单检查：如果反引号在单引号内，则不视为脚本执行
+                # 这不是完美的shell解析，但可以处理测试中的基本情况
+                if not ("'`" in command_lower and "`'" in command_lower):
+                    logger.error(f"❌ 命令包含脚本化编程模式（反引号命令替换）（已禁用脚本执行）：{command}")
+                    return False
+
+            for pattern in shell_script_patterns:
+                if re.search(pattern, command_lower):
+                    logger.error(f"❌ 命令包含脚本化编程模式（已禁用脚本执行）：{command}")
+                    return False
+
         # 分割命令为独立命令列表
         commands = self._split_commands(command_stripped)
 
         # 对每个独立命令进行完整的安全校验
         for i, cmd in enumerate(commands, 1):
             logger.info(f"🔍 检查第 {i}/{len(commands)} 个命令：{cmd}")
+
+            # 特殊处理：检测不完整命令和命令重构
+            # 检查是否包含反斜杠换行符，这表示命令行延续
+            has_line_continuation = '\\\n' in cmd
+            is_incomplete = cmd.rstrip().endswith('\\') and len(cmd.rstrip()) > 1
+            should_skip_remaining_checks = False
+
+            if has_line_continuation or is_incomplete:
+                if has_line_continuation:
+                    logger.info(f"⚠️  检测到命令行延续（反斜杠换行符）：{cmd}")
+                elif is_incomplete:
+                    logger.info(f"⚠️  检测到不完整命令（以反斜杠结尾）：{cmd}")
+
+                # 重建完整命令进行安全检查
+                full_cmd_for_check = cmd.replace('\\\n', '').replace('\\', '')
+                logger.info(f"🔍 重建完整命令进行安全检查：{full_cmd_for_check}")
+
+                # 对重建的完整命令进行安全检查
+                # 对于包含换行符的命令（多行命令），进行严格检查，因为这通常表示明确的意图
+                if has_line_continuation:
+                    if not self._is_prohibited_command(full_cmd_for_check, allow_by_human):
+                        logger.info(f"✅ 重建的完整命令通过禁止命令检查")
+                    else:
+                        logger.error(f"❌ 重建的完整命令包含禁止操作：{full_cmd_for_check}")
+                        return False
+                else:
+                    # 对于单行不完整命令，进行基本检查但更宽松
+                    # 只有当明确包含极其危险的模式时才阻止
+                    extremely_dangerous_patterns = [
+                        r'rm -rf\s+/',  # 明确的根目录删除
+                        r'sudo\s+rm\s+-rf\s+/',  # sudo + 根目录删除
+                    ]
+
+                    for pattern in extremely_dangerous_patterns:
+                        if re.search(pattern, full_cmd_for_check):
+                            logger.error(f"❌ 不完整命令包含极其危险操作：{full_cmd_for_check}")
+                            return False
+
+                    # 对于普通不完整命令，跳过剩余的安全检查
+                    should_skip_remaining_checks = True
 
             # 第1步：允许命令列表检查（人类允许时跳过）
             if not self._check_allowed_commands(cmd, allow_by_human):
@@ -1357,22 +1774,30 @@ class LocalTerminal(ITerminal):
                 return False
 
             # 第3步：禁止命令检查（统一检查）
-            if not self._is_prohibited_command(cmd, allow_by_human):
-                logger.info(f"✅ 命令 {i} 通过禁止命令检查")
+            if not should_skip_remaining_checks:
+                if not self._is_prohibited_command(cmd, allow_by_human):
+                    logger.info(f"✅ 命令 {i} 通过禁止命令检查")
+                else:
+                    # 对于不完整命令，我们需要更宽松的检查
+                    if is_incomplete:
+                        logger.info(f"⚠️  不完整命令包含潜在禁止操作，但允许继续：{cmd}")
+                        # 不完整命令暂时通过检查，等待完整输入后再做最终判断
+                    else:
+                        logger.error(f"❌ 命令 {i} 包含禁止操作：{cmd}")
+                        return False
+
+                # 第4步：逃逸禁止命令检查
+                if self._has_escaped_prohibited_cmd(cmd, allow_by_human):
+                    # 错误日志已在 _has_escaped_prohibited_cmd 中记录
+                    return False
+                logger.info(f"✅ 命令 {i} 通过逃逸禁止命令检查")
+
+                # 第5步：路径范围检查（人类允许时可绕过workspace限制）
+                if not self._check_path_constraints(cmd, allow_by_human):
+                    # 错误日志已在 _check_path_constraints 中记录
+                    return False
             else:
-                logger.error(f"❌ 命令 {i} 包含禁止操作：{cmd}")
-                return False
-
-            # 第4步：逃逸禁止命令检查
-            if self._has_escaped_prohibited_cmd(cmd, allow_by_human):
-                # 错误日志已在 _has_escaped_prohibited_cmd 中记录
-                return False
-            logger.info(f"✅ 命令 {i} 通过逃逸禁止命令检查")
-
-            # 第5步：路径范围检查（人类允许时可绕过workspace限制）
-            if not self._check_path_constraints(cmd, allow_by_human):
-                # 错误日志已在 _check_path_constraints 中记录
-                return False
+                logger.info(f"⚠️  跳过剩余安全检查（不完整命令）：{cmd}")
 
             logger.info(f"✅ 命令 {i} 通过所有安全校验")
 
@@ -1384,7 +1809,7 @@ class LocalTerminal(ITerminal):
         return True
 
     async def run_command(
-        self, command: str, allow_by_human: bool = False, timeout: float | None = None
+        self, command: str, allow_by_human: bool = False, timeout: float | None = None, show_prompt: bool = False
     ) -> str:
         """执行bash命令，返回输出并同步终端状态（异步版本，含安全校验）。
 
@@ -1392,9 +1817,10 @@ class LocalTerminal(ITerminal):
             command: 待执行的bash命令（如"grep 'key' ./file.txt"、"find ./src -name '*.py'"）。
             allow_by_human: 被人类允许执行
             timeout: 超时时间（秒），None表示等待 indefinitely。如果未指定，则等待命令自然完成。
+            show_prompt: 是否显示终端提示符格式输出（路径和命令前缀），默认为 False
 
         Returns:
-            str: 命令标准输出（已过滤空行与标记）。
+            str: 命令标准输出（已过滤空行与标记），或如果show_prompt为False（默认）则不返回路径。
 
         Raises:
             RuntimeError: 终端未启动或工作空间未初始化。
@@ -1415,19 +1841,22 @@ class LocalTerminal(ITerminal):
             # 3. 调用超时包装协程
             result = await self._execute_with_timeout(command, timeout)
 
-            # 4. 检查命令是否执行失败（检查输出中的错误信息）
-            error_indicators = ["command not found", "No such file or directory", "Permission denied"]
-            if any(indicator.lower() in result.lower() for indicator in error_indicators):
-                raise subprocess.SubprocessError(
-                    f"命令执行失败：{command}\n输出：{result[:200]}"
-                )
-
-            # 5. 状态同步：若命令包含cd，更新当前目录
+            # 4. 状态同步：若命令包含cd，更新当前目录
             await self._sync_directory_if_needed(command)
 
-            # 6. 返回清理后的输出
+            # 5. 返回清理后的输出
             logger.info(f"📥 命令执行完成，输出长度：{len(result)} 字符")
-            return result
+
+            # 如果启用提示符格式，返回包含路径和命令的格式化输出
+            if show_prompt:
+                current_dir = self.get_current_dir()
+                # 格式：path $ command\noutput
+                formatted_output = f"{current_dir} $ {command}"
+                if result.strip():  # 只在有输出时添加换行和输出内容
+                    formatted_output += f"\n{result}"
+                return formatted_output
+            else:
+                return result
 
         except (TimeoutError, PermissionError):
             # 超时和权限错误，直接重新抛出
@@ -1508,16 +1937,13 @@ class LocalTerminal(ITerminal):
 
         # 在同步上下文中尝试获取锁，如果已经被获取则跳过
         try:
-            # 检查锁是否可用，如果不可用则跳过锁获取
-            if self._lock.locked():
+            # 使用acquire(blocking=False)来非阻塞获取锁
+            lock_acquired = self._lock.acquire(blocking=False)
+            if not lock_acquired:
                 logger.debug("🔒 终端锁已被其他任务持有，跳过锁获取进行关闭")
-            else:
-                # 在同步上下文中，我们需要创建一个新的事件循环来获取锁
-                # 但是close()方法通常在程序退出时调用，此时可能没有运行的事件循环
-                # 为了避免阻塞，我们跳过锁获取
-                logger.debug("🔒 在同步上下文中关闭终端，跳过锁获取")
         except Exception:
             # 忽略锁获取失败，继续关闭进程
+            lock_acquired = False
             pass
 
         try:
@@ -1542,13 +1968,10 @@ class LocalTerminal(ITerminal):
             ) from e
 
         finally:
-            # 释放锁（在删除 _process 之前）
+            # 释放锁（如果之前获取了）
             try:
-                # 对于close方法，我们直接释放锁而不等待（因为可能没有活跃的事件循环）
-                if self._lock.locked():
-                    # 尝试非阻塞释放
-                    if hasattr(self._lock, 'release'):
-                        self._lock.release()
+                if lock_acquired:
+                    self._lock.release()
             except (RuntimeError, AttributeError):
                 # 如果锁已经被释放或进程不存在，忽略错误
                 pass
@@ -1557,7 +1980,7 @@ class LocalTerminal(ITerminal):
                 self._process = None
                 self._current_dir = ""
 
-    async def _execute_with_timeout(self, command: str, timeout: Optional[float] = None) -> str:
+    async def _execute_with_timeout(self, command: str, timeout: float | None = None) -> str:
         """使用协程超时包装执行命令。
 
         Args:

@@ -16,7 +16,7 @@ from tasking.core.state_machine.workflow.interface import IWorkflow
 from tasking.core.agent.react import ReActStage, ReActEvent
 from tasking.llm.interface import ILLM
 from tasking.llm.const import Provider
-from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IQueue
+from tasking.model import CompletionConfig, Message, Role, ToolCallRequest, IAsyncQueue
 from tasking.model import TextBlock, ImageBlock, VideoBlock
 from tasking.model.setting import LLMConfig
 
@@ -303,7 +303,7 @@ class MockWorkflow(IWorkflow):
         [
             "IWorkflow[ReActStage, ReActEvent, StateT, EventT]",
             dict[str, Any],
-            IQueue[Message],
+            IAsyncQueue[Message],
             ITask[MockState, MockEvent],
         ],
         Awaitable[ReActEvent]
@@ -349,42 +349,49 @@ class MockWorkflow(IWorkflow):
         return self._completion_config
 
 
-class MockQueue(IQueue[Message]):
+class MockQueue(IAsyncQueue[Message]):
     """模拟消息队列实现"""
 
     def __init__(self) -> None:
         self.messages: list[Message] = []
+        self._is_closed: bool = False
 
-    async def put(self, item: Message) -> None:
+    async def put(self, item: Message, block: bool = True, timeout: float | None = None) -> None:
         self.messages.append(item)
 
-    async def get(self) -> Message:
+    async def put_nowait(self, item: Message) -> None:
+        self.messages.append(item)
+
+    async def get(self, block: bool = True, timeout: float | None = None) -> Message:
         if self.messages:
             return self.messages.pop(0)
         raise asyncio.QueueEmpty()
 
-    def size(self) -> int:
-        return len(self.messages)
+    async def get_nowait(self) -> Message:
+        if self.messages:
+            return self.messages.pop(0)
+        raise asyncio.QueueEmpty()
 
     def is_empty(self) -> bool:
         return len(self.messages) == 0
 
+    def is_full(self) -> bool:
+        return False  # MockQueue is never full
+
+    def qsize(self) -> int:
+        return len(self.messages)
+
+    def is_closed(self) -> bool:
+        return self._is_closed
+
+    async def close(self) -> None:
+        self._is_closed = True
+
+    def size(self) -> int:
+        return len(self.messages)
+
     def clear(self) -> None:
         self.messages.clear()
-
-    def get_nowait(self) -> Message:
-        """立即获取消息，如果没有消息则抛出异常"""
-        if self.messages:
-            return self.messages.pop(0)
-        raise asyncio.QueueEmpty()
-
-    def put_nowait(self, item: Message) -> None:
-        """立即放入消息"""
-        self.messages.append(item)
-
-    def is_full(self) -> bool:
-        """检查队列是否已满"""
-        return False  # Mock队列永不 满
 
 
 class AgentTestMixin:

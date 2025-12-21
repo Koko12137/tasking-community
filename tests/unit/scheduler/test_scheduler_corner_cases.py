@@ -8,7 +8,7 @@ from queue import Queue
 from tasking.core.scheduler.base import BaseScheduler
 from tasking.core.state_machine.task.const import TaskEvent, TaskState
 from tasking.model import Message
-from tasking.model.queue import IQueue
+from tasking.model.queue import IAsyncQueue
 
 
 class ProblematicTask:
@@ -34,6 +34,10 @@ class ProblematicTask:
     def get_id(self) -> str:
         """Get task ID."""
         return self._task_id
+
+    def get_title(self) -> str:
+        """Get task title."""
+        return self._title
 
     def get_valid_states(self) -> set[TaskState]:
         """Get valid states."""

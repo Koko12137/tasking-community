@@ -1,4 +1,5 @@
-from typing import Any, Callable, Awaitable, cast
+from typing import Any, cast
+from collections.abc import Callable, Awaitable
 
 from fastmcp.tools import Tool as FastMcpTool
 from mcp.types import CallToolResult, TextContent
@@ -8,7 +9,7 @@ from ..base import BaseStateMachine
 from ..task.interface import ITask, StateT, EventT
 from .interface import IWorkflow
 from .const import WorkflowStageT, WorkflowEventT
-from ....model import Message, IQueue, CompletionConfig
+from ....model import Message, IAsyncQueue, CompletionConfig
 
 
 class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], BaseStateMachine[WorkflowStageT, WorkflowEventT]):
@@ -20,7 +21,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         [
             "IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]",  # workflow
             dict[str, Any],  # context
-            IQueue[Message],  # queue
+            IAsyncQueue[Message],  # queue
             ITask[StateT, EventT],  # task
         ],
         Awaitable[WorkflowEventT]
@@ -49,7 +50,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
                 [
                     IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT],
                     dict[str, Any],
-                    IQueue[Message],
+                    IAsyncQueue[Message],
                     ITask[StateT, EventT]
                 ],
                 Awaitable[WorkflowEventT]
@@ -150,7 +151,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         [
             "IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]",  # workflow
             dict[str, Any],  # context
-            IQueue[Message],  # queue
+            IAsyncQueue[Message],  # queue
             ITask[StateT, EventT],  # task
         ],
         Awaitable[WorkflowEventT]
@@ -170,7 +171,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         [
             "IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]",  # workflow
             dict[str, Any],  # context
-            IQueue[Message],  # queue
+            IAsyncQueue[Message],  # queue
             ITask[StateT, EventT],  # task
         ],
         Awaitable[WorkflowEventT]

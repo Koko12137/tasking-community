@@ -21,8 +21,6 @@ setup(
     # 资源文件（prompt 目录）- 按子路径组织
     data_files=[
         ("share/tasking/prompt/tool", [
-            "prompt/tool/text_edit.md",
-            "prompt/tool/filesystem.md",
             "prompt/tool/human_interfere.md",
         ]),
         ("share/tasking/prompt/memory", [

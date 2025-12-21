@@ -315,9 +315,7 @@ Tasking 系统中，对话上下文可能包含多个来自同一角色的连续
 ```python
 def _convert_single_message_with_blocks(self, message: Message) -> dict:
     """转换单个消息，处理多块内容"""
-    if not message.content:
-        raise ValueError("Message content cannot be empty")
-
+  
     message_dict = {
         'role': message.role.value,
         'content': []
@@ -747,9 +745,7 @@ class OpenAiLLM(ILLM):
 
     def _convert_single_message(self, message: Message) -> dict[str, Any]:
         """转换单个消息，处理块标签"""
-        if not message.content:
-            raise ValueError("Message content cannot be empty")
-
+    
         msg_dict = {'role': message.role.value}
         text_content = self._extract_text(message.content)
 

@@ -1,22 +1,22 @@
 """
-File system tool implementation with terminal integration.
-
-This module provides a comprehensive file system tool that operates within a terminal's
-workspace constraints, supporting both text editing and binary file operations.
+文件系统工具实现
 """
 
 import os
 import shlex
 import base64
 import mimetypes
-import subprocess
+import time
 from abc import ABC, abstractmethod
-from typing import List, Literal, Optional
-from dataclasses import dataclass
 
+import aiofiles
+from asyncer import asyncify
 from loguru import logger
 
 from .terminal import ITerminal
+from ..model.filesystem import (
+    SearchParams, SearchResult, MatchInfo
+)
 
 
 class IFileSystem(ABC):
@@ -29,115 +29,174 @@ class IFileSystem(ABC):
         Returns:
             ITerminal: 关联的终端实例。
         """
-        raise NotImplementedError("get_terminal 方法未实现")
 
     @abstractmethod
-    async def run_command(self, command: str) -> str:
-        """在终端中执行命令。
+    def file_exists(self, file_path: str) -> bool:
+        """检查文件是否存在。
 
         Args:
-            command: 要执行的命令字符串。
+            file_path: 目标文件路径。
 
         Returns:
-            命令的标准输出结果。
+            bool: 文件存在返回True，否则返回False。
         """
-        raise NotImplementedError("run_command 方法未实现")
 
     @abstractmethod
-    def open_file(self, file_path: str) -> str:
+    async def open_file(self, file_path: str, file_type: str, encoding: str) -> str | bytes:
         """打开并读取文件内容。
 
         Args:
             file_path: 目标文件路径。
+            file_type: 文件类型（如"txt/md"、"image/png"等）。
+            encoding: 文件编码格式（如"utf-8"、"base64"等）。
 
         Returns:
-            文件的base64编码内容。
+            文件的base64编码/文本内容。
         """
-        raise NotImplementedError("open_file 方法未实现")
 
     @abstractmethod
-    async def edit(self, file_path: str, operations: List['EditOperation']) -> None:
-        """行级修改文本文件。
+    async def new_file(self, file_path: str, file_type: str, content: str | bytes, encoding: str) -> str:
+        """创建新文件。
 
         Args:
             file_path: 目标文件路径。
-            operations: 编辑操作列表。
+            file_type: 文件类型（如"txt/md"、"image/png"等）。
+            content: 文件内容.
+            encoding: 文件编码格式（如"utf-8"、"base64"等）。
+        
+        Returns:
+            str: 创建结果消息。
+        """
+    
+    @abstractmethod
+    async def save_file(self, file_path: str, content: str | bytes, encoding: str, replace: bool = False) -> str:
+        """保存文件。
+
+        Args:
+            file_path: 目标文件路径。
+            content: 文件内容。
+            encoding: 文件编码格式。
+            replace: 是否覆盖文件。
+
+        Raises:
+            RuntimeError: 文件路径超出workspace范围。
+            FileExistsError: 文件已存在，且replace为False。
+        """
+
+    @abstractmethod
+    async def delete_file(self, file_path: str) -> str:
+        """删除文件。
+
+        Args:
+            file_path: 目标文件路径。
+
+        Returns:
+            str: 删除结果消息。
+        """
+
+    @abstractmethod
+    async def search(self, search_params: SearchParams) -> SearchResult:
+        """综合搜索接口：文件名过滤 + 内容搜索 + 行级上下文
+
+        Args:
+            search_params: 搜索参数对象
+
+        Returns:
+            SearchResult: 结构化搜索结果对象
 
         Raises:
             NotImplementedError: 未实现该方法。
+            RuntimeError: 搜索执行失败。
+            PermissionError: 命令未通过安全校验。
         """
-        raise NotImplementedError("edit 方法未实现")
+
+    @abstractmethod
+    async def search_text(self, search_params: SearchParams) -> str:
+        """综合搜索接口：返回文本格式结果（类似grep输出）
+
+        Args:
+            search_params: 搜索参数对象
+
+        Returns:
+            str: grep风格的文本格式搜索结果
+
+        Raises:
+            NotImplementedError: 未实现该方法。
+            RuntimeError: 搜索执行失败。
+            PermissionError: 命令未通过安全校验。
+        """
 
 
-@dataclass
-class EditOperation:
-    """文本编辑操作数据模型，表示单个行级编辑操作。
+class LocalFileSystem(IFileSystem):
+    """文件系统工具类
 
-    核心字段：
-    - line: 操作行号（从1开始，insert支持0=开头、-1=末尾）
-    - op: 操作类型（'insert'/'modify'/'delete'）
-    - content: 操作内容（delete操作可为空）
-    """
-    line: int
-    op: Literal['insert', 'modify', 'delete']
-    content: str
-
-
-class FileSystem(IFileSystem):
-    """基于 ITerminal 的文件系统工具类，支持文本编辑和二进制文件操作。
-
-    核心特性：
-    1. 依赖注入 ITerminal，复用其 workspace 安全约束和长期会话；
-    2. edit 接口动态传入文件路径，支持编辑多个文本文件；
-    3. open_file 接口支持读取任意文件并返回 base64 编码内容；
-    4. run_command 接口提供终端命令执行能力；
-    5. get_terminal 接口返回关联的终端实例；
-    6. 支持删除/修改/新增行操作，自动处理行号偏移和特殊字符转义；
-    7. 兼容 Linux/macOS 的 sed 语法差异；
-    8. 检查终端的 allow_commands 与自身 allow_commands 的一致性；
-    9. 检查终端是否禁用脚本执行（确保安全性）。
+    核心功能：
+    1. 实现IFileSystem接口
+    2. 提供文件操作功能（open_file、new_file、search等）
+    3. 增强路径处理和安全性检查
+    4. 不依赖文本编辑功能
     """
 
     def __init__(
         self,
         terminal_instance: ITerminal,
-        allow_commands: Optional[List[str]] = None
+        allow_commands: list[str] | None = None,
     ) -> None:
-        """初始化文件系统工具，仅绑定终端实例（不固定文件路径）。
+        """初始化文件系统工具
 
         Args:
-            terminal_instance: ITerminal 实现类实例（如 LocalTerminal），提供命令执行能力，
-                             所有文件操作均受其 workspace 安全约束限制。
-            allow_commands: 允许的命令列表（白名单），必须与终端的 allow_commands 一致，
-                           用于确保命令执行权限一致。默认为 None（继承终端设置）。
-
-        Raises:
-            RuntimeError: 若终端未启动、工作空间未初始化或命令列表不一致。
-            ValueError: 若 allow_commands 与终端配置不一致。
+            terminal_instance: ITerminal 实现类实例
+            allow_commands: 允许的命令列表（白名单）
         """
         self._terminal = terminal_instance
         self._workspace = terminal_instance.get_workspace()
 
-        # 校验终端状态（确保已启动且有工作空间）
-        if not self._workspace:
-            raise RuntimeError("终端工作空间未初始化，无法创建文本编辑器")
-        # Check if terminal has a process (for implementation classes that have it)
-        if hasattr(terminal_instance, "_process"):
-            process = getattr(terminal_instance, "_process", None)
-            if process and process.poll() is not None:
-                raise RuntimeError("终端未运行或已退出，无法创建文本编辑器")
+        # 校验终端状态
+        self._validate_terminal_state(terminal_instance)
 
-        # 检查脚本执行状态（确保安全性）
-        if not terminal_instance.is_script_execution_disabled():
+        # 校验命令权限一致性
+        self._validate_command_permissions(terminal_instance, allow_commands)
+
+    def _validate_terminal_state(self, terminal: ITerminal) -> None:
+        """验证终端状态。
+
+        Args:
+            terminal: 要验证的终端实例
+
+        Raises:
+            RuntimeError: 终端状态异常，包括：
+                - 工作空间未初始化
+                - 终端进程未运行或已退出
+        """
+        if not self._workspace:
+            raise RuntimeError("终端工作空间未初始化，无法创建文件系统工具")
+
+        # 检查进程状态（如果终端有_process属性）
+        if hasattr(terminal, "_process"):
+            process = getattr(terminal, "_process", None)
+            if process and process.poll() is not None:
+                raise RuntimeError("终端未运行或已退出，无法创建文件系统工具")
+
+        # 检查脚本执行状态
+        if not terminal.is_script_execution_disabled():
             logger.warning("⚠️ 警告：终端未禁用脚本执行，存在安全风险")
 
-        # 校验 allow_commands 与终端的一致性
-        terminal_allowed = terminal_instance.get_allowed_commands()
+    def _validate_command_permissions(
+        self, terminal: ITerminal, allow_commands: list[str] | None
+    ) -> None:
+        """验证命令权限一致性。
+
+        Args:
+            terminal: 终端实例
+            allow_commands: 允许的命令列表，None表示使用终端的默认配置
+
+        Raises:
+            ValueError: allow_commands与终端配置不一致
+        """
+        terminal_allowed = terminal.get_allowed_commands()
         if allow_commands is None:
-            # 未指定时继承终端设置
             self._allow_commands = terminal_allowed
         else:
-            # 指定了则必须与终端一致
             if set(allow_commands) != set(terminal_allowed):
                 raise ValueError(
                     f"allow_commands 与终端配置不一致：\n"
@@ -146,314 +205,554 @@ class FileSystem(IFileSystem):
                 )
             self._allow_commands = allow_commands
 
-        # 记录 sed 兼容参数（Linux: -i; macOS: -i ''）
-        self._sed_inplace_arg = self._get_sed_compatible_arg()
-
-    def _get_sed_compatible_arg(self) -> List[str]:
-        """获取 sed 原地修改的兼容参数（处理 Linux/macOS 差异）。"""
-        try:
-            # 简单的平台检测：Linux 使用 -i，macOS 使用 -i ''
-            import platform
-            system = platform.system()
-            if system == "Darwin":
-                return ["-i", ""]
-            else:  # Linux and others
-                return ["-i"]
-        except Exception:
-            # 默认使用 macOS 兼容模式（更安全）
-            return ["-i", ""]
-
-    def _escape_sed_content(self, content: str) -> str:
-        r"""转义 sed 命令中的特殊字符（避免语法错误）。
-
-        需转义的字符：
-        - /：sed 分隔符，替换为 \\/
-        - &：sed 引用匹配内容，替换为 \\&
-        - \\：转义字符本身，替换为 \\\\
-        - 换行符：替换为 \\n（保持多行内容）
-        """
-        if not content:
-            return ""
-        escaped = content.replace("\\", "\\\\")  # 转义 \\
-        escaped = escaped.replace("/", "\\/")    # 转义 \/
-        escaped = escaped.replace("&", "\\&")    # 转义 \&
-        escaped = escaped.replace("\n", "\\n")   # 转义换行符
-        return escaped
-
-    def _resolve_file_path(self, file_path: str) -> tuple[str, str]:
-        """解析文件路径：返回（绝对路径，相对于 workspace 的相对路径）。
-
-        路径规则：
-        - 绝对路径：必须在终端 workspace 内（由 Terminal 安全校验保障）；
-        - 相对路径：基于终端当前目录解析，最终仍需在 workspace 内。
-
-        Returns:
-            tuple[str, str]: (文件绝对路径, 相对于 workspace 的相对路径)
-        """
-        # 解析绝对路径
-        if os.path.isabs(file_path):
-            file_abs = file_path
-        else:
-            file_abs = os.path.abspath(os.path.join(self._terminal.get_current_dir(), file_path))
-
-        # 校验路径是否在 workspace 内（依赖 Terminal 的安全约束）
-        if not file_abs.startswith(self._workspace):
-            raise RuntimeError(f"文件路径超出 workspace 范围：{file_abs}（workspace：{self._workspace}）")
-
-        # 计算相对于 workspace 的相对路径（用于终端内执行命令，避免路径过长）
-        file_rel = os.path.relpath(file_abs, self._workspace)
-        return file_abs, file_rel
-
-    async def _get_file_line_count(self, file_rel: str) -> int:
-        """获取文件的总行数（用于校验行号有效性）。
+    def file_exists(self, file_path: str) -> bool:
+        """检查文件是否存在。
 
         Args:
-            file_rel: 相对于 workspace 的文件路径（终端内可直接访问）
+            file_path: 要检查的文件路径（可以是相对路径或绝对路径）
 
         Returns:
-            int: 文件总行数（文件不存在返回 0）
+            bool: 文件存在返回True，否则返回False
+
+        Note:
+            - 如果文件路径超出workspace范围，视为不存在
+            - 如果路径解析失败，也视为不存在
         """
         try:
-            # 执行 wc -l 命令统计行数（过滤空行影响）
-            # 使用 ls 检查文件是否存在（在允许列表中），如果文件不存在，wc 会失败，捕获异常
-            cmd = f"wc -l < {shlex.quote(file_rel)} 2>/dev/null"
-            try:
-                output = await self._terminal.run_command(cmd)
-                output_clean = output.strip().split('\n')[-1].strip()
-                return int(output_clean) if output_clean.isdigit() else 0
-            except (OSError, RuntimeError, subprocess.SubprocessError):
-                # 文件不存在或命令失败，返回 0
-                return 0
-        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
-            # 命令执行失败（如文件不存在），返回 0
-            return 0
-
-    async def _ensure_parent_dir(self, file_abs: str) -> None:
-        """确保文件的父目录存在（避免新建文件时目录不存在）。"""
-        parent_dir = os.path.dirname(file_abs)
-        if not os.path.exists(parent_dir):
-            # 通过终端创建父目录（确保在 workspace 内）
-            parent_dir_rel = os.path.relpath(parent_dir, self._workspace)
-            cmd = f"mkdir -p {shlex.quote(parent_dir_rel)}"
-            await self._terminal.run_command(cmd)
-            logger.info(f"📁 自动创建父目录：{parent_dir}")
-
-    async def edit(
-        self,
-        file_path: str,
-        operations: List[EditOperation]
-    ) -> None:
-        """行级修改文本：支持删除（delete）、修改（modify）、新增（insert），动态指定文件路径。
-
-        核心规则：
-        1. operations 列表包含所有编辑操作，每个操作使用 EditOperation 表示；
-        2. 行号从 1 开始，insert 操作支持 0（文件开头）、-1（文件末尾）；
-        3. 默认允许新建文件（不支持新建则无法使用 insert 操作）；
-        4. 自动按行号降序执行操作，避免删除/插入导致的行号偏移；
-        5. 自动转义特殊字符，避免 sed 命令语法错误。
-
-        Args:
-            file_path: 目标文件路径（支持相对路径/绝对路径，必须在 workspace 内）；
-            operations: 编辑操作列表（每个操作包含行号、操作类型和内容）。
-
-        Raises:
-            ValueError: 若操作类型非法、行号格式错误；
-            FileNotFoundError: 若 modify/delete 操作时文件不存在；
-            RuntimeError: 若文件路径超出 workspace 范围、行号超出文件实际行数、命令执行失败。
-        """
-        # 1. 基础参数校验
-        if not operations:
-            raise ValueError("operations 列表不能为空")
-
-        allowed_ops = {"delete", "modify", "insert"}
-        for idx, op in enumerate(operations):
-            if op.op not in allowed_ops:
-                raise ValueError(f"非法操作类型（索引 {idx}）：{op.op}，仅支持 {allowed_ops}")
-            if not isinstance(op.line, int): # pyright: ignore[reportUnnecessaryIsInstance]
-                raise ValueError(f"行号必须为整数（索引 {idx}）：{op.line}")
-            # insert 允许 0（开头）、-1（末尾），其他操作行号必须 ≥1
-            if op.op != "insert" and op.line < 1:
-                raise ValueError(f"非 insert 操作的行号必须 ≥1（索引 {idx}）：{op.line}")
-
-        # 2. 解析文件路径并校验
-        file_abs, file_rel = self._resolve_file_path(file_path)
-        file_exists = os.path.exists(file_abs)
-
-        # 3. 文件存在性校验
-        for idx, op in enumerate(operations):
-            # modify/delete 操作必须要求文件存在
-            if op.op in ("modify", "delete") and not file_exists:
-                raise FileNotFoundError(
-                    f"文件不存在，无法执行 {op.op} 操作（索引 {idx}）：{file_abs}"
-                )
-
-        # 4. 若文件不存在则创建（默认允许新建）
-        if not file_exists:
-            await self._ensure_parent_dir(file_abs)
-            # 新建空文件（避免 sed 操作空文件报错）
-            await self._terminal.run_command(f"touch {shlex.quote(file_rel)}")
-            logger.info(f"📄 自动新建文件：{file_abs}")
-            file_exists = True
-
-        # 5. 校验行号有效性（modify/delete 行号不能超出文件实际行数）
-        line_count = await self._get_file_line_count(file_rel) if file_exists else 0
-        for idx, op in enumerate(operations):
-            if op.op in ("modify", "delete"):
-                if op.line > line_count:
-                    raise RuntimeError(
-                        f"{op.op} 操作行号超出文件实际行数（索引 {idx}）："
-                        f"行号 {op.line}，文件总行数 {line_count}，文件：{file_abs}"
-                    )
-
-        # 6. 预处理操作：按行号降序排序（避免行号偏移）
-        processed_ops: list[tuple[float, EditOperation]] = []
-        for op in operations:
-            if op.op == "insert":
-                # insert 操作的 -1 转为极大值（最后执行），0 转为 1（最先执行）
-                sort_key = float("inf") if op.line == -1 else 1 if op.line == 0 else op.line
-            else:
-                sort_key = op.line
-            # 负号实现降序排序（sort 升序 = 原始行号降序）
-            processed_ops.append((-sort_key, op))
-        processed_ops.sort()
-
-        # 7. 生成并执行每个操作的 sed 命令
-        for _, op in processed_ops:
-            escaped_content = self._escape_sed_content(op.content)
-            file_rel_quoted = shlex.quote(file_rel)  # 转义文件路径中的特殊字符
-
-            # 生成 sed 命令（基于操作类型）
-            if op.op == "delete":
-                # 删除第 N 行：sed -i '{line}d' file
-                cmd = f"sed {''.join(self._sed_inplace_arg)} '{op.line}d' {file_rel_quoted}"
-            elif op.op == "modify":
-                # 修改第 N 行：sed -i '{line}c\内容' file（c 表示 replace）
-                sed_args = ''.join(self._sed_inplace_arg)
-                cmd = f"sed {sed_args} '{op.line}c\\{escaped_content}\\' {file_rel_quoted}"
-            elif op.op == "insert":
-                if op.line == 0:
-                    # 插入到文件开头：对于空文件，使用 echo；对于非空文件，使用 sed
-                    # 检查文件是否为空（使用 wc -l）
-                    line_count = await self._get_file_line_count(file_rel)
-                    if line_count == 0:
-                        # 空文件，直接使用 echo 写入
-                        cmd = f"echo '{escaped_content}' > {file_rel_quoted}"
-                    else:
-                        # 非空文件，使用 sed 的 1i 命令
-                        sed_args = ''.join(self._sed_inplace_arg)
-                        cmd = f"sed {sed_args} '1i\\{escaped_content}\\' {file_rel_quoted}"
-                elif op.line == -1:
-                    # 插入到文件末尾：echo >> file
-                    # 对于 echo 命令，需要使用 shlex.quote 而不是 sed 转义
-                    quoted_content = shlex.quote(op.content)
-                    append_cmd = f"echo {quoted_content} >> {file_rel_quoted}"
-                    cmd = append_cmd
-                else:
-                    # 插入到第 N 行之前：sed -i '{line}i\内容' file
-                    sed_args = ''.join(self._sed_inplace_arg)
-                    if not escaped_content:
-                        # 空内容时，使用两步操作插入空行
-                        # 方法：先使用 echo 追加空行到文件末尾，然后使用 sed 移动到正确位置
-                        prev_line = op.line - 1
-                        if prev_line > 0:
-                            # 在第N-1行后插入空行
-                            # 使用 sed 'Na\' 命令，如果失败则使用临时文件方法
-                            # 先尝试 sed 'Na\'，如果失败则使用 echo + sed 组合
-                            temp_marker = f"__EMPTY_{op.line}__"
-                            # 先追加标记行
-                            await self._terminal.run_command(f"echo '{temp_marker}' >> {file_rel_quoted}", allow_by_human=True)
-                            # 使用 sed 将标记行移动到第N-1行后，然后删除标记（实际上就是插入空行）
-                            # 使用 sed 的 r 命令读取空行
-                            temp_empty = f"{file_rel_quoted}.empty"
-                            await self._terminal.run_command(f"echo '' > {temp_empty}", allow_by_human=True)
-                            # 使用 allow_by_human=True 来执行复合命令（包含多个 sed 和 rm 命令）
-                            cmd1 = f"sed {sed_args} '{prev_line}r {temp_empty}' {file_rel_quoted}"
-                            cmd2 = f"rm {temp_empty}"
-                            cmd3 = f"sed {sed_args} '/{temp_marker}/d' {file_rel_quoted}"
-                            await self._terminal.run_command(cmd1, allow_by_human=True)
-                            await self._terminal.run_command(cmd2, allow_by_human=True)
-                            await self._terminal.run_command(cmd3, allow_by_human=True)
-                            content_summary = op.content[:50] + "..." if len(op.content) > 50 else op.content
-                            logger.info(f"✅ 执行成功：{op.op} 行 {op.line} → 文件：{file_abs}，内容：{content_summary}")
-                            continue  # 跳过后续的 run_command 调用
-                        else:
-                            # 在第1行前插入空行
-                            temp_empty = f"{file_rel_quoted}.empty"
-                            await self._terminal.run_command(f"echo '' > {temp_empty}", allow_by_human=True)
-                            cmd = f"sed {sed_args} '1r {temp_empty}' {file_rel_quoted} && rm {temp_empty}"
-                    else:
-                        cmd = f"sed {sed_args} '{op.line}i\\{escaped_content}\\' {file_rel_quoted}"
-            else:
-                raise ValueError(f"未处理的操作类型：{op.op}")
-
-            # 执行命令（依赖 Terminal 的安全校验，确保在 workspace 内）
-            try:
-                await self._terminal.run_command(cmd, allow_by_human=True)
-                content_summary = op.content[:50] + "..." if len(op.content) > 50 else op.content
-                logger.info(f"✅ 执行成功：{op.op} 行 {op.line} → 文件：{file_abs}，内容：{content_summary}")
-            except Exception as e:
-                raise RuntimeError(
-                    f"执行失败：{op.op} 行 {op.line} → 文件：{file_abs}，错误：{str(e)}"
-                ) from e
-
+            file_abs, _ = self._terminal.check_path(file_path)
+            return os.path.exists(file_abs)
+        except (RuntimeError, ValueError):
+            return False
+  
     def get_terminal(self) -> ITerminal:
-        """获取关联的终端实例。
-
-        Returns:
-            ITerminal: 关联的终端实例。
-        """
+        """获取关联的终端实例"""
         return self._terminal
 
     async def run_command(self, command: str) -> str:
-        """在终端中执行命令。
-
-        Args:
-            command: 要执行的命令字符串。
-
-        Returns:
-            命令的标准输出结果。
-        """
+        """在终端中执行命令"""
         return await self._terminal.run_command(command)
 
-    def open_file(self, file_path: str) -> str:
-        """打开并读取文件内容。
-
-        Args:
-            file_path: 目标文件路径。
-
-        Returns:
-            文件的base64编码内容。
+    async def open_file(self, file_path: str, file_type: str, encoding: str) -> str | bytes:
+        """打开并读取文件内容（异步IO）
+        
+        在打开文件之前，会进行路径解析和鉴权，确保路径在工作区内。
         """
-        # 解析文件路径并校验
-        file_abs, _ = self._resolve_file_path(file_path)
+        # 路径解析和鉴权（如果路径不在工作区内，会抛出异常）
+        file_abs, _ = self._terminal.check_path(file_path)
 
         # 检查文件是否存在
         if not os.path.exists(file_abs):
             raise FileNotFoundError(f"文件不存在：{file_abs}")
 
-        # 检查文件是否在工作空间内（双重校验）
-        if not file_abs.startswith(self._workspace):
-            raise RuntimeError(f"文件路径超出 workspace 范围：{file_abs}")
+        try:
+            # 使用aiofiles进行真正的异步文件读取
+            async with aiofiles.open(file_abs, 'rb') as f:
+                file_content = await f.read()
+
+            if encoding == "base64":
+                content_encoded = base64.b64encode(file_content).decode('utf-8')
+                # 使用传入的file_type参数，或者通过mimetypes猜测
+                if file_type:
+                    mime_type = file_type
+                else:
+                    mime_type, _ = mimetypes.guess_type(file_abs)
+                file_size = len(file_content)
+
+                if mime_type:
+                    logger.info(f"📄 文件读取成功：{file_abs}，类型：{mime_type}，大小：{file_size} 字节")
+                else:
+                    logger.info(f"📄 文件读取成功：{file_abs}，大小：{file_size} 字节")
+
+                return content_encoded
+            else:
+                # 假设encoding为utf-8时返回文本内容
+                try:
+                    return file_content.decode('utf-8')
+                except UnicodeDecodeError:
+                    # 如果无法解码为utf-8，返回base64编码
+                    logger.warning(f"⚠️ 文件无法解码为utf-8，返回base64编码：{file_abs}")
+                    return base64.b64encode(file_content).decode('utf-8')
+
+        except FileNotFoundError:
+            raise
+        except (OSError, IOError) as e:
+            raise RuntimeError(
+                f"读取文件失败：{file_abs}，错误：{str(e)}"
+            ) from e
+
+    async def new_file(self, file_path: str, file_type: str, content: str | bytes, encoding: str) -> str:
+        """创建新文件
+        
+        在创建文件之前，会进行路径解析和鉴权，确保路径在工作区内。
+        """
+        # 路径解析和鉴权（如果路径不在工作区内，会抛出异常）
+        file_abs, _ = self._terminal.check_path(file_path)
+
+        # 检查文件是否已存在
+        if os.path.exists(file_abs):
+            raise FileExistsError(f"文件已存在：{file_abs}")
 
         try:
-            # 读取文件内容
-            with open(file_abs, 'rb') as f:
-                file_content = f.read()
+            # 确保目录存在
+            os.makedirs(os.path.dirname(file_abs), exist_ok=True)
 
-            # 转换为 base64 编码
-            content_encoded = base64.b64encode(file_content).decode('utf-8')
-
-            # 尝试检测文件类型
-            mime_type, _ = mimetypes.guess_type(file_abs)
-            file_size = len(file_content)
-            if mime_type:
-                logger.info(
-                    f"📄 文件读取成功：{file_abs}，类型：{mime_type}，大小：{file_size} 字节"
-                )
+            if encoding == "base64":
+                # 如果内容是字符串，先解码为bytes
+                if isinstance(content, str):
+                    file_bytes = base64.b64decode(content)
+                else:
+                    file_bytes = content
+            elif encoding == "utf-8":
+                # 明确指定utf-8编码
+                if isinstance(content, str):
+                    # 如果是字符串，编码为UTF-8字节
+                    file_bytes = content.encode('utf-8')
+                else:
+                    # 如果已经是bytes，验证是否为有效的UTF-8
+                    try:
+                        content.decode('utf-8')  # 验证是否为有效的UTF-8
+                        file_bytes = content
+                    except UnicodeDecodeError:
+                        raise ValueError(f"传入的bytes内容不是有效的UTF-8编码")
             else:
-                logger.info(f"📄 文件读取成功：{file_abs}，大小：{file_size} 字节")
+                # 其他编码方式，按字符串处理
+                if isinstance(content, str):
+                    file_bytes = content.encode('utf-8')
+                else:
+                    # 如果是bytes，假设已经正确编码
+                    file_bytes = content
 
-            return content_encoded
+            # 使用aiofiles进行异步文件写入
+            async with aiofiles.open(file_abs, 'wb') as f:
+                await f.write(file_bytes)
 
-        except (OSError, IOError) as e:
-            raise RuntimeError(f"读取文件失败：{file_abs}，错误：{str(e)}") from e
+            file_size = len(file_bytes)
+            logger.info(f"📄 文件创建成功：{file_abs}，类型：{file_type}，大小：{file_size} 字节")
+            return f"文件创建成功：{file_abs}，类型：{file_type}，大小：{file_size} 字节"
+
+        except (OSError, IOError, ValueError) as e:
+            raise RuntimeError(
+                f"创建文件失败：{file_abs}，错误：{str(e)}"
+            ) from e
+
+    async def save_file(self, file_path: str, content: str | bytes, encoding: str, replace: bool = False) -> str:
+        """保存文件（使用aiofiles异步IO）
+        
+        在保存文件之前，会进行双重安全验证：
+        1. 通过 check_path 进行路径解析和鉴权
+        2. 再次使用 check_path 确认路径在工作区内
+        
+        Args:
+            file_path: 目标文件路径
+            content: 文件内容（str 或 bytes）
+            encoding: 文件编码格式（"utf-8" 或 "base64"）
+            replace: 是否覆盖已存在的文件，默认为 False
+        
+        Returns:
+            str: 保存结果消息
+        
+        Raises:
+            RuntimeError: 文件路径超出workspace范围或保存失败
+            FileExistsError: 文件已存在，且replace为False
+        """
+        # 路径解析和鉴权（如果路径不在工作区内，会抛出异常）
+        file_abs, _ = self._terminal.check_path(file_path)
+
+        # 检查文件是否已存在
+        if os.path.exists(file_abs) and not replace:
+            raise FileExistsError(f"文件已存在：{file_abs}，如需覆盖请设置 replace=True")
+
+        try:
+            # 确保目录存在
+            os.makedirs(os.path.dirname(file_abs), exist_ok=True)
+
+            # 根据encoding处理内容
+            if encoding == "base64":
+                # 如果内容是字符串，先解码为bytes
+                if isinstance(content, str):
+                    file_bytes = base64.b64decode(content)
+                else:
+                    file_bytes = content
+            elif encoding == "utf-8":
+                # 明确指定utf-8编码
+                if isinstance(content, str):
+                    # 如果是字符串，编码为UTF-8字节
+                    file_bytes = content.encode('utf-8')
+                else:
+                    # 如果已经是bytes，验证是否为有效的UTF-8
+                    try:
+                        content.decode('utf-8')  # 验证是否为有效的UTF-8
+                        file_bytes = content
+                    except UnicodeDecodeError:
+                        raise ValueError(f"传入的bytes内容不是有效的UTF-8编码")
+            else:
+                # 其他编码方式，按字符串处理
+                if isinstance(content, str):
+                    file_bytes = content.encode('utf-8')
+                else:
+                    # 如果是bytes，假设已经正确编码
+                    file_bytes = content
+
+            # 使用aiofiles进行异步文件写入
+            async with aiofiles.open(file_abs, 'wb') as f:
+                await f.write(file_bytes)
+
+            file_size = len(file_bytes)
+            logger.info(f"📄 文件保存成功：{file_abs}，大小：{file_size} 字节")
+            return f"文件保存成功：{file_abs}，大小：{file_size} 字节"
+
+        except FileExistsError:
+            raise
+        except (OSError, IOError, ValueError) as e:
+            raise RuntimeError(
+                f"保存文件失败：{file_abs}，错误：{str(e)}"
+            ) from e
+
+    async def delete_file(self, file_path: str) -> str:
+        """删除文件（使用aiofiles异步IO）
+        
+        在删除文件之前，会进行双重安全验证：
+        1. 通过 check_path 进行路径解析和鉴权
+        2. 再次使用 check_path 确认路径在工作区内
+        
+        Args:
+            file_path: 要删除的文件路径
+        
+        Returns:
+            str: 删除结果消息
+        
+        Raises:
+            RuntimeError: 文件路径超出workspace范围或删除失败
+            FileNotFoundError: 文件不存在
+        """
+        # 路径解析和鉴权（如果路径不在工作区内，会抛出异常）
+        file_abs, _ = self._terminal.check_path(file_path)
+
+        # 检查文件是否存在
+        if not os.path.exists(file_abs):
+            raise FileNotFoundError(f"文件不存在：{file_abs}")
+
+        try:
+            # 使用aiofiles.os.remove进行异步文件删除
+            # 注意：aiofiles 不直接提供删除功能，我们使用 asyncify 包装 os.remove
+            await asyncify(os.remove)(file_abs)
+
+            logger.info(f"🗑️ 文件删除成功：{file_abs}")
+            return f"文件删除成功：{file_abs}"
+
+        except Exception as e:
+            raise RuntimeError(f"删除文件失败：{file_abs}，错误：{str(e)}") from e
+
+    async def search(self, search_params: SearchParams) -> SearchResult:
+        """综合搜索接口，返回结构化结果"""
+        start_time = time.time()
+
+        try:
+            self._validate_search_params(search_params)
+            resolved_paths = self._resolve_search_paths(search_params.search_paths)
+
+            find_cmd = self._build_find_command(search_params, resolved_paths)
+            grep_cmd = self._build_grep_command(search_params)
+
+            # 修复搜索逻辑：使用find的-exec参数正确搜索文件内容
+            if search_params.output_format.highlight_matches:
+                # 构建带高亮的grep命令
+                highlight_grep = f"{grep_cmd} --color=always"
+                final_cmd = f"{find_cmd} -exec {highlight_grep} {{}} + 2>/dev/null || true"
+            else:
+                final_cmd = f"{find_cmd} -exec {grep_cmd} {{}} + 2>/dev/null || true"
+
+            raw_output = await self._terminal.run_command(final_cmd, allow_by_human=True)
+            search_result = self._parse_grep_output(
+                raw_output, search_params, time.time() - start_time)
+
+            logger.info(
+                f"🔍 搜索完成：找到 {search_result.total_matches} 个匹配，耗时 {search_result.search_time:.2f} 秒")
+            return search_result
+
+        except Exception as e:
+            execution_time = time.time() - start_time
+            logger.error(f"❌ 搜索失败：{str(e)}")
+            return SearchResult(
+                params=search_params,
+                total_files_searched=0,
+                files_with_matches=0,
+                total_matches=0,
+                search_time=execution_time,
+                file_results=[],
+                errors=[str(e)]
+            )
+
+    async def search_text(self, search_params: SearchParams) -> str:
+        """综合搜索接口，返回文本格式结果"""
+        try:
+            self._validate_search_params(search_params)
+            resolved_paths = self._resolve_search_paths(search_params.search_paths)
+
+            find_cmd = self._build_find_command(search_params, resolved_paths)
+            grep_cmd = self._build_grep_command(search_params)
+
+            # 修复搜索逻辑：使用find的-exec参数正确搜索文件内容
+            if search_params.output_format.highlight_matches:
+                # 构建带高亮的grep命令
+                highlight_grep = f"{grep_cmd} --color=always"
+                final_cmd = f"{find_cmd} -exec {highlight_grep} {{}} + 2>/dev/null || true"
+            else:
+                final_cmd = f"{find_cmd} -exec {grep_cmd} {{}} + 2>/dev/null || true"
+
+            raw_output = await self._terminal.run_command(final_cmd, allow_by_human=True)
+            formatted_output = self._format_text_output(raw_output, search_params)
+
+            logger.info("🔍 搜索完成：返回文本格式结果")
+            return formatted_output
+
+        except Exception as e:
+            logger.error(f"❌ 搜索失败：{str(e)}")
+            return f"搜索失败：{str(e)}"
+
+    def _resolve_search_paths(self, search_paths: list[str]) -> list[tuple[str, str]]:
+        """解析搜索路径列表。
+
+        Args:
+            search_paths: 搜索路径列表（相对路径或绝对路径）
+
+        Returns:
+            list[tuple[str, str]]: 解析后的路径列表，每个元素为(绝对路径, 相对路径)的元组
+
+        Raises:
+            RuntimeError: 任何搜索路径超出workspace范围
+        """
+        resolved_paths: list[tuple[str, str]] = []
+        for search_path in search_paths:
+            file_abs, file_rel = self._terminal.check_path(search_path)
+            resolved_paths.append((file_abs, file_rel))
+        return resolved_paths
+
+    def _validate_search_params(self, params: SearchParams) -> None:
+        """参数验证。
+
+        Args:
+            params: 搜索参数对象
+
+        Raises:
+            ValueError: 参数不合法，包括：
+                - 搜索模式为空
+                - 搜索路径列表为空或包含空路径
+                - 上下文行数为负数
+                - 每文件最大匹配数不是正数
+                - 搜索深度为负数
+        """
+        if not params.content_pattern.pattern.strip():
+            raise ValueError("搜索模式不能为空")
+        if not params.search_paths:
+            raise ValueError("搜索路径列表不能为空")
+        for path in params.search_paths:
+            if not path.strip():
+                raise ValueError(f"无效的搜索路径：{path}")
+        if params.output_format.context_lines < 0:
+            raise ValueError("上下文行数不能为负数")
+        if (params.output_format.max_matches_per_file is not None and
+                params.output_format.max_matches_per_file <= 0):
+            raise ValueError("每文件最大匹配数必须为正数")
+        if (params.file_filter.max_depth is not None and
+                params.file_filter.max_depth < 0):
+            raise ValueError("搜索深度不能为负数")
+
+    def _build_find_command(
+        self, params: SearchParams, resolved_paths: list[tuple[str, str]]
+    ) -> str:
+        """构建find命令用于文件过滤。
+
+        Args:
+            params: 搜索参数对象
+            resolved_paths: 已解析的搜索路径列表
+
+        Returns:
+            str: 构建的find命令字符串
+        """
+        paths = " ".join(shlex.quote(abs_path) for abs_path, _ in resolved_paths)
+        cmd_parts = [f"find {paths}", "-type f"]
+
+        if params.file_filter.max_depth is not None:
+            cmd_parts.append(f"-maxdepth {params.file_filter.max_depth}")
+
+        if params.file_filter.name_patterns:
+            name_conditions = [
+                f"-name {shlex.quote(pattern)}" for pattern in params.file_filter.name_patterns]
+            if len(name_conditions) == 1:
+                cmd_parts.extend(name_conditions)
+            else:
+                cmd_parts.append(
+                    f"({' '.join(['-o'] * (len(name_conditions) - 1) + name_conditions)})")
+
+        if params.file_filter.extensions:
+            ext_conditions = [f"-name '*.{ext}'" for ext in params.file_filter.extensions]
+            if len(ext_conditions) == 1:
+                cmd_parts.extend(ext_conditions)
+            else:
+                cmd_parts.append(
+                    f"({' '.join(['-o'] * (len(ext_conditions) - 1) + ext_conditions)})")
+
+        if params.file_filter.exclude_patterns:
+            for exclude_pattern in params.file_filter.exclude_patterns:
+                cmd_parts.append(f"-not -name {shlex.quote(exclude_pattern)}")
+
+        cmd_parts.append('-not -path "*/.*"')
+        return " ".join(cmd_parts)
+
+    def _build_grep_command(self, params: SearchParams) -> str:
+        """构建grep命令用于内容搜索。
+
+        Args:
+            params: 搜索参数对象
+
+        Returns:
+            str: 构建的grep命令字符串
+        """
+        cmd_parts = ["grep"]
+
+        if params.content_pattern.is_regex:
+            cmd_parts.append("-E")
+        else:
+            cmd_parts.append("-F")
+
+        if not params.content_pattern.case_sensitive:
+            cmd_parts.append("-i")
+
+        if params.content_pattern.invert_match:
+            cmd_parts.append("-v")
+
+        if params.output_format.context_lines > 0:
+            cmd_parts.append(f"-C {params.output_format.context_lines}")
+
+        if params.output_format.show_line_numbers:
+            cmd_parts.append("-n")
+
+        if params.output_format.show_filename:
+            cmd_parts.append("-H")
+
+        if params.output_format.max_matches_per_file:
+            cmd_parts.append(f"-m {params.output_format.max_matches_per_file}")
+
+        escaped_pattern = shlex.quote(params.content_pattern.pattern)
+        cmd_parts.append(escaped_pattern)
+
+        return " ".join(cmd_parts)
+
+    def _parse_grep_output(
+        self, output: str, params: SearchParams, execution_time: float
+    ) -> SearchResult:
+        """解析grep输出为结构化结果。
+
+        Args:
+            output: grep命令的原始输出
+            params: 搜索参数对象
+            execution_time: 搜索执行时间（秒）
+
+        Returns:
+            SearchResult: 结构化的搜索结果对象
+
+        Note:
+            - 解析包含行号的grep输出格式
+            - 自动计算匹配位置（开始列、结束列）
+            - 处理大小写敏感的匹配位置计算
+        """
+        if not output.strip():
+            return SearchResult(
+                params=params,
+                total_files_searched=0,
+                files_with_matches=0,
+                total_matches=0,
+                search_time=execution_time,
+                file_results=[],
+                errors=[]
+            )
+
+        matches: list[MatchInfo] = []
+        files_with_matches: set[str] = set()
+        lines = output.strip().split('\n')
+
+        for line in lines:
+            if not line.strip():
+                continue
+
+            if ':' in line:
+                parts = line.split(':', 2)
+                if len(parts) >= 3 and parts[1].isdigit():
+                    file_path, line_number, content = parts[0], int(parts[1]), parts[2]
+
+                    if not os.path.isabs(file_path):
+                        file_abs, _ = self._terminal.check_path(file_path)
+                        file_path = file_abs
+
+                    pattern = params.content_pattern.pattern
+                    if params.content_pattern.case_sensitive:
+                        start_col = content.find(pattern) + 1
+                        end_col = start_col + len(pattern) - 1
+                    else:
+                        pattern_lower = pattern.lower()
+                        content_lower = content.lower()
+                        start_col = content_lower.find(pattern_lower) + 1
+                        end_col = start_col + len(pattern) - 1
+
+                    match_info = MatchInfo(
+                        file_path=file_path,
+                        line_number=line_number,
+                        matched_content=content,
+                        context_before=[],
+                        context_after=[],
+                        start_column=max(1, start_col),
+                        end_column=max(1, end_col)
+                    )
+
+                    matches.append(match_info)
+                    files_with_matches.add(file_path)
+
+        return SearchResult(
+            params=params,
+            total_files_searched=0,
+            files_with_matches=len(files_with_matches),
+            total_matches=len(matches),
+            search_time=execution_time,
+            file_results=matches,
+            errors=[]
+        )
+
+    def _format_text_output(self, raw_output: str, params: SearchParams) -> str:
+        """格式化文本输出。
+
+        Args:
+            raw_output: grep命令的原始输出
+            params: 搜索参数对象
+
+        Returns:
+            str: 格式化后的文本输出，包含搜索参数信息和结果
+
+        Note:
+            - 如果没有匹配内容，返回"未找到匹配内容"
+            - 包含搜索模式、路径、过滤器等参数信息
+            - 使用分隔线区分参数信息和搜索结果
+        """
+        if not raw_output.strip():
+            return "未找到匹配内容"
+
+        header_lines = [
+            f"搜索模式: {params.content_pattern.pattern}",
+            f"搜索路径: {', '.join(params.search_paths)}"
+        ]
+
+        if params.file_filter.name_patterns:
+            header_lines.append(f"文件名过滤: {', '.join(params.file_filter.name_patterns)}")
+
+        if params.file_filter.extensions:
+            header_lines.append(f"文件扩展名: {', '.join(params.file_filter.extensions)}")
+
+        if params.output_format.context_lines > 0:
+            header_lines.append(f"上下文行数: {params.output_format.context_lines}")
+
+        header = "\n".join(header_lines)
+        separator = "-" * 60
+
+        return f"{header}\n{separator}\n{raw_output}"
+
+

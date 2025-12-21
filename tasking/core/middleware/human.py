@@ -1,11 +1,11 @@
 from abc import abstractmethod, ABC
 from typing import Any, cast
 
-from ...model import Message, Role, IQueue, AsyncQueue, TextBlock, MultimodalContent
+from ...model import Message, Role, IAsyncQueue, AsyncQueue, TextBlock, MultimodalContent
 from ...core.state_machine.task import ITask, TaskState, TaskEvent
 from ...utils.io import read_markdown
-from ...utils.string.extract import extract_by_label
-from ...utils.content import extract_text_from_message
+from ...utils.string.xml import extract_by_label
+from ...utils.string.message import extract_text_from_message
 
 
 class HumanInterfere(Exception):
@@ -46,7 +46,7 @@ class IHumanClient(ABC):
     async def ask_human(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         message: Message,
     ) -> Message:
         """发送消息给人类进行交互
@@ -76,7 +76,7 @@ class IHumanInterfereHooks(ABC):
     """人类介入钩子接口定义"""
 
     @abstractmethod
-    async def on_pre_human_interfere(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[TaskState, TaskEvent]) -> None:
+    async def on_pre_human_interfere(self, context: dict[str, Any], queue: IAsyncQueue[Message], task: ITask[TaskState, TaskEvent]) -> None:
         """当 HumanClient 注入到 Agent 时调用的钩子方法，用于支持 Agent 请求人类介入
 
         参数:
@@ -87,7 +87,7 @@ class IHumanInterfereHooks(ABC):
         pass
     
     @abstractmethod
-    async def on_post_human_interfere(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[TaskState, TaskEvent]) -> None:
+    async def on_post_human_interfere(self, context: dict[str, Any], queue: IAsyncQueue[Message], task: ITask[TaskState, TaskEvent]) -> None:
         """当 HumanClient 注入到 Agent 并且 Agent 认为需要人类介入处理后调用的钩子方法
 
         参数:
@@ -124,7 +124,7 @@ class BaseHumanClient(IHumanClient):
     async def ask_human(
         self,
         context: dict[str, Any],
-        queue: IQueue[Message],
+        queue: IAsyncQueue[Message],
         message: Message,
     ) -> Message:
         """发送消息给人类进行交互
@@ -177,7 +177,7 @@ class BaseHumanInterfereHooks(IHumanInterfereHooks):
         self._human_client = human_client
         self._approve_resp = approve_resp or set()
 
-    async def on_pre_human_interfere(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[TaskState, TaskEvent]) -> None:
+    async def on_pre_human_interfere(self, context: dict[str, Any], queue: IAsyncQueue[Message], task: ITask[TaskState, TaskEvent]) -> None:
         """当 HumanClient 注入到 Agent 时调用的钩子方法，用于支持 Agent 请求人类介入
 
         参数:
@@ -198,7 +198,7 @@ class BaseHumanInterfereHooks(IHumanInterfereHooks):
         )
         task.append_context(message)
 
-    async def on_post_human_interfere(self, context: dict[str, Any], queue: IQueue[Message], task: ITask[TaskState, TaskEvent]) -> None:
+    async def on_post_human_interfere(self, context: dict[str, Any], queue: IAsyncQueue[Message], task: ITask[TaskState, TaskEvent]) -> None:
         """当 HumanClient 注入到 Agent 并且人类介入处理后调用的钩子方法
 
         参数:

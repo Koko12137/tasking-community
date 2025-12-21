@@ -1,6 +1,7 @@
 import re
 import json
-from typing import Any, Awaitable, Callable, override, cast
+from typing import Any, override, cast
+from collections.abc import Callable, Awaitable
 
 from .interface import ITask, ITreeTaskNode, ITaskView
 from .base import (

@@ -150,13 +150,13 @@ class ISqlDatabase(IDatabase[MemoryT]):
             where: WHERE过滤条件列表，每个条件为完整的SQL表达式，如 ["status = 'active'", "created_at > '2024-01-01'"]
             order_by: 排序字段，支持ASC/DESC，如 "id DESC"
             limit: 返回的最大条目数量
-            **kwargs: 其他过滤条件（兼容性保留）
+            **kwargs: 其他SQL参数（具体支持取决于实现类，如果不支持应抛出错误）
 
         Returns:
             相关记忆条目列表
         """
         pass
-    
+
 
 class ISqlDBManager(IDBResourceManager[ClientT]):
     """SQL数据库管理器接口，定义了SQL数据库的管理操作"""

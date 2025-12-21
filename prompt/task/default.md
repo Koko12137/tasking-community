@@ -23,7 +23,7 @@
 
 ```xml
 <query>
-什么是人工智能？ <!-- IGNORE: 这仅仅是一个输入示范 -->
+xxxx <!-- IGNORE: 这仅仅是一个输入示范 -->
 </query>
 ```
 
@@ -31,14 +31,14 @@
 
 ```xml
 <output>
-<definition> <!-- IGNORE: 这仅仅是一个输出标签示范 -->
-人工智能（Artificial Intelligence，简称 AI）是xxxxx <!-- IGNORE: 这仅仅是一个标签内容示范 -->
+<first_label> <!-- IGNORE: 这仅仅是一个输出标签示范 -->
+xxxxx <!-- IGNORE: 这仅仅是一个标签内容示范 -->
 </definition>
-<references> <!-- IGNORE: 这仅仅是一个输出标签示范 -->
-<link>https://example.com/article1</link> <!-- IGNORE: 这仅仅是一个标签内容示范 -->
-<link>https://example.com/article2</link> <!-- IGNORE: 这仅仅是一个标签内容示范 -->
-</references>
-</output>
+<second_label> <!-- IGNORE: 这仅仅是一个输出标签示范 -->
+<sub_label_1>xxxx</sub_label_2> <!-- IGNORE: 这仅仅是一个标签内容示范 -->
+<sub_label_1>xxxx</sub_label_2> <!-- IGNORE: 这仅仅是一个标签内容示范 -->
+</second_label>
+</first_label>
 ```
 
 ## 注意事项

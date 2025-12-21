@@ -2,6 +2,7 @@
 from .human import IHumanClient, BaseHumanClient, HumanInterfere, BaseHumanInterfereHooks
 from .step_counter import IStepCounter, BaseStepCounter, MaxStepCounter, TokenStepCounter, MaxStepsError
 from .memory import EpisodeMemoryHooks, StateMemoryHooks, register_memory_fold_hooks
+from .stream import stream_output_hook
 
 
 __all__ = [
@@ -11,4 +12,6 @@ __all__ = [
     "IStepCounter", "BaseStepCounter", "MaxStepCounter", "TokenStepCounter", "MaxStepsError",
     # Memory hooks
     "EpisodeMemoryHooks", "StateMemoryHooks", "register_memory_fold_hooks",
+    # Stream output hook
+    "stream_output_hook",
 ]

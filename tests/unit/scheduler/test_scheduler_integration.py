@@ -10,7 +10,7 @@ from tasking.core.scheduler.base import BaseScheduler
 from tasking.core.state_machine.task.const import TaskEvent, TaskState
 from tasking.core.state_machine.task import ITask
 from tasking.model import Message
-from tasking.model.queue import IQueue
+from tasking.model.queue import IAsyncQueue
 
 
 class SimpleTask:
@@ -24,11 +24,16 @@ class SimpleTask:
         self._error_info = None
         self._event_log = []
         self._max_revisit_count = 0
+        self._title = f"SimpleTask_{task_id}"  # Add title property
         # Default valid states
         self._valid_states = valid_states or {TaskState.CREATED, TaskState.RUNNING, TaskState.FINISHED, TaskState.CANCELED}
 
     def get_id(self) -> str:
         return self._task_id
+
+    def get_title(self) -> str:
+        """Get task title."""
+        return self._title
 
     def get_valid_states(self) -> set[TaskState]:
         """Get valid states."""
