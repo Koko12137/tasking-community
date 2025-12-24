@@ -160,8 +160,8 @@ class LocalTextEditor(ITextEditor):
             # 插入到末尾
             new_lines.append(content)
         else:
-            # 插入到指定行之前
-            if 1 <= op.line <= len(new_lines):
+            # 插入到指定行之前，允许插入到当前最后一行之后（行号=len(new_lines)+1）
+            if 1 <= op.line <= len(new_lines) + 1:
                 new_lines.insert(op.line - 1, content)
             else:
                 raise ValueError(f"插入行号超出范围：{op.line}，文件共有 {len(new_lines)} 行")
@@ -253,21 +253,39 @@ class LocalTextEditor(ITextEditor):
         """验证操作列表的合法性"""
         allowed_ops = {"insert", "delete", "modify"}
 
-        for idx, op in enumerate(operations):
-            # 验证操作类型
-            if op.op not in allowed_ops:
-                raise ValueError(f"非法操作类型（索引 {idx}）：{op.op}，仅支持 {allowed_ops}")
+        if not file_exists:
+            # 文件不存在时的验证：模拟插入过程，允许连续插入多行
+            current_line_count = 0
+            for idx, op in enumerate(operations):
+                # 验证操作类型
+                if op.op not in allowed_ops:
+                    raise ValueError(f"非法操作类型（索引 {idx}）：{op.op}，仅支持 {allowed_ops}")
 
-            # 文件不存在时的验证
-            if not file_exists:
                 # 空文件/不存在文件的 delete -1 操作默认忽略，不报错
                 if op.op == "delete" and op.line == -1:
                     continue  # 跳过验证，后续执行时会自动忽略
+
+                # 文件不存在时，只有insert操作被允许
                 if op.op != "insert":
                     raise ValueError(f"文件不存在时只允许insert操作（索引 {idx}）：{op.op}")
-                # 新建文件允许的行号：0（开头），1（第一行），-1（末尾）
-                if op.line not in [0, 1, -1]:
-                    raise ValueError(f"新建文件只支持行号 0、1 或 -1（索引 {idx}）：行号 {op.line}")
+
+                # 新建文件允许的行号：0、1、-1，或不超过当前模拟行数+1（允许连续插入）
+                valid_line = False
+                if op.line in [0, 1, -1]:
+                    valid_line = True
+                elif 1 <= op.line <= current_line_count + 1:
+                    valid_line = True
+
+                if not valid_line:
+                    raise ValueError(f"新建文件只支持行号 0、1、-1 或不超过当前行数+1（索引 {idx}）：行号 {op.line}，当前模拟行数：{current_line_count}")
+
+                # 更新模拟行数（插入一行后行数+1）
+                current_line_count += 1
+        else:
+            # 文件存在时的验证：只检查操作类型
+            for idx, op in enumerate(operations):
+                if op.op not in allowed_ops:
+                    raise ValueError(f"非法操作类型（索引 {idx}）：{op.op}，仅支持 {allowed_ops}")
 
 
     async def view(self, file_path: str) -> str:

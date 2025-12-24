@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from .message import Message, MultimodalContent, TextBlock, ImageBlock, VideoBlock
+from .message import Message, TextBlock
 
 
 class MemoryProtocol(Protocol):
@@ -15,8 +15,8 @@ class MemoryProtocol(Protocol):
         ...
 
     @property
-    def content(self) -> list[MultimodalContent]:
-        """记忆内容，可以是多模态内容"""
+    def content(self) -> list[TextBlock]:
+        """记忆内容，仅支持文本格式"""
         ...
 
     def to_dict(self) -> dict[str, Any]:
@@ -75,7 +75,7 @@ class EpisodeMemory(MemoryItem):
     raw_data: list[Message] = Field(..., description="Data representing the memory of the episode")
     """表示该对话记忆的消息数据列表"""
 
-    content: list[MultimodalContent] = Field(..., description="Content of the episode memory")
+    content: list[TextBlock] = Field(..., description="Content of the episode memory")
     """对话记忆的提取事件内容"""
 
     timestamp: str = Field(..., description="Timestamp when the memory was created or last updated")
@@ -98,16 +98,12 @@ class EpisodeMemory(MemoryItem):
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EpisodeMemory":
         """从字典表示形式创建 EpisodeMemory 实例"""
-        content: list[MultimodalContent] = []
+        content: list[TextBlock] = []
         for item in data["content"]:
             if item['type'] == 'text':
                 content.append(TextBlock.model_validate(item))
-            elif item['type'] == 'image_url':
-                content.append(ImageBlock.model_validate(item))
-            elif item['type'] == 'video_url':
-                content.append(VideoBlock.model_validate(item))
             else:
-                raise ValueError(f"Unknown content type: {item['type']}")
+                raise ValueError(f"Only text content is supported, got: {item['type']}")
 
         return cls(
             id=data["id"],
@@ -132,7 +128,7 @@ class ProcedureMemory(MemoryItem):
     raw_data: list[Message] = Field(..., description="Data representing the memory of the procedure")
     """表示该对话的消息数据列表"""
 
-    content: list[MultimodalContent] = Field(..., description="Serialized representation of the procedure memory")
+    content: list[TextBlock] = Field(..., description="Serialized representation of the procedure memory")
     """程序记忆的提取到的命令要求"""
 
     timestamp: str = Field(..., description="Timestamp when the memory was created or last updated")
@@ -154,16 +150,12 @@ class ProcedureMemory(MemoryItem):
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProcedureMemory":
         """从字典表示形式创建 ProcedureMemory 实例"""
-        content: list[MultimodalContent] = []
+        content: list[TextBlock] = []
         for item in data["content"]:
             if item['type'] == 'text':
                 content.append(TextBlock.model_validate(item))
-            elif item['type'] == 'image_url':
-                content.append(ImageBlock.model_validate(item))
-            elif item['type'] == 'video_url':
-                content.append(VideoBlock.model_validate(item))
             else:
-                raise ValueError(f"Unknown content type: {item['type']}")
+                raise ValueError(f"Only text content is supported, got: {item['type']}")
         
         return cls(
             id=data["id"],
@@ -188,7 +180,7 @@ class SemanticMemory(MemoryItem):
     raw_data: list[Message] = Field(..., description="Data representing the memory of the semantic information")
     """表示该语义记忆的消息数据列表"""
 
-    content: list[MultimodalContent] = Field(..., description="Serialized representation of the semantic memory")
+    content: list[TextBlock] = Field(..., description="Serialized representation of the semantic memory")
     """语义记忆的提取到的结构化知识内容/事实/概念等"""
 
     timestamp: str = Field(..., description="Timestamp when the memory was created or last updated")
@@ -210,16 +202,12 @@ class SemanticMemory(MemoryItem):
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SemanticMemory":
         """从字典表示形式创建 SemanticMemory 实例"""
-        content: list[MultimodalContent] = []
+        content: list[TextBlock] = []
         for item in data["content"]:
             if item['type'] == 'text':
                 content.append(TextBlock.model_validate(item))
-            elif item['type'] == 'image_url':
-                content.append(ImageBlock.model_validate(item))
-            elif item['type'] == 'video_url':
-                content.append(VideoBlock.model_validate(item))
             else:
-                raise ValueError(f"Unknown content type: {item['type']}")
+                raise ValueError(f"Only text content is supported, got: {item['type']}")
 
         return cls(
             id=data["id"],
@@ -244,7 +232,7 @@ class StateMemory(MemoryItem):
     raw_data: list[Message] = Field(..., description="Data representing the memory of the state information")
     """表示该状态记忆的消息数据列表"""
 
-    content: list[MultimodalContent] = Field(..., description="Serialized representation of the state memory")
+    content: list[TextBlock] = Field(..., description="Serialized representation of the state memory")
     """状态记忆的提取到的用户状态/环境状态等信息"""
 
     timestamp: str = Field(..., description="Timestamp when the memory was created or last updated")
@@ -265,16 +253,12 @@ class StateMemory(MemoryItem):
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StateMemory":
         """从字典表示形式创建 StateMemory 实例"""
-        content: list[MultimodalContent] = []
+        content: list[TextBlock] = []
         for item in data["content"]:
             if item['type'] == 'text':
                 content.append(TextBlock.model_validate(item))
-            elif item['type'] == 'image_url':
-                content.append(ImageBlock.model_validate(item))
-            elif item['type'] == 'video_url':
-                content.append(VideoBlock.model_validate(item))
             else:
-                raise ValueError(f"Unknown content type: {item['type']}")
+                raise ValueError(f"Only text content is supported, got: {item['type']}")
 
         return cls(
             id=data["id"],

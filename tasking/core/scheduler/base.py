@@ -295,7 +295,6 @@ class BaseScheduler(IScheduler[StateT, EventT]):
 
         # 查找可用的状态任务
         while current_state not in self._end_states:
-            current_state: StateT
             logger.info(f"\n[调度器] 调度任务：{task.get_id()[:8]} - {task.get_title()} | 当前状态：{current_state.name}")
             # 执行当前状态任务
             await self.on_state(context, queue, task, current_state)
@@ -417,11 +416,11 @@ class BaseScheduler(IScheduler[StateT, EventT]):
             else:
                 # 可达模式：用visit_count，允许重访但不超限，且需可达终态
                 visit_count: dict[StateT, int] = defaultdict(int)
-                queue: list[StateT] = [start_state]
+                reachable_queue: list[StateT] = [start_state]
                 visit_count[start_state] = 1  # 初始状态访问次数=1
 
-                while queue:
-                    current_state = queue.pop(0)
+                while reachable_queue:
+                    current_state = reachable_queue.pop(0)
 
                     # 先判断是否到达终态
                     if current_state in self._end_states:
@@ -440,7 +439,7 @@ class BaseScheduler(IScheduler[StateT, EventT]):
                         next_count = visit_count[next_state] + 1
                         if next_count <= self._max_revisit_count:  # 未超限才加入
                             visit_count[next_state] = next_count
-                            queue.append(next_state)
+                            reachable_queue.append(next_state)
                             logger.debug(
                                 f"[可达校验] 「{current_state.name}」→「{next_state.name}」，累计次数：{next_count}"
                             )

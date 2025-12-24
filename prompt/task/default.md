@@ -10,10 +10,14 @@
 
 ```xml
 <state name="STATE 1">
-    <description>DESCRIPTION 1</description>
+<description>
+DESCRIPTION 1
+</description>
 </state>
 <state name="STATE 2">
-    <description>DESCRIPTION 2</description>
+<description>
+DESCRIPTION 2
+</description>
 </state>
 ```
 
@@ -29,16 +33,18 @@ xxxx <!-- IGNORE: 这仅仅是一个输入示范 -->
 
 ## 任务输出规范
 
+在任务的每一轮执行中，需要按照规范输出以下标签内容：
+
 ```xml
 <output>
 <first_label> <!-- IGNORE: 这仅仅是一个输出标签示范 -->
 xxxxx <!-- IGNORE: 这仅仅是一个标签内容示范 -->
-</definition>
+</first_label>
 <second_label> <!-- IGNORE: 这仅仅是一个输出标签示范 -->
 <sub_label_1>xxxx</sub_label_2> <!-- IGNORE: 这仅仅是一个标签内容示范 -->
 <sub_label_1>xxxx</sub_label_2> <!-- IGNORE: 这仅仅是一个标签内容示范 -->
 </second_label>
-</first_label>
+</output>
 ```
 
 ## 注意事项

@@ -23,7 +23,7 @@ from ..state_machine.task import (
 )
 from ...llm import ILLM, build_llm
 from ...model import (
-    TextBlock, ToolCallRequest, Message, Role, IAsyncQueue, CompletionConfig, get_settings
+    TextBlock, ToolCallRequest, Message, Role, StopReason, IAsyncQueue, CompletionConfig, get_settings
 )
 from ...model.message import TextBlock
 from ...utils.io import read_markdown
@@ -76,7 +76,7 @@ def create_sub_tasks(json_str: str, kwargs: dict[str, Any] | None = None) -> str
         sub_task.set_input([TextBlock(text=sub_task_data["任务输入"])])
         sub_task.set_title(title)
         # 将子任务添加到父任务
-        task.add_sub_task(sub_task)
+        task.add_sub_task(sub_task, True)
 
     titles = [f"Sub-Task: {title}" for title in sub_tasks_data.keys()]
     res = f"成功创建 {len(titles)} 个子任务:\n" + "\n".join(titles)
@@ -200,6 +200,15 @@ def get_orch_actions(
         if current_state != OrchestrateStage.THINKING:
             raise RuntimeError(f"当前工作流状态错误，期望：{OrchestrateStage.THINKING}，实际：{current_state}")
 
+        # 获取任务的推理配置信息
+        completion_config = workflow.get_completion_config()
+        # 更新工具服务器工具信息
+        service_tools = await agent.get_tools_with_tags(
+            task.get_tags(),
+        )
+        # 更新推理配置中的工具列表
+        completion_config.update(stop_words=["</orchestration>"])
+
         # 获取当前工作流的提示词
         prompt = workflow.get_prompt()
         # 创建新的任务消息
@@ -219,8 +228,8 @@ def get_orch_actions(
                 context=context,
                 queue=queue,
                 task=task,
-                valid_tools={},
-                completion_config=workflow.get_completion_config(),
+                valid_tools=service_tools,
+                completion_config=completion_config,
             )
         except HumanInterfere as e:
             # 将人类介入信息反馈到任务
@@ -233,16 +242,102 @@ def get_orch_actions(
             task.get_context().append_context_data(result)
             # 返回 THINK 事件重新思考
             return OrchestrateEvent.THINK
-        
+
         # 从消息中提取 orchestration 输出
         orchestration = extract_by_label(
             extract_text_from_message(message),
             "orchestration", "orchestrate"
         )
+        orch_require = extract_by_label(
+            extract_text_from_message(message),
+            "orch_require", "orchestration_require",
+        )
+        # 检查是否需要编排任务
+        if orch_require and orch_require.lower() == "false":
+            if message.stop_reason == StopReason.TOOL_CALL:
+                error_info = "警告：收到不需要编排任务的指令，但推理结果中包含工具调用，进入严重错误。"
+                # 构造对应的工具调用结果
+                for tool_call in message.tool_calls:
+                    result = Message(
+                        role=Role.TOOL,
+                        tool_call_id=tool_call.id,
+                        is_error=True,
+                        content=[TextBlock(text=error_info)]
+                    )
+                    # 更新到任务上下文
+                    task.get_context().append_context_data(result)
+                logger.warning(error_info)
+                # 任务进入错误状态
+                task.set_error(error_info)
+                
+            if orchestration.strip() != "":
+                error_info = "警告：收到不需要编排任务的指令，但编排结果不为空，进入严重错误。"
+                # 记录警告信息到任务上下文
+                warning_msg = Message(
+                    role=Role.USER,
+                    content=[TextBlock(text=error_info)],
+                )
+                task.get_context().append_context_data(warning_msg)
+                logger.warning(error_info)
+                # 任务进入错误状态
+                task.set_error(error_info)
 
-        if orchestration == "":
+            # 无论如何，都结束工作流执行
+            return OrchestrateEvent.FINISH
+
+        # 允许执行工具标志位
+        allow_tool: bool = True
+
+        if message.stop_reason == StopReason.TOOL_CALL:
+            # Act on the task or environment
+            for tool_call in message.tool_calls:
+                # 检查工具执行许可
+                if not allow_tool:
+                    # 生成错误信息
+                    result = Message(
+                        role=Role.TOOL,
+                        tool_call_id=tool_call.id,
+                        is_error=True,
+                        content=[TextBlock(text="由于前置工具调用出错，后续工具调用被禁止继续执行")]
+                    )
+                    # 更新到任务上下文
+                    task.get_context().append_context_data(result)
+                    continue
+
+                try:
+                    # 注入 Task 和 Workflow，并开始执行工具
+                    result = await agent.act(
+                        context=context,
+                        queue=queue,
+                        tool_call=tool_call,
+                        task=task,
+                    )
+                except HumanInterfere as e:
+                    # 将人类介入信息反馈到任务
+                    result = Message(
+                        role=Role.USER,
+                        content=e.get_messages(),
+                        is_error=True,
+                    )
+                    # 禁止后续工具调用执行
+                    allow_tool = False
+
+                # 检查调用错误状态
+                if result.is_error:
+                    # 将任务设置为错误状态
+                    task.set_error(extract_text_from_message(result))
+                    # 停止执行剩余的工具
+                    allow_tool = False
+
+        if task.is_error():
+            # 任务进入错误状态，返回 FINISH 事件结束工作流
+            return OrchestrateEvent.FINISH
+        elif message.stop_reason == StopReason.TOOL_CALL:
+            # 由于工具调用，重新进入思考阶段
+            return OrchestrateEvent.THINK
+        elif orchestration == "":
             # 编排结果为空，进入错误处理流程
-            task.set_error("编排结果为空，无法创建子任务")
+            task.set_error("编排结果为空，且没有任何调用工具的行为，无法创建子任务，执行进入错误状态。")
             # 直接完成当前思考，返回 FINISH 事件结束工作流
             return OrchestrateEvent.FINISH
 
@@ -359,7 +454,6 @@ def get_orch_transition() -> dict[
     ) -> None:
         """从 THINKING 到 THINKING 的转换回调函数"""
         logger.debug(f"Workflow {workflow.get_id()} Transition: {OrchestrateStage.THINKING} -> {OrchestrateStage.THINKING}.")
-
     # 添加转换规则
     transition[(OrchestrateStage.THINKING, OrchestrateEvent.THINK)] = (OrchestrateStage.THINKING, on_thinking_to_thinking)
 
@@ -369,7 +463,6 @@ def get_orch_transition() -> dict[
     ) -> None:
         """从 THINKING 到 ORCHESTRATING 的转换回调函数"""
         logger.debug(f"Workflow {workflow.get_id()} Transition: {OrchestrateStage.THINKING} -> {OrchestrateStage.ORCHESTRATING}.")
-
     # 添加转换规则
     transition[(OrchestrateStage.THINKING, OrchestrateEvent.ORCHESTRATE)] = (OrchestrateStage.ORCHESTRATING, on_thinking_to_orchestrating)
 
@@ -379,7 +472,6 @@ def get_orch_transition() -> dict[
     ) -> None:
         """从 THINKING 到 FINISHED 的转换回调函数"""
         logger.debug(f"Workflow {workflow.get_id()} Transition: {OrchestrateStage.THINKING} -> {OrchestrateStage.FINISHED}.")
-
     # 添加转换规则
     transition[(OrchestrateStage.THINKING, OrchestrateEvent.FINISH)] = (OrchestrateStage.FINISHED, on_thinking_to_finished)
 
@@ -389,7 +481,6 @@ def get_orch_transition() -> dict[
     ) -> None:
         """从 ORCHESTRATING 到 FINISHED 的转换回调函数"""
         logger.debug(f"Workflow {workflow.get_id()} Transition: {OrchestrateStage.ORCHESTRATING} -> {OrchestrateStage.FINISHED}.")
-
     # 添加转换规则
     transition[(OrchestrateStage.ORCHESTRATING, OrchestrateEvent.FINISH)] = (OrchestrateStage.FINISHED, on_orchestrating_to_finished)
 
@@ -477,7 +568,7 @@ def build_orch_agent(
         OrchestrateStage.THINKING: read_markdown("workflow/orchestrate/thinking.md").format(
             task_types="\n\n".join([
                 f"<option>\n<name>\n{option_name}\n</name>\n"
-                f"<description>\n{ProtocolTaskView()(cast(ITask[TaskState, TaskEvent], option_desc))}\n</description>\n</option>" 
+                f"<description>\n{ProtocolTaskView[TaskState, TaskEvent]()(cast(ITask[TaskState, TaskEvent], option_desc))}\n</description>\n</option>" 
                 for option_name, option_desc in valid_tasks.items()]),
         ),
         OrchestrateStage.ORCHESTRATING: read_markdown("workflow/orchestrate/orchestrating.md"),

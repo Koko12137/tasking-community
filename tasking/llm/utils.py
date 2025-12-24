@@ -1,7 +1,8 @@
 """LLM utility functions for building and converting provider-specific configurations."""
 
 import asyncio
-from typing import Any, Callable, Coroutine, ParamSpec, TypeVar, cast
+from collections.abc import Callable, Coroutine
+from typing import Any, ParamSpec, TypeVar
 from functools import wraps
 
 from loguru import logger
@@ -74,7 +75,7 @@ def build_llm(config: LLMConfig) -> ILLM:
         ILLM: 语言模型实例
     """
     provider = Provider(config.provider)
-
+    llm: type[ILLM]
     if provider == Provider.OPENAI:
         from .openai import OpenAiLLM
         llm = OpenAiLLM
@@ -104,7 +105,7 @@ def build_embed_model(config: LLMConfig) -> IEmbedModel:
         IEmbedModel: 嵌入模型实例
     """
     provider = Provider(config.provider)
-
+    embed_model: type[IEmbedModel]
     if provider == Provider.OPENAI:
         from .openai import OpenAiEmbeddingLLM
         embed_model = OpenAiEmbeddingLLM

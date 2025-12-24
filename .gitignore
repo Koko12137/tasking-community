@@ -77,6 +77,10 @@ secrets.yaml
 .DS_Store
 Thumbs.db
 
+# Database files
+*.sqlite3
+*.db*
+
 # Virtualenvs and environment managers
 env/
 venv/
@@ -113,3 +117,6 @@ gunicorn.pid
 # Misc
 *.swp
 *~
+
+# Types for Third-Party Libraries
+typings/

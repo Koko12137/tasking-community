@@ -10,7 +10,7 @@ from pymilvus import (
 
 from .interface import IVectorDatabase, IVectorDBManager
 from ..llm.interface import IEmbedModel
-from ..model import MemoryT, TextBlock, ImageBlock, VideoBlock, MultimodalContent
+from ..model import MemoryT, TextBlock, MultimodalContent
 
 
 class EmbeddingInfo(NamedTuple):
@@ -79,15 +79,16 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         # 将 memory 的 content 转为向量表示（支持多模态）
         vectors: dict[str, list[float | int]] = {}
         for name, info in self._embeddings.items():
-            # 确保 content 是 list[MultimodalContent] 格式
-            content = self._ensure_multimodal_content(memory.content)
-            vector = await info.model.embed(content, info.dimension)
+            vector = await info.model.embed(
+                cast(list[MultimodalContent], memory.content), 
+                info.dimension
+            )
             vectors[name] = vector
 
         # 将 memory 转为字典表示
         memory_dict = memory.to_dict()
         # 将 content 转为序列化形式存储
-        memory_dict["content"] = str(self._serialize_content(memory_dict))
+        self._serialize_content(memory_dict)
         # 如果 vectors 和 memory_dict 中有重复字段，清除 memory_dict 中的字段
         for key in vectors.keys():
             if key in memory_dict:
@@ -101,12 +102,13 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
             timeout=timeout,
         )
 
-    async def delete(self, context: dict[str, Any], memory_id: str) -> None:
+    async def delete(self, context: dict[str, Any], memory_id: str, timeout: float = 1800.0) -> None:
         """从Milvus向量数据库中删除数据库。
         
         Args:
             context: 上下文信息，用于配置或选择数据库实例
             memory_id: 记忆对象的唯一标识符
+            timeout: 超时时间（秒），默认1800秒
         """
         # 获取 Milvus 客户端
         client = await self._milvus_manager.get_vector_database(context)
@@ -114,25 +116,43 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         await client.delete(
             collection_name=self._collection_name,
             ids=[memory_id],
+            timeout=timeout,
         )
 
-    async def update(self, context: dict[str, Any], memory: MemoryT) -> None:
+    async def update(self, context: dict[str, Any], memory: MemoryT, timeout: float = 1800.0) -> None:
         """更新Milvus向量数据库中的数据库。
         支持多模态内容，直接使用 content 进行嵌入。
-        
+
         Args:
             context: 上下文信息，用于配置或选择数据库实例
             memory: 记忆对象，必须实现MemoryProtocol协议
+            timeout: 超时时间（秒），默认1800秒
         """
+        # 将 memory 的 content 转为向量表示（支持多模态）
+        vectors: dict[str, list[float | int]] = {}
+        for name, info in self._embeddings.items():
+            vector = await info.model.embed(
+                cast(list[MultimodalContent], memory.content),
+                info.dimension
+            )
+            vectors[name] = vector
+
         # 将 memory 转为字典表示
         memory_dict = memory.to_dict()
+        # 将 content 转为序列化形式存储
+        self._serialize_content(memory_dict)
+        # 如果 vectors 和 memory_dict 中有重复字段，清除 memory_dict 中的字段
+        for key in vectors.keys():
+            if key in memory_dict:
+                del memory_dict[key]
 
         # 获取 Milvus 客户端
         client = await self._milvus_manager.get_vector_database(context)
         # 通过 upsert 方法更新数据库
         await client.upsert(
             collection_name=self._collection_name,
-            data=memory_dict,
+            data={**memory_dict, **vectors},
+            timeout=timeout,
         )
 
     async def query(
@@ -141,6 +161,7 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         filter_expr: str,
         output_fields: list[str] | None = None,
         limit: int | None = None,
+        timeout: float = 1800.0
     ) -> list[MemoryT]:
         """根据 ID 查询 Milvus 向量数据库中的数据库条目。
 
@@ -149,6 +170,7 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
             filter_expr: 过滤条件表达式字符串
             output_fields: 要查询的字段列表，如果为None则查询所有字段(*)
             limit: 返回的最大条目数量
+            timeout: 超时时间（秒），默认1800秒
 
         Returns:
             数据库条目实例，如果未找到则返回 None
@@ -161,6 +183,7 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
             expr=filter_expr,
             output_fields=output_fields,
             limit=limit,
+            timeout=timeout,
         )
 
         memories: list[MemoryT] = []
@@ -174,8 +197,10 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         context: dict[str, Any],
         query: list[MultimodalContent],
         top_k: int,
-        threshold: float,
-        filter_expr: str = ""
+        threshold: list[float],
+        filter_expr: str = "",
+        output_fields: list[str] | None = None,
+        timeout: float = 1800.0
     ) -> list[tuple[MemoryT, float]]:
         """在Milvus向量数据库中搜索与查询最相关的数据库条目。
 
@@ -185,6 +210,8 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
             top_k: 返回的最相关条目数量
             threshold: 相关性阈值
             filter_expr: 过滤条件表达式字符串
+            output_fields: 要查询的字段列表，如果为None则查询所有字段(*)
+            timeout: 超时时间（秒），默认1800秒
 
         Returns:
             相关数据库条目列表及其相关性分数
@@ -194,11 +221,23 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         for name, info in self._embeddings.items():
             # 将查询转为向量表示（支持多模态）
             vector = await info.model.embed(query, info.dimension)
+            # 设置搜索参数，添加范围限制
+            search_params = info.search_params.copy()
+            # if len(threshold) == 0:   # TODO: Milvus 暂时不支持范围搜索
+            #     pass
+            # elif len(threshold) == 1:
+            #     search_params["range_filter"] = 0
+            #     search_params["radius"] = threshold[0]
+            # elif len(threshold) == 2:
+            #     search_params["range_filter"] = threshold[1]
+            #     search_params["radius"] = threshold[0]
+            # else:
+            #     raise ValueError("Threshold must be a tuple of one or two floats.")
             # 在AnnSearchRequest中设置过滤表达式
             ann_request = AnnSearchRequest(
                 data=[vector],
                 anns_field=name,
-                param=info.search_params,
+                param=search_params,
                 limit=top_k,
                 expr=filter_expr if filter_expr else None
             )
@@ -209,65 +248,31 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
 
         # 获取 Milvus 客户端
         client = await self._milvus_manager.get_vector_database(context)
+        # If output_fields is None, use ['*'] to return all fields
+        if output_fields is None:
+            output_fields = ['*']
+
         # 混合搜索
-        hits_list = await client.hybrid_search(
+        hits_list = cast(
+            list[dict[str, str | float | dict[str, str | float | dict[str, str]]]],
+            await client.hybrid_search(
             collection_name=self._collection_name,
             reqs=anns,
             ranker=ranker,
             limit=top_k,
-            output_fields=["id", "content", "category"],
-        )
+            output_fields=output_fields,
+            timeout=timeout,
+        ))
 
-        return self._process_search_results(hits_list, threshold)
+        return self._process_search_results(hits_list)
 
-    def _ensure_multimodal_content(self, content: Any) -> list[MultimodalContent]:
-        """确保内容是 list[MultimodalContent] 格式。
-
-        如果 content 是字符串，尝试转换为 TextBlock。
-        如果 content 已经是 list[MultimodalContent]，直接返回。
-        如果 content 是其他格式，尝试转换为字符串再转换为 TextBlock。
-
-        Args:
-            content: 输入的内容（可能是字符串、TextBlock 或 MultimodalContent 列表）
-
-        Returns:
-            list[MultimodalContent]: 标准化后的多模态内容列表
-        """
-        # 如果已经是 list[MultimodalContent]，直接返回
-        if isinstance(content, list):
-            # 检查列表中的元素是否已经是 MultimodalContent 类型
-            if content and isinstance(content[0], (TextBlock, ImageBlock, VideoBlock)):
-                return cast(list[MultimodalContent], content)
-            # 如果列表为空或不是 MultimodalContent 类型，转换为 TextBlock 列表
-            try:
-                return [TextBlock(text=str(item)) for item in content]
-            except (TypeError, ValueError):
-                # 转换失败，返回空列表
-                return []
-
-        # 如果是字符串，转换为 TextBlock
-        if isinstance(content, str):
-            return [TextBlock(text=content)]
-
-        # 其他类型，尝试转换为字符串再转换为 TextBlock
-        try:
-            return [TextBlock(text=str(content))]
-        except (TypeError, ValueError):
-            # 转换失败，返回空列表
-            return []
-
-    def _serialize_content(self, memory_dict: dict[str, Any]) -> dict[str, Any]:
-        """序列化多模态内容为 JSON 字符串。
-
-        如果 content 是列表（多模态），转换为 JSON 字符串以便存储。
+    def _serialize_content(self, memory_dict: dict[str, Any]) -> None:
+        """序列化文本内容为 JSON 字符串。
 
         Args:
             memory_dict: 数据库字典
-
-        Returns:
-            处理后的数据库字典
         """
-        content: list[MultimodalContent] | None = memory_dict.get("content")
+        content: list[TextBlock] | None = memory_dict.get("content")
         if content is None:
             raise ValueError("Memory dictionary must contain 'content' field.")
         # 将 content 的每一个元素转换为字典表示
@@ -275,27 +280,31 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         for item in content:
             content_list.append(item.model_dump())
         memory_dict["content"] = json.dumps(content_list, ensure_ascii=False)
-        return memory_dict
 
-    def _deserialize_content(self, content: Any) -> list[MultimodalContent]:
-        """反序列化内容。
+    def _deserialize_content(self, content: Any) -> list[TextBlock]:
+        """反序列化文本内容。
 
-        如果 content 是 JSON 字符串且表示列表，解析为列表。
+        如果 content 是 JSON 字符串且表示列表，解析为 TextBlock 列表。
         如果无法解析，返回包含该内容的 TextBlock 列表。
 
         Args:
             content: 存储的内容
 
         Returns:
-            反序列化后的多模态内容
+            反序列化后的文本内容
         """
         if isinstance(content, str):
-            # 尝试解析为 JSON（多模态内容）
+            # 尝试解析为 JSON 文本列表
             if content.startswith("[") and content.endswith("]"):
                 try:
                     parsed = json.loads(content)
                     if isinstance(parsed, list):
-                        return cast(list[MultimodalContent], parsed)
+                        # 转换为 TextBlock 列表
+                        text_blocks: list[TextBlock] = []
+                        for item in parsed:
+                            if isinstance(item, dict) and item["type"] == "text":
+                                text_blocks.append(TextBlock(**item))
+                        return text_blocks
                 except (json.JSONDecodeError, ValueError):
                     pass
             # 无法解析为 JSON，返回包含原内容的 TextBlock
@@ -308,16 +317,11 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         # 空内容返回空列表
         return []
 
-    def _process_search_results(
-        self,
-        hits_list: list[Any],
-        threshold: float
-    ) -> list[tuple[MemoryT, float]]:
+    def _process_search_results(self, hits_list: list[Any]) -> list[tuple[MemoryT, float]]:
         """处理搜索结果。
 
         Args:
             hits_list: Milvus 返回的搜索结果
-            threshold: 相关性阈值
 
         Returns:
             处理后的数据库和分数列表
@@ -326,50 +330,16 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
 
         for hits in hits_list:
             for item in hits:
-                distance, entity_data = self._extract_hit_data(item)
-
-                if distance is None or distance > threshold:
-                    continue
+                distance: float = item.data['distance']
+                entity: dict[str, str | list[TextBlock]] = item.data['entity']
 
                 # 反序列化 content
-                if "content" in entity_data:
-                    entity_data["content"] = self._deserialize_content(
-                        entity_data["content"]
+                if "content" in entity:
+                    entity["content"] = self._deserialize_content(
+                        entity["content"]
                     )
 
-                memory = self._memory_cls.from_dict(entity_data)
+                memory = self._memory_cls.from_dict(entity)
                 memories.append((cast(MemoryT, memory), distance))
 
         return memories
-
-    def _extract_hit_data(
-        self,
-        item: Any
-    ) -> tuple[float | None, dict[str, Any]]:
-        """从搜索结果项中提取距离和实体数据。
-
-        Args:
-            item: 搜索结果项（可能是 dict 或 Hit 对象）
-
-        Returns:
-            (distance, entity_data) 元组
-        """
-        if isinstance(item, dict):
-            # 处理字典格式返回
-            distance = item.get('distance')
-            entity_data = item.get('entity', {})
-            return distance, entity_data
-
-        # 处理 Hit 对象格式返回
-        distance = getattr(item, 'distance', None)
-        entity_data: dict[str, Any] = {}
-
-        if hasattr(item, 'entity'):
-            entity = item.entity
-            entity_data = {
-                "id": entity.get("id") if hasattr(entity, 'get') else None,
-                "content": entity.get("content") if hasattr(entity, 'get') else None,
-                "category": entity.get("category") if hasattr(entity, 'get') else None,
-            }
-
-        return distance, entity_data

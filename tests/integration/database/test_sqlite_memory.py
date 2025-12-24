@@ -126,7 +126,7 @@ class TestSqliteMemoryAddAndSearch:
 
             assert row is not None
             assert row[0] == memory.id
-            assert row[1] == "测试内容"
+            assert "测试内容" in row[1]  # 数据库中存储的是 JSON 字符串
             assert row[2] == "unit_test"
 
     async def test_search_memory_with_filter(self) -> None:
@@ -154,7 +154,7 @@ class TestSqliteMemoryAddAndSearch:
                 MemoryData(content="记忆C", category="cat1"),
             ]
             for mem in memories:
-                await store.add(mem)
+                await store.add({}, mem)
 
             # 搜索指定类别
             results = await store.search({}, field="id", limit=10, category="cat1")
@@ -182,7 +182,7 @@ class TestSqliteMemoryAddAndSearch:
 
             # 添加5条记忆
             for i in range(5):
-                await store.add(MemoryData(content=f"记忆{i}"))
+                await store.add({}, MemoryData(content=f"记忆{i}"))
 
             # 限制返回2条
             results = await store.search({}, field="id", limit=2)
@@ -381,11 +381,11 @@ class TestSqliteMemoryIntegration:
             await store.add({}, memory)
 
             # 2. 搜索验证
-            results = await store.search({}, 
+            results = await store.search({},
                 field="id", limit=10, category="lifecycle"
             )
             assert len(results) == 1
-            assert results[0].content == "生命周期测试"
+            assert results[0].content[0].text == "生命周期测试"  # content 是 list[MultimodalContent]
 
             # 3. 更新记忆
             updated = MemoryData(
@@ -433,7 +433,7 @@ class TestSqliteMemoryIntegration:
                 for i in range(10)
             ]
             for mem in memories:
-                await store.add(mem)
+                await store.add({}, mem)
 
             # 验证总数
             results = await store.search({}, field="id", limit=100)

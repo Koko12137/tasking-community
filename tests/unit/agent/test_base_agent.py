@@ -124,10 +124,9 @@ class TestBaseAgent(unittest.TestCase, AgentTestMixin):
 
     def test_tool_service(self) -> None:
         """测试工具服务"""
-        # 测试未设置工具服务时的错误
-        with self.assertRaises(RuntimeError) as cm:
-            self.agent.get_tool_service()
-        self.assertIn("Tool service is not set", str(cm.exception))
+        # 测试未设置工具服务时返回None
+        tool_service = self.agent.get_tool_service()
+        self.assertIsNone(tool_service)
 
     def test_observe(self) -> None:
         """测试观察功能"""

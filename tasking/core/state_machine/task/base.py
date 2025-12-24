@@ -416,11 +416,11 @@ class ProtocolTaskView(ITaskView[StateT, EventT]):
 
     Example:
     ```markdown
-    # 任务类型
+    # 任务标题 - 任务执行协议
     任务协议内容
     ```
     """
-    _template: str = "# {title}\n{protocol}"
+    _template: str = "# {title} - 任务执行协议\n```markdown\n{protocol}```"
 
     def __call__(self, task: ITask[StateT, EventT], **kwargs: Any) -> str:
         """返回任务的待办事项字符串表示
@@ -458,7 +458,8 @@ class RequirementTaskView(ITaskView[StateT, EventT]):
     示例输入内容
     ```
     """
-    _template: str = "# 任务标题: {title}\n- 类型: {task_type}\n- 标签: {tags}\n- 完成: {is_completed}\n## 任务执行协议\n{protocol}\n## 任务输入\n{input_data}"
+    _template: str = """# 任务标题: {title}\n- 类型: {task_type}\n- 标签: {tags}\n- 完成: {is_completed}
+## 任务执行协议\n```markdown\n{protocol}\n```\n\n## 任务输入\n\n```markdown\n{input_data}\n```"""
 
     def __call__(self, task: ITask[StateT, EventT], **kwargs: Any) -> str:
         """返回任务的待办事项字符串表示

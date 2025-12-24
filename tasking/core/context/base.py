@@ -47,6 +47,8 @@ class BaseContext(IContext):
                 last_role = self._context[-1].role
                 if last_role != Role.ASSISTANT and last_role != Role.TOOL:
                     raise ValueError("工具消息只能接在助手消息/工具消息后面")
+            else:
+                raise ValueError("工具消息不能作为第一个消息")
             self._context.append(data)
 
         else:

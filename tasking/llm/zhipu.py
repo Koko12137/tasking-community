@@ -226,10 +226,11 @@ def to_zhipu_messages(messages: list[Message]) -> list[dict[str, Any]]:
 
                 # If the message is a tool call, add the tool call to the history
                 if message.tool_calls:
-                    message_dict["tool_calls"] = []
+                    tool_calls: list[dict[str, Any]] = []
+                    message_dict["tool_calls"] = tool_calls
 
                     for tool_call in message.tool_calls:
-                        message_dict["tool_calls"].append({
+                        tool_calls.append({
                             "id": tool_call.id,
                             "type": "function",
                             "function": {
@@ -474,6 +475,7 @@ class ZhipuLLM(ILLM):
             raise e
 
         # Extract final content and tool calls
+        tool_calls: list[ToolCallRequest]
         if stream_queue is not None:
             # For streaming mode, use accumulated data
             content_blocks = [TextBlock(text=accumulated_content)] if accumulated_content else []
@@ -526,7 +528,7 @@ class ZhipuLLM(ILLM):
                 )
 
             # Extract tool calls from response
-            tool_calls: list[ToolCallRequest] = []
+            tool_calls = []
             if tool_calls_response:
                 # Traverse all the tool calls and create tool call requests
                 for tool_call in tool_calls_response:

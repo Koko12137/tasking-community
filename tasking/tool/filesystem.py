@@ -252,6 +252,7 @@ class LocalFileSystem(IFileSystem):
             if encoding == "base64":
                 content_encoded = base64.b64encode(file_content).decode('utf-8')
                 # 使用传入的file_type参数，或者通过mimetypes猜测
+                mime_type: str | None
                 if file_type:
                     mime_type = file_type
                 else:

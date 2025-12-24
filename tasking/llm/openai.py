@@ -423,6 +423,7 @@ class OpenAiLLM(ILLM):
             raise e
 
         # Extract final content and tool calls
+        tool_calls: list[ToolCallRequest]
         if stream_queue is not None:
             # For streaming mode, use accumulated data
             content_blocks = [TextBlock(text=accumulated_content)] if accumulated_content else []
@@ -450,7 +451,7 @@ class OpenAiLLM(ILLM):
             )
 
             # Extract tool calls from response
-            tool_calls: list[ToolCallRequest] = []
+            tool_calls = []
             if final_response.choices[0].message.tool_calls is not None:
                 for tool_call in final_response.choices[0].message.tool_calls:
                     tool_calls.append(ToolCallRequest(

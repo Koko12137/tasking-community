@@ -107,7 +107,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
 
     # Act Hooks
     _pre_act_hooks: list[Callable[
-        [dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
+        [dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT], ToolCallRequest],
         Awaitable[None] | None
     ]]
     """行动前钩子函数列表，会按顺序执行。钩子函数的签名为:
@@ -116,6 +116,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         context (dict[str, Any]): 任务运行时的上下文信息
         queue (IQueue[Message]): 数据队列，用于输出任务运行过程中产生的数据
         task (ITask[StateT, EventT]): 要运行的任务
+        tool_call (ToolCallRequest): 工具调用请求
     """
     _post_act_hooks: list[Callable[
         [dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
@@ -216,7 +217,14 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         """
         self._workflow = workflow
 
+
     def get_tool_service(self) -> Client[ClientTransportT] | None:
+        """获取Agent关联的工具服务
+
+        Returns:
+            Client[ClientTransportT] | None:
+                Agent关联的工具服务，如果未设置则返回None
+        """
         return self._tool_service
     
     async def get_tools_with_tags(self, tags: set[str]) -> dict[str, McpTool]:
@@ -707,9 +715,9 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         # 调用 pre act hooks
         for hook in self._pre_act_hooks:
             if inspect.iscoroutinefunction(hook):
-                await hook(context, queue, task)
+                await hook(context, queue, task, tool_call)
             else:
-                await asyncify(hook)(context, queue, task)
+                await asyncify(hook)(context, queue, task, tool_call)
 
         # 执行工具调用
         act_result = await self.call_tool(
@@ -734,7 +742,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
     def add_pre_act_hook(
         self,
         hook: Callable[
-            [dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
+            [dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT], ToolCallRequest],
             Awaitable[None] | None
         ],
     ) -> None:
@@ -746,6 +754,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
                 - task: ITask[StateT, EventT]
+                - tool_call: ToolCallRequest
         """
         self._pre_act_hooks.append(hook)
 

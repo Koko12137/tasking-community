@@ -224,10 +224,19 @@ class TestInterfaceMethodSignatures(unittest.TestCase):
         search_sig = inspect.signature(ISqlDatabase.search)
         params = list(search_sig.parameters.keys())
         expected_params = ['self', 'context', 'fields', 'where', 'order_by', 'limit']
-        self.assertEqual(params[:6], expected_params)
 
-        # 验证 kwargs 参数
+        # 验证必需的参数存在
+        for param in expected_params:
+            self.assertIn(param, params)
+
+        # 验证 kwargs 参数存在
+        self.assertTrue('kwargs' in params)
+
+        # 验证默认值
         self.assertTrue(search_sig.parameters['limit'].default is None)
+        # **kwargs 参数的默认值是 inspect.Parameter.empty
+        import inspect
+        self.assertTrue(search_sig.parameters['kwargs'].default is inspect.Parameter.empty)
         # 验证签名有类型注解
         self.assertTrue(search_sig.return_annotation is not None)
 

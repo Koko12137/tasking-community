@@ -1,6 +1,7 @@
 from typing import Any, cast
 from collections.abc import Callable, Awaitable
 
+from loguru import logger
 from fastmcp.tools import Tool as FastMcpTool
 from mcp.types import CallToolResult, TextContent
 
@@ -291,17 +292,17 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
             raise ValueError(f"Tool '{name}' is not registered in the workflow")
 
         tool, _ = tool_entry
-        # 更新 kwargs，注入 workflow 实例和 task 实例，以及其他依赖参数
-        kwargs.update({"kwargs": {"workflow": self, "task": task, **inject}})
         # 调用工具
         try:
-            tool_call_result = await tool.run(kwargs)
+            tool_call_result = await tool.run({**kwargs, "kwargs": {"workflow": self, "task": task, **inject}})
             result = CallToolResult(
                 content=tool_call_result.content,
                 structuredContent=tool_call_result.structured_content,
                 isError=False,
             )
         except RuntimeError as e:
+            # 记录带有函数调用栈信息的错误日志
+            logger.error(f"RuntimeError when calling tool '{name}': {e}", exc_info=True)
             # 运行时错误直接抛出
             raise e
         except Exception as e:

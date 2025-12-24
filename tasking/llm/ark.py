@@ -481,6 +481,7 @@ class ArkLLM(ILLM):
             raise e
 
         # Extract final content and tool calls
+        tool_calls: list[ToolCallRequest]
         if stream_queue is not None:
             # For streaming mode, use accumulated data
             content_blocks = [TextBlock(text=accumulated_content)] if accumulated_content else []

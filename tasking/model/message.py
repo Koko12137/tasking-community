@@ -3,7 +3,7 @@ from uuid import uuid4
 from enum import Enum
 from typing import Any, TypeAlias
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Role(str, Enum):
@@ -79,7 +79,7 @@ class ImageBlock(BaseModel):
 
     image_base64: str = Field(default="", description="The base64 encoded image content.")
     """图像的 Base64 编码内容，默认为空字符串"""
-    
+
     image_type: str = Field(default="jpeg", description="The type of the image.")
     """图像的类型，默认值为 `jpeg`"""
 
@@ -96,16 +96,12 @@ class ImageBlock(BaseModel):
             raise ValueError("detail must be 'low' or 'high'")
         return v
 
-    @field_validator("image_base64", "image_url")
-    def validate_image_content(cls, v: str, info: Any) -> str:
+    @model_validator(mode="after")
+    def validate_image_content(self) -> "ImageBlock":
         """验证 image_base64 和 image_url 字段不能同时为空"""
-        if info.field_name == "image_base64":
-            other_value = info.data.get("image_url", "")
-        else:
-            other_value = info.data.get("image_base64", "")
-        if not v and not other_value:
+        if not self.image_base64 and not self.image_url:
             raise ValueError("Either image_base64 or image_url must be provided")
-        return v
+        return self
 
 
 class VideoBlock(BaseModel):
@@ -126,16 +122,12 @@ class VideoBlock(BaseModel):
     fps: int = Field(default=1, description="The frames per second of the video.")
     """视频的每秒帧数，默认值为 1"""
 
-    @field_validator("video_base64", "video_url")
-    def validate_video_content(cls, v: str, info: Any) -> str:
+    @model_validator(mode="after")
+    def validate_video_content(self) -> "VideoBlock":
         """验证 video_base64 和 video_url 字段不能同时为空"""
-        if info.field_name == "video_base64":
-            other_value = info.data.get("video_url", "")
-        else:
-            other_value = info.data.get("video_base64", "")
-        if not v and not other_value:
+        if not self.video_base64 and not self.video_url:
             raise ValueError("Either video_base64 or video_url must be provided")
-        return v
+        return self
 
     @field_validator("fps")
     def validate_fps(cls, v: int) -> int:

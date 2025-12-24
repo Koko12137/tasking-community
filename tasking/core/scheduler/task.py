@@ -119,10 +119,7 @@ def get_tree_on_state_fn(
     return on_state_fn
 
 
-def get_tree_on_state_changed_fn(
-    executor: IAgent[ExecStage, ExecEvent, TaskState, TaskEvent, ClientTransportT],
-    orchestrator: IAgent[OrchStage, OrchEvent, TaskState, TaskEvent, ClientTransportT] | None = None,
-) -> dict[tuple[TaskState, TaskState], Callable[
+def get_tree_on_state_changed_fn() -> dict[tuple[TaskState, TaskState], Callable[
     [
         IScheduler[TaskState, TaskEvent],
         dict[str, Any],
@@ -132,10 +129,6 @@ def get_tree_on_state_changed_fn(
     Awaitable[None]
 ]]:
     """获取树状任务调度器的状态变更调度函数映射表
-
-    Args:
-        executor: 执行者代理实例
-        orchestrator: 编排者代理实例，可选，如果未提供则跳过编排阶段
 
     Returns:
         dict: 状态变更调度函数映射表
@@ -307,10 +300,7 @@ def build_base_scheduler(
         orchestrator=orchestrator,
     )
     # 构建任务回调调度规则映射表
-    on_state_changed_fn = get_tree_on_state_changed_fn(
-        executor=executor,
-        orchestrator=orchestrator,
-    )
+    on_state_changed_fn = get_tree_on_state_changed_fn()
 
     # 设置结束状态
     end_states = {TaskState.FINISHED, TaskState.CANCELED}

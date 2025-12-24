@@ -47,6 +47,8 @@ class TestEndWorkflow(unittest.TestCase, AgentTestMixin):
         self.task = self.create_mock_task(
             MockState("RUNNING"), {MockState("RUNNING"), MockState("FINISHED")}, "test-task"
         )
+        # 设置任务上下文的get_context_data()返回空列表
+        self.task.get_context().get_context_data.return_value = []
 
         # 创建包含output标签的消息
         self.message_with_output = Message(
@@ -65,10 +67,12 @@ class TestEndWorkflow(unittest.TestCase, AgentTestMixin):
         # 验证任务未完成
         self.assertFalse(self.task.is_completed())
 
+        # 设置任务上下文的get_context_data()返回包含消息的列表
+        self.task.get_context().get_context_data.return_value = [self.message_with_output]
+
         # 调用end_workflow
         end_workflow({
-            "task": self.task,
-            "message": self.message_with_output
+            "task": self.task
         })
 
         # 验证任务已完成
@@ -84,17 +88,22 @@ class TestEndWorkflow(unittest.TestCase, AgentTestMixin):
 
     def test_end_workflow_missing_message(self) -> None:
         """测试缺少message参数的错误"""
-        with self.assertRaises(RuntimeError) as cm:
+        # 设置任务上下文的get_context_data()返回空列表，模拟没有消息的情况
+        self.task.get_context().get_context_data.return_value = []
+
+        with self.assertRaises(IndexError) as cm:
             end_workflow({"task": self.task})
 
-        self.assertIn("缺少必要的 'message' 注入参数", str(cm.exception))
+        self.assertIn("list index out of range", str(cm.exception))
 
     def test_end_workflow_no_output_content(self) -> None:
         """测试没有输出内容的错误"""
+        # 设置任务上下文的get_context_data()返回包含没有output的消息的列表
+        self.task.get_context().get_context_data.return_value = [self.message_without_output]
+
         with self.assertRaises(Exception) as cm:
             end_workflow({
-                "task": self.task,
-                "message": self.message_without_output
+                "task": self.task
             })
 
         error_msg = str(cm.exception)
@@ -108,10 +117,12 @@ class TestEndWorkflow(unittest.TestCase, AgentTestMixin):
             content=[TextBlock(text="<output>Test output</output>")]
         )
 
+        # 设置任务上下文的get_context_data()返回包含错误角色消息的列表
+        self.task.get_context().get_context_data.return_value = [wrong_role_message]
+
         with self.assertRaises(AssertionError) as cm:
             end_workflow({
-                "task": self.task,
-                "message": wrong_role_message
+                "task": self.task
             })
 
         self.assertIn("最后一个 Message 不是 Assistant Message", str(cm.exception))

@@ -3,7 +3,7 @@ from typing import Generic, Any
 
 from .const import ClientT
 from ..llm import IEmbedModel
-from ..model import MemoryT, TextBlock, ImageBlock, VideoBlock
+from ..model import MemoryT, MultimodalContent
 
 
 class IDatabase(ABC, Generic[MemoryT]):
@@ -21,22 +21,24 @@ class IDatabase(ABC, Generic[MemoryT]):
         pass
 
     @abstractmethod
-    async def delete(self, context: dict[str, Any], memory_id: str) -> None:
+    async def delete(self, context: dict[str, Any], memory_id: str, timeout: float = 1800.0) -> None:
         """删除记忆
         
         Args:
             context: 上下文信息，用于配置或选择数据库实例
             memory_id: 记忆对象的唯一标识符
+            timeout: 超时时间（秒），默认1800秒
         """
         pass
 
     @abstractmethod
-    async def update(self, context: dict[str, Any], memory: MemoryT) -> None:
+    async def update(self, context: dict[str, Any], memory: MemoryT, timeout: float = 1800.0) -> None:
         """更新记忆（通过memory.id定位）
         
         Args:
             context: 上下文信息，用于配置或选择数据库实例
             memory: 记忆对象，必须实现MemoryProtocol协议
+            timeout: 超时时间（秒），默认1800秒
         """
         pass
     
@@ -73,18 +75,23 @@ class IVectorDatabase(IDatabase[MemoryT]):
     async def search(
         self,
         context: dict[str, Any],
-        query: list[TextBlock | ImageBlock | VideoBlock],
+        query: list[MultimodalContent],
         top_k: int,
-        threshold: float,
-        filter_expr: str
+        threshold: list[float],
+        filter_expr: str,
+        output_fields: list[str] | None = None,
+        timeout: float = 1800.0,
     ) -> list[tuple[MemoryT, float]]:
         """在数据库中搜索与查询最相关的条目
 
         Args:
+            context: 上下文信息，用于根据UserID等配置或选择数据库实例
             query: 查询内容（文本或多模态内容）
             top_k: 返回的最相关条目数量
-            threshold: 相关性阈值
+            threshold: 相关性阈值元组, 第一个是最小值，第二个是最大值，如果仅有一个，则表示最小值
             filter_expr: 过滤条件表达式字符串
+            output_fields: 要查询的字段列表，如果为None则查询所有字段
+            timeout: 超时时间（秒），默认1800秒
 
         Returns:
             相关记忆条目列表及其相关性分数
@@ -98,14 +105,16 @@ class IVectorDatabase(IDatabase[MemoryT]):
         filter_expr: str,
         output_fields: list[str] | None = None,
         limit: int | None = None,
+        timeout: float = 1800.0,
     ) -> list[MemoryT]:
         """在数据库中根据过滤条件查询记忆条目
 
         Args:
             context: 上下文信息，用于配置或选择数据库实例
             filter_expr: 过滤条件表达式字符串
-            output_fields: 要查询的字段列表，如果为None则查询所有字段(*)
+            output_fields: 要查询的字段列表，如果为None则查询所有字段
             limit: 返回的最大条目数量
+            timeout: 超时时间（秒），默认1800秒
 
         Returns:
             相关记忆条目列表
@@ -140,6 +149,7 @@ class ISqlDatabase(IDatabase[MemoryT]):
         where: list[str] | None = None,
         order_by: str | None = None,
         limit: int | None = None,
+        timeout: float = 1800.0,
         **kwargs: Any
     ) -> list[MemoryT]:
         """在数据库中搜索与查询最相关的条目
@@ -150,6 +160,7 @@ class ISqlDatabase(IDatabase[MemoryT]):
             where: WHERE过滤条件列表，每个条件为完整的SQL表达式，如 ["status = 'active'", "created_at > '2024-01-01'"]
             order_by: 排序字段，支持ASC/DESC，如 "id DESC"
             limit: 返回的最大条目数量
+            timeout: 超时时间（秒），默认1800秒
             **kwargs: 其他SQL参数（具体支持取决于实现类，如果不支持应抛出错误）
 
         Returns:

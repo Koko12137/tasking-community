@@ -23,18 +23,18 @@ def extract_by_label(content: str, *labels: str) -> str:
 
     # 多种匹配模式，按优先级顺序
     patterns = [
-        # 1. 带换行符的完整标签: <tag>\ncontent\n</tag>
-        r"<{label}>\s*\n(.*?)\n\s*</{label}>",
-        # 2. 不带换行符的完整标签: <tag>content</tag>
-        r"<{label}>(.*?)</{label}>",
-        # 3. 紧凑的完整标签: <tag>content</tag> (无空白)
-        r"<{label}>([^<]*?)</{label}>",
-        # 4. 带换行符的自闭合标签: <tag>\ncontent
-        r"<{label}>\s*\n(.*?)(?:\n\s*<|\n*$|$)",
-        # 5. 不带换行符的自闭合标签: <tag>content
-        r"<{label}>(.*?)(?=<|$)",
+        # 1. 带换行符的完整标签: <tag attr="value">\ncontent\n</tag>
+        r"<{label}(?:\s[^>]*)?>\s*\n(.*?)\n\s*</{label}>",
+        # 2. 不带换行符的完整标签: <tag attr="value">content</tag>
+        r"<{label}(?:\s[^>]*)?>(.*?)</{label}>",
+        # 3. 紧凑的完整标签: <tag attr="value">content</tag> (无空白)
+        r"<{label}(?:\s[^>]*)?>([^<]*?)</{label}>",
+        # 4. 带换行符的自闭合标签: <tag attr="value">\ncontent
+        r"<{label}(?:\s[^>]*)?>\s*\n(.*?)(?:\n\s*<|\n*$|$)",
+        # 5. 不带换行符的自闭合标签: <tag attr="value">content
+        r"<{label}(?:\s[^>]*)?>(.*?)(?=<|$)",
         # 6. 更宽松的匹配，直到遇到下一个标签或结尾
-        r"<{label}>\s*\n?(.*?)\n?(?=<|$)",
+        r"<{label}(?:\s[^>]*)?>\s*\n?(.*?)\n?(?=<|$)",
     ]
 
     # Traverse all the labels in priority order

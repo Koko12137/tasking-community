@@ -39,8 +39,6 @@ def end_workflow(kwargs: dict[str, Any] = {}) -> None:
     """
     if "task" not in kwargs:
         raise RuntimeError("结束工作流工具缺少必要的 'task' 注入参数")
-    if "message" not in kwargs:
-        raise RuntimeError("结束工作流工具缺少必要的 'message' 注入参数")
 
     # 获取注入的 Task
     task: ITask[TaskState, TaskEvent] = kwargs["task"]
@@ -48,7 +46,7 @@ def end_workflow(kwargs: dict[str, Any] = {}) -> None:
     current_state = task.get_current_state()
 
     # 获取注入的 Message
-    message: Message = kwargs['message']
+    message: Message = task.get_context().get_context_data()[-1]
     # 确认发送方是 ASSISTANT
     assert message.role == Role.ASSISTANT, "最后一个 Message 不是 Assistant Message"
     # 从 Message 中获取输出内容
@@ -236,7 +234,6 @@ def get_react_actions(
 
         # 从 Message 中获取结束工作流的标志内容
         finish_flag = extract_by_label(extract_text_from_message(message), "finish", "finish_flag", "finish_workflow")
-
         # 允许执行工具标志位
         allow_tool: bool = True
 
@@ -284,7 +281,7 @@ def get_react_actions(
         # 没有调用工具，手动检查结束标志位
         elif finish_flag.upper() == "TRUE":
             # 手动调用结束工作流
-            end_workflow({"task": task, "message": message})
+            end_workflow({"task": task})
 
         if task.is_completed() or task.is_error():
             # 任务已完成或出错，触发 COMPLETE 事件

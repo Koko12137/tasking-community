@@ -1,6 +1,6 @@
 import datetime as dt
 from abc import ABC, abstractmethod
-from typing import Any, Generic
+from typing import Any, Generic, cast
 from collections.abc import Callable, Awaitable
 
 from fastmcp.client.transports import ClientTransportT
@@ -9,7 +9,7 @@ from ..agent import IAgent
 from ..state_machine import StateT, EventT
 from ..state_machine.task import ITask
 from ..state_machine.workflow import WorkflowStageT, WorkflowEventT
-from ...model import IAsyncQueue, Message, Role, TextBlock, MultimodalContent
+from ...model import IAsyncQueue, Message, Role, TextBlock, ImageBlock, VideoBlock, MultimodalContent
 from ...model.memory import MemoryT, EpisodeMemory, StateMemory
 from ...database.interface import IVectorDatabase, IKVDatabase
 from ...utils.io import read_markdown
@@ -113,7 +113,7 @@ class StateMemoryHooks(IMemoryHooks[StateMemory]):
         # 将状态记忆内容添加到任务上下文中
         task.get_context().append_context_data(Message(
             role=role,
-            content=state_memory.content
+            content=cast(list[TextBlock | ImageBlock | VideoBlock], state_memory.content)
         ))
 
     async def post_run_once_hook(
@@ -229,7 +229,7 @@ class EpisodeMemoryHooks(IMemoryHooks[EpisodeMemory]):
             context=context,
             query=query,
             top_k=5,
-            threshold=0.8,
+            threshold=[0.8],
             filter_expr=filter_expr
         )
         # 创建记忆摘要并添加到上下文中
@@ -295,7 +295,7 @@ class EpisodeMemoryHooks(IMemoryHooks[EpisodeMemory]):
             task_id=task.get_id(),
             episode_id=str(len(existing_memories) + 1),
             raw_data=messages,
-            content=compressed.content,
+            content=cast(list[TextBlock], compressed.content),
             timestamp=dt.datetime.now(dt.timezone.utc).isoformat(),
         )
         # 将新的记忆条目存储到 Milvus 数据库中

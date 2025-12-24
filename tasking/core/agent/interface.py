@@ -351,7 +351,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     def add_pre_act_hook(
         self,
         hook: Callable[
-            [dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
+            [dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT], ToolCallRequest],
             Awaitable[None] | None
         ],
     ) -> None:
@@ -363,13 +363,17 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
                 - context: dict[str, Any]
                 - queue: IQueue[Message]
                 - task: ITask[StateT, EventT]
+                - tool_call: ToolCallRequest
         """
         pass
 
     @abstractmethod
     def add_post_act_hook(
         self,
-        hook: Callable[[dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]], Awaitable[None] | None],
+        hook: Callable[
+            [dict[str, Any], IAsyncQueue[Message], ITask[StateT, EventT]],
+            Awaitable[None] | None
+        ],
     ) -> None:
         """添加行动后钩子函数
 

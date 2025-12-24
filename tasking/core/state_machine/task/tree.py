@@ -1,6 +1,7 @@
 import re
 import json
 from typing import Any, override, cast
+from collections import OrderedDict
 from collections.abc import Callable, Awaitable
 
 from .interface import ITask, ITreeTaskNode, ITaskView
@@ -25,7 +26,7 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
 
     # *** 父子节点管理 ***
     _parent: ITreeTaskNode[StateT, EventT] | None
-    _sub_tasks: list[ITreeTaskNode[StateT, EventT]]
+    _sub_tasks: OrderedDict[str, ITreeTaskNode[StateT, EventT]]
 
     def __init__(
         self,
@@ -41,12 +42,12 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
         max_depth: int,
         context_cls: type[IContext] = BaseContext,
         parent: ITreeTaskNode[StateT, EventT] | None = None,
-        sub_tasks: list[ITreeTaskNode[StateT, EventT]] | None = None,
+        sub_tasks: OrderedDict[str, ITreeTaskNode[StateT, EventT]] | None = None,
         **kwargs: Any,
     ) -> None:
         # 树形结构属性初始化
         self._parent = None  # 初始化为None，将通过set_parent设置
-        self._sub_tasks = sub_tasks if sub_tasks else []
+        self._sub_tasks = sub_tasks if sub_tasks else OrderedDict()
 
         # 初始化深度（延迟计算）
         self._current_depth = 0  # 将在父子关系建立后重新计算
@@ -80,7 +81,7 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
         # 建立父子关系
         if sub_tasks:
             # 为每个子任务设置父节点
-            for child in sub_tasks:
+            for child in sub_tasks.values():
                 child.set_parent(self)
 
         if parent is not None:
@@ -187,22 +188,35 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
         Returns:
             子任务节点列表
         """
-        return self._sub_tasks.copy()
+        return list(self._sub_tasks.values())
 
-    def add_sub_task(self, sub_task: ITreeTaskNode[StateT, EventT]) -> None:
+    def add_sub_task(self, sub_task: ITreeTaskNode[StateT, EventT], replace: bool = False) -> None:
         """
         添加子任务节点
 
         Args:
-            sub_task: 子任务节点对象
+            sub_task: 子任务任务对象
+            replace: 如果子任务已存在，是否替换它
+            
+        Raises:
+            RuntimeError: 如果添加后的深度会超过最大深度限制
+            KeyError: 如果子任务已存在且replace为False
         """
         # 避免重复添加
-        if sub_task not in self._sub_tasks:
-            self._sub_tasks.append(sub_task)
+        if sub_task.get_title() not in self._sub_tasks:
+            self._sub_tasks[sub_task.get_title()] = sub_task
 
             # 设置子任务的父节点（避免循环调用）
             if sub_task.get_parent() is not self:
                 sub_task.set_parent(self)
+        else:
+            if replace:
+                self._sub_tasks[sub_task.get_title()] = sub_task
+                # 设置子任务的父节点（避免循环调用）
+                if sub_task.get_parent() is not self:
+                    sub_task.set_parent(self)
+            else:
+                raise KeyError(f"Sub task with title '{sub_task.get_title()}' already exists.")
 
     def pop_sub_task(self, node: ITreeTaskNode[StateT, EventT]) -> ITreeTaskNode[StateT, EventT]:
         """
@@ -215,7 +229,7 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
             被移除的子任务节点对象
         """
         try:
-            self._sub_tasks.remove(node)
+            self._sub_tasks.pop(node.get_title())
         except ValueError as e:
             # 重新抛出带有更清晰信息的错误
             raise ValueError(f"Sub task node not found in the list") from e

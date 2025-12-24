@@ -386,10 +386,7 @@ def get_reflect_actions(
         # 没有调用工具，手动检查结束标志位
         elif finish_flag.upper() == "TRUE":
             # 手动调用结束工作流
-            end_workflow(kwargs={
-                "task": task,
-                "message": task.get_context().get_context_data()[-3]
-            })
+            end_workflow(kwargs={"task": task})
 
         if task.is_error():
             return ReflectEvent.REASON
@@ -497,7 +494,7 @@ def build_reflect_agent(
         fn= end_workflow,
         name="end_workflow",
         description=END_WORKFLOW_DOC,
-        exclude_args=["workflow", "task"],
+        exclude_args=["kwargs"],
     )
 
     # 构建 CompletionConfig 映射

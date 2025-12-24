@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 # pylint: disable=import-error
 # NOTE: E0401 import-error is a pylint configuration issue.
 # The tests run correctly with pytest, which resolves the src path.
+from mcp.types import Tool as McpTool
 from tasking.core.agent.interface import IAgent
 from tasking.core.state_machine.task.interface import ITask
 from tasking.core.state_machine.workflow.interface import IWorkflow
@@ -48,7 +49,7 @@ class TestIAgentInterface(unittest.TestCase, AgentTestMixin):
             'get_id', 'get_name', 'get_type',
             'get_llm', 'get_llms',
             'get_workflow', 'set_workflow',
-            'get_tool_service',
+            'get_tool_service', 'get_tools_with_tags',
             'call_tool',
             'run_task_stream',
             'add_pre_run_once_hook', 'add_post_run_once_hook',
@@ -106,7 +107,10 @@ class TestIAgentInterface(unittest.TestCase, AgentTestMixin):
             def get_tool_service(self):
                 raise NotImplementedError
 
-            async def call_tool(self, name: str, task: ITask[MockState, MockEvent], inject: dict[str, Any], kwargs: dict[str, Any]) -> Message:
+            async def get_tools_with_tags(self, tags: set[str]) -> dict[str, McpTool]:
+                return {}
+
+            async def call_tool(self, context: dict[str, Any], name: str, task: ITask[MockState, MockEvent], inject: dict[str, Any], kwargs: dict[str, Any]) -> Message:
                 raise NotImplementedError
 
             # 任务执行
@@ -200,7 +204,7 @@ class TestInterfaceTypeSafety(unittest.TestCase):
         abstract_methods = IAgent.__abstractmethods__
 
         # 验证方法数量符合预期
-        expected_method_count = 21  # 根据接口定义，应该有21个抽象方法
+        expected_method_count = 22  # 根据接口定义，应该有22个抽象方法
         actual_method_count = len(abstract_methods)
 
         self.assertEqual(actual_method_count, expected_method_count,

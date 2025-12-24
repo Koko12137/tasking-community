@@ -359,12 +359,17 @@ class ITreeTaskNode(ITask[StateT, EventT]):
         pass
 
     @abstractmethod
-    def add_sub_task(self, sub_task: "ITreeTaskNode[StateT, EventT]") -> None:
+    def add_sub_task(self, sub_task: "ITreeTaskNode[StateT, EventT]", replace: bool = False) -> None:
         """
         添加子任务任务
 
         Args:
             sub_task: 子任务任务对象
+            replace: 如果子任务已存在，是否替换它
+            
+        Raises:
+            RuntimeError: 如果添加后的深度会超过最大深度限制
+            KeyError: 如果子任务已存在且replace为False
         """
         pass
 

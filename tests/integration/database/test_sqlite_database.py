@@ -16,13 +16,13 @@ import aiosqlite
 
 from tasking.database.interface import ISqlDBManager
 from tasking.database.sqlite import SqliteDatabase, SearchParams
-from tasking.model import MemoryT
+from tasking.model import MemoryT, MultimodalContent, TextBlock
 
 
 @dataclass
 class TestMemory:
     """测试用记忆数据类"""
-    content: str
+    content: Any  # 接受任意类型，因为会被序列化/反序列化为多模态内容
     category: str = "test"
     priority: int = 1
     id: str = field(default_factory=lambda: str(uuid4()))
@@ -150,7 +150,8 @@ class TestSqliteDatabase(unittest.TestCase):
         async def test_add():
             await self.asyncSetUp()
 
-            memory = TestMemory(content="测试内容", category="unit_test", priority=2)
+            # 创建记忆时包裹内容在 TextBlock 中
+            memory = TestMemory(content=[TextBlock(text="测试内容")], category="unit_test", priority=2)
             context = {}
 
             await self.db.add(context, memory)
@@ -163,7 +164,7 @@ class TestSqliteDatabase(unittest.TestCase):
 
             assert row is not None
             assert row[0] == memory.id
-            assert row[1] == "测试内容"
+            assert '测试内容' in row[1]  # 数据库中存储的是 JSON 字符串
             assert row[2] == "unit_test"
             assert row[3] == 2
 
@@ -256,7 +257,8 @@ class TestSqliteDatabase(unittest.TestCase):
             results = await self.db.search(context)
 
             assert len(results) == 3
-            contents = {m.content for m in results}
+            # 提取文本内容进行比较
+            contents = {m.content[0].text for m in results}
             assert contents == {"记忆A", "记忆B", "记忆C"}
 
             await self.asyncTearDown()
@@ -279,7 +281,7 @@ class TestSqliteDatabase(unittest.TestCase):
 
             assert len(results) == 1
             result = results[0]
-            assert result.content == "字段测试"
+            assert result.content[0].text == "字段测试"  # content 是 list[MultimodalContent]
             assert result.category == "test"  # 默认值
             assert result.priority == 1      # 默认值
 
@@ -421,7 +423,7 @@ class TestSqliteDatabase(unittest.TestCase):
             assert results[0].priority == 3
             assert results[1].priority == 1
             # 验证内容包含重要记忆的内容
-            contents = {m.content for m in results}
+            contents = {m.content[0].text for m in results}
             assert "记忆A" in contents
             assert "记忆C" in contents
 
@@ -471,8 +473,8 @@ class TestSqliteDatabase(unittest.TestCase):
             assert "SELECT id, content FROM test_memories" in query
             assert "WHERE category = 'test' AND priority = ?" in query
             assert "ORDER BY priority DESC" in query
-            assert "LIMIT ?" in query
-            assert values == [1, 10]
+            assert "LIMIT 10" in query
+            assert values == [1]
 
             await self.asyncTearDown()
 

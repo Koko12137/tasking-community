@@ -16,7 +16,6 @@ import signal
 from abc import ABC, abstractmethod
 from uuid import uuid4
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 from loguru import logger
 
@@ -471,41 +470,17 @@ class LocalTerminal(ITerminal):
         self._init_commands = init_commands if init_commands is not None else []
         # 4. 同步运行异步初始化命令
         try:
-            # 检测当前事件循环状态
             try:
-                # 尝试获取当前运行中的事件循环
                 loop = asyncio.get_running_loop()
-                if loop.is_running():
-                    # 在运行中的事件循环环境（如pytest-asyncio）下，
-                    # 创建独立线程来执行异步初始化
-                    logger.info("检测到运行中的事件循环，使用独立线程执行初始化")
-
-                    # 直接在线程中运行，避免future状态问题
-                    def run_init_in_thread():
-                        # 创建新的事件循环在独立线程中
-                        new_loop = asyncio.new_event_loop()
-                        try:
-                            asyncio.set_event_loop(new_loop)
-                            return new_loop.run_until_complete(self.run_init_commands())
-                        finally:
-                            new_loop.close()
-                            asyncio.set_event_loop(None)
-
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(run_init_in_thread)
-                        # 等待初始化完成，设置合理超时
-                        future.result(timeout=30)
-
-                else:
-                    # 事件循环存在但未运行，使用run_until_complete
-                    loop.run_until_complete(self.run_init_commands())
-
             except RuntimeError:
-                # 没有事件循环，创建新的
+                # 无运行中的循环，直接用 asyncio.run
                 asyncio.run(self.run_init_commands())
-
+                return
+            asyncio.run_coroutine_threadsafe(self.run_init_commands(), loop)
         except Exception as e:
-            logger.error(f"终端初始化失败: {e}")
+            logger.error(f"终端初始化失败: {e}", exc_info=True)
+            if self._process:
+                self._process.terminate()
             raise
 
     async def run_init_commands(self) -> None:
