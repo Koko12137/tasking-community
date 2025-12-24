@@ -16,6 +16,7 @@ import signal
 from abc import ABC, abstractmethod
 from uuid import uuid4
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from loguru import logger
 
@@ -220,27 +221,6 @@ class ITerminal(ABC):
             bool: True=禁用脚本执行，False=允许脚本执行。
         """
         raise NotImplementedError
-
-    @abstractmethod
-    def open(self) -> None:
-        """启动长期bash进程，初始化终端会话（实例化时自动调用）。
-
-        Raises:
-            RuntimeError: 进程已运行或启动失败（如bash未安装、权限不足）。
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def close(self) -> None:
-        """优雅关闭终端进程，释放资源（必须显式调用）。
-
-        流程：关闭输入管道→发送终止信号→5秒超时后强制杀死。
-
-        Raises:
-            RuntimeError: 进程超时未退出（强制杀死后抛出）。
-        """
-        raise NotImplementedError
-
     @abstractmethod
     async def acquire(self) -> None:
         """获取终端使用信号量，确保并发安全。
@@ -298,7 +278,7 @@ class ITerminal(ABC):
 
     @abstractmethod
     async def run_command(
-        self, command: str, allow_by_human: bool = False, timeout: float | None = None
+        self, command: str, allow_by_human: bool = False, timeout: float | None = None, show_prompt: bool = False
     ) -> str:
         """执行bash命令，返回输出并同步终端状态（异步版本，含安全校验）。
 
@@ -336,6 +316,17 @@ class ITerminal(ABC):
             
         Note:
             写入后会等待命令执行完成（通过读取完成标记）。
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def close(self) -> None:
+        """优雅关闭终端进程，释放资源（必须显式调用）。
+
+        流程：关闭输入管道→发送终止信号→5秒超时后强制杀死。
+
+        Raises:
+            RuntimeError: 进程超时未退出（强制杀死后抛出）。
         """
         raise NotImplementedError
 
@@ -413,7 +404,7 @@ class LocalTerminal(ITerminal):
                 f"  - 在 Windows 上使用 WSL (Windows Subsystem for Linux)\n"
                 f"  - 或使用其他支持 Windows 的终端实现"
             )
-        
+
         self._terminal_id = uuid4().hex  # 生成唯一终端ID
         self._lock = threading.RLock()    # 初始化线程锁
 
@@ -459,29 +450,74 @@ class LocalTerminal(ITerminal):
             raise NotADirectoryError(f"路径不是目录，无法作为工作空间：{workspace_abs}")
         self._workspace = workspace_abs
 
-        # 2. 初始化安全控制参数（处理默认值，避免外部修改内部列表）
+        # 初始化安全控制参数（处理默认值，避免外部修改内部列表）
         self._allowed_commands = allowed_commands.copy() if allowed_commands else []
         self._disable_script_execution = disable_script_execution
 
-        # 3. 初始化终端状态，启动进程
-        self._current_dir = ""
-        self.open()  # 自动启动终端进程
-
+        # 初始化命令列表
         self._init_commands = init_commands if init_commands is not None else []
-        # 4. 同步运行异步初始化命令
+
+        # 启动进程并同步目录
         try:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # 无运行中的循环，直接用 asyncio.run
-                asyncio.run(self.run_init_commands())
-                return
-            asyncio.run_coroutine_threadsafe(self.run_init_commands(), loop)
-        except Exception as e:
-            logger.error(f"终端初始化失败: {e}", exc_info=True)
-            if self._process:
-                self._process.terminate()
+            self._open()  # 自动启动终端进程
+            # Wait for init commands to complete if running synchronously
+            # Note: In Python 3.12+, this should work even if we don't explicitly wait
+        except Exception:
+            # Clean up if initialization fails
+            self.close()
             raise
+
+    def _open(self) -> None:
+        # 检查进程是否已运行（避免重复启动）
+        if hasattr(self, '_process') and self._process and self._process.poll() is None:
+            raise RuntimeError(f"终端进程已在运行（PID: {self._process.pid}），无需重复启动")
+
+        try:
+            # 启动长期bash进程（配置双向管道与行缓冲）
+            # 指定工作目录为workspace，避免后续cd操作
+            self._process = subprocess.Popen(
+                args=["bash"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # 错误流合并到stdout，统一处理
+                text=True,                 # 文本模式（避免字节流转换）
+                bufsize=1,                 # 行缓冲，确保实时输出
+                shell=False,               # 列表传参，防止命令注入
+                close_fds=True,            # 关闭无关文件描述符，减少资源占用
+                encoding='utf-8',
+                errors='replace',
+                cwd=self._workspace,  # 直接指定工作目录
+            )
+            logger.info(f"✅ 终端进程启动成功（PID: {self._process.pid}），工作目录：{self._workspace}")
+
+            # 同步运行异步初始化命令
+            try:
+                try:
+                    asyncio.get_running_loop()
+                except RuntimeError:
+                    # 无运行中的循环，直接用 asyncio.run
+                    asyncio.run(self.run_init_commands())
+                    return
+
+                # 有运行中的循环时，使用 ThreadPoolExecutor
+                with ThreadPoolExecutor() as executor:
+                    # 1. 提交任务到线程池：返回 concurrent.futures.Future（同步 Future）
+                    # 任务逻辑：在新线程中用 asyncio.run 执行异步初始化命令
+                    future = executor.submit(
+                        lambda: asyncio.run(self.run_init_commands())
+                    )
+                    # 2. 同步阻塞等待任务完成（concurrent.futures.Future 支持安全调用 result()）
+                    # 若任务抛出异常，result() 会重新抛出，可被外层 try-except 捕获
+                    future.result(timeout=5.0)  # 5秒超时等待初始化完成
+
+            except Exception as e:
+                logger.error(f"终端初始化失败: {e}", exc_info=True)
+                if self._process:
+                    self._process.terminate()
+                raise
+
+        except Exception as e:
+            raise RuntimeError(f"终端进程启动失败：{str(e)}") from e
 
     async def run_init_commands(self) -> None:
         """运行初始化命令（异步版本）"""
@@ -531,6 +567,81 @@ class LocalTerminal(ITerminal):
         except Exception as e:
             logger.error(f"❌ 切换到workspace目录失败：{e}")
             raise
+
+    async def _sync_current_dir(self) -> None:
+        """私有方法：同步bash会话的真实当前目录到_current_dir（防篡改）。
+        
+        优化点：
+        1. 用/proc/self/cwd或pwd -P替代pwd，避免被环境变量篡改；
+        2. 新增真实目录的根目录校验，确保安全边界。
+        """
+        if not self._process or self._process.poll() is not None:
+            raise RuntimeError("无法同步当前目录：终端未运行或已退出")
+
+        try:
+            # 步骤1：获取进程真实当前目录（核心修改：替换pwd命令）
+            real_cwd = await self._get_real_current_dir()
+
+            # 步骤2：校验真实目录是否在根目录范围内（安全边界）
+            if not real_cwd.startswith(self._root_dir):
+                raise RuntimeError(
+                    f"当前目录（{real_cwd}）超出根目录（{self._root_dir}），安全边界违规\n"
+                    f"警告：可能存在目录篡改攻击！"
+                )
+
+            # 步骤3：更新当前目录状态
+            # old_dir = self._current_dir
+            self._current_dir = real_cwd
+
+            # 日志提示（区分是否在workspace内）
+            if real_cwd.startswith(self._workspace):
+                logger.info(f"🔄 同步终端当前目录：{real_cwd} (在workspace内)")
+
+        except Exception as e:
+            raise RuntimeError(f"目录同步失败：{str(e)}") from e
+        
+    async def _get_real_current_dir(self) -> str:
+        """私有辅助方法：获取bash子进程的真实当前工作目录（避免pwd被篡改）。
+        
+        优先级：
+        1. Linux：/proc/<pid>/cwd（bash子进程的当前目录，内核维护，不可篡改）；
+        2. 其他系统：通过bash执行pwd -P（强制物理路径，忽略PWD环境变量）。
+        
+        Returns:
+            str: 真实当前目录绝对路径。
+        
+        Raises:
+            RuntimeError: 获取真实目录失败。
+        """
+        if not self._process:
+            raise RuntimeError("终端进程未启动，无法获取当前目录")
+        
+        # 场景1：Linux系统（优先使用/proc/<pid>/cwd获取bash子进程的目录）
+        proc_cwd_path = f"/proc/{self._process.pid}/cwd"
+        if os.path.exists(proc_cwd_path) and os.path.islink(proc_cwd_path):
+            try:
+                # 读取符号链接指向的真实路径（内核保证准确性）
+                real_cwd = os.readlink(proc_cwd_path)
+                # 转为绝对路径（处理符号链接可能的相对路径）
+                real_cwd_abs = os.path.abspath(real_cwd)
+                logger.debug(f"📌 从/proc/{self._process.pid}/cwd获取真实目录：{real_cwd_abs}")
+                return real_cwd_abs
+            except (OSError, ValueError) as e:
+                logger.warning(f"⚠️ /proc/{self._process.pid}/cwd读取失败，降级使用pwd -P：{str(e)[:50]}")
+
+        # 场景2：非Linux系统或/proc不可用（通过bash执行pwd -P）
+        # 注意：这里需要通过bash进程执行pwd，而不是直接使用subprocess
+        # 因为我们需要获取bash子进程的当前目录，而不是Python进程的目录
+        try:
+            # 发送 pwd 命令（使用与 run_command 相同的格式）
+            wrapped_cmd = f"pwd -P"
+            output = await self._execute_with_timeout(wrapped_cmd, timeout=5.0)  # 5s timeout for pwd
+            return output.strip()
+            
+        except Exception as e:
+            # 最后的fallback：使用root_dir
+            logger.warning(f"⚠️ 获取bash当前目录失败：{str(e)[:50]}，使用root_dir作为fallback")
+            return self._root_dir
 
     async def acquire(self) -> None:
         """获取终端使用信号量，确保并发安全"""
@@ -649,107 +760,6 @@ class LocalTerminal(ITerminal):
 
     def is_script_execution_disabled(self) -> bool:
         return self._disable_script_execution
-
-    def open(self) -> None:
-        # 检查进程是否已运行（避免重复启动）
-        if hasattr(self, '_process') and self._process and self._process.poll() is None:
-            raise RuntimeError(f"终端进程已在运行（PID: {self._process.pid}），无需重复启动")
-
-        try:
-            # 启动长期bash进程（配置双向管道与行缓冲）
-            # 指定工作目录为workspace，避免后续cd操作
-            self._process = subprocess.Popen(
-                args=["bash"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # 错误流合并到stdout，统一处理
-                text=True,                 # 文本模式（避免字节流转换）
-                bufsize=1,                 # 行缓冲，确保实时输出
-                shell=False,               # 列表传参，防止命令注入
-                close_fds=True,            # 关闭无关文件描述符，减少资源占用
-                encoding='utf-8',
-                errors='replace',
-                cwd=self._workspace,  # 直接指定工作目录
-            )
-            logger.info(f"✅ 终端进程启动成功（PID: {self._process.pid}），工作目录：{self._workspace}")
-
-        except Exception as e:
-            raise RuntimeError(f"终端进程启动失败：{str(e)}") from e
-        
-    async def _get_real_current_dir(self) -> str:
-        """私有辅助方法：获取bash子进程的真实当前工作目录（避免pwd被篡改）。
-        
-        优先级：
-        1. Linux：/proc/<pid>/cwd（bash子进程的当前目录，内核维护，不可篡改）；
-        2. 其他系统：通过bash执行pwd -P（强制物理路径，忽略PWD环境变量）。
-        
-        Returns:
-            str: 真实当前目录绝对路径。
-        
-        Raises:
-            RuntimeError: 获取真实目录失败。
-        """
-        if not self._process:
-            raise RuntimeError("终端进程未启动，无法获取当前目录")
-        
-        # 场景1：Linux系统（优先使用/proc/<pid>/cwd获取bash子进程的目录）
-        proc_cwd_path = f"/proc/{self._process.pid}/cwd"
-        if os.path.exists(proc_cwd_path) and os.path.islink(proc_cwd_path):
-            try:
-                # 读取符号链接指向的真实路径（内核保证准确性）
-                real_cwd = os.readlink(proc_cwd_path)
-                # 转为绝对路径（处理符号链接可能的相对路径）
-                real_cwd_abs = os.path.abspath(real_cwd)
-                logger.debug(f"📌 从/proc/{self._process.pid}/cwd获取真实目录：{real_cwd_abs}")
-                return real_cwd_abs
-            except (OSError, ValueError) as e:
-                logger.warning(f"⚠️ /proc/{self._process.pid}/cwd读取失败，降级使用pwd -P：{str(e)[:50]}")
-
-        # 场景2：非Linux系统或/proc不可用（通过bash执行pwd -P）
-        # 注意：这里需要通过bash进程执行pwd，而不是直接使用subprocess
-        # 因为我们需要获取bash子进程的当前目录，而不是Python进程的目录
-        try:
-            # 发送 pwd 命令（使用与 run_command 相同的格式）
-            wrapped_cmd = f"pwd -P"
-            output = await self._execute_with_timeout(wrapped_cmd, timeout=5.0)  # 5s timeout for pwd
-            return output.strip()
-            
-        except Exception as e:
-            # 最后的fallback：使用root_dir
-            logger.warning(f"⚠️ 获取bash当前目录失败：{str(e)[:50]}，使用root_dir作为fallback")
-            return self._root_dir
-
-    async def _sync_current_dir(self) -> None:
-        """私有方法：同步bash会话的真实当前目录到_current_dir（防篡改）。
-        
-        优化点：
-        1. 用/proc/self/cwd或pwd -P替代pwd，避免被环境变量篡改；
-        2. 新增真实目录的根目录校验，确保安全边界。
-        """
-        if not self._process or self._process.poll() is not None:
-            raise RuntimeError("无法同步当前目录：终端未运行或已退出")
-
-        try:
-            # 步骤1：获取进程真实当前目录（核心修改：替换pwd命令）
-            real_cwd = await self._get_real_current_dir()
-
-            # 步骤2：校验真实目录是否在根目录范围内（安全边界）
-            if not real_cwd.startswith(self._root_dir):
-                raise RuntimeError(
-                    f"当前目录（{real_cwd}）超出根目录（{self._root_dir}），安全边界违规\n"
-                    f"警告：可能存在目录篡改攻击！"
-                )
-
-            # 步骤3：更新当前目录状态
-            # old_dir = self._current_dir
-            self._current_dir = real_cwd
-
-            # 日志提示（区分是否在workspace内）
-            if real_cwd.startswith(self._workspace):
-                logger.info(f"🔄 同步终端当前目录：{real_cwd} (在workspace内)")
-
-        except Exception as e:
-            raise RuntimeError(f"目录同步失败：{str(e)}") from e
 
     def _split_commands(self, command: str) -> list[str]:
         """私有方法：将复合命令按分隔符分割成独立的命令列表。
@@ -1899,62 +1909,6 @@ class LocalTerminal(ITerminal):
         self._process.stdin.write(data)
         self._process.stdin.flush()
 
-    def close(self) -> None:
-        # 检查进程是否存在
-        if not self._process or self._process.poll() is not None:
-            logger.info("ℹ️ 终端进程已关闭或未启动，无需重复操作")
-            # 重置状态
-            self._process = None
-            self._current_dir = ""
-            return
-
-        pid = self._process.pid  # 保存PID用于日志
-
-        # 在同步上下文中尝试获取锁，如果已经被获取则跳过
-        try:
-            # 使用acquire(blocking=False)来非阻塞获取锁
-            lock_acquired = self._lock.acquire(blocking=False)
-            if not lock_acquired:
-                logger.debug("🔒 终端锁已被其他任务持有，跳过锁获取进行关闭")
-        except Exception:
-            # 忽略锁获取失败，继续关闭进程
-            lock_acquired = False
-            pass
-
-        try:
-            # 1. 关闭输入管道（告知进程无更多输入）
-            if self._process.stdin:
-                self._process.stdin.close()
-            # 2. 发送终止信号，等待退出（超时5秒）
-            self._process.terminate()
-            self._process.wait(timeout=5)
-            logger.info(f"✅ 终端进程（PID: {pid}）优雅关闭成功")
-
-        except subprocess.TimeoutExpired:
-            # 3. 超时未退出，强制杀死进程
-            self._process.kill()
-            raise RuntimeError(
-                f"终端进程（PID: {pid}）超时未退出，已强制杀死"
-            ) from None
-
-        except Exception as e:
-            raise RuntimeError(
-                f"关闭终端进程失败：{str(e)}（PID: {pid}）"
-            ) from e
-
-        finally:
-            # 释放锁（如果之前获取了）
-            try:
-                if lock_acquired:
-                    self._lock.release()
-            except (RuntimeError, AttributeError):
-                # 如果锁已经被释放或进程不存在，忽略错误
-                pass
-            finally:
-                # 重置状态
-                self._process = None
-                self._current_dir = ""
-
     async def _execute_with_timeout(self, command: str, timeout: float | None = None) -> str:
         """使用协程超时包装执行命令。
 
@@ -2028,3 +1982,63 @@ class LocalTerminal(ITerminal):
                 # 如果写入失败，只记录日志
                 logger.error(f"❌ 无法写入超时错误信息到终端")
                 raise
+
+    def __del__(self) -> None:
+        """对象销毁时自动关闭终端进程"""
+        self.close()
+
+    def close(self) -> None:
+        # 检查进程是否存在
+        if not self._process or self._process.poll() is not None:
+            logger.info("ℹ️ 终端进程已关闭或未启动，无需重复操作")
+            # 重置状态
+            self._process = None
+            self._current_dir = ""
+            return
+
+        pid = self._process.pid  # 保存PID用于日志
+
+        # 在同步上下文中尝试获取锁，如果已经被获取则跳过
+        try:
+            # 使用acquire(blocking=False)来非阻塞获取锁
+            lock_acquired = self._lock.acquire(blocking=False)
+            if not lock_acquired:
+                logger.debug("🔒 终端锁已被其他任务持有，跳过锁获取进行关闭")
+        except Exception:
+            # 忽略锁获取失败，继续关闭进程
+            lock_acquired = False
+            pass
+
+        try:
+            # 1. 关闭输入管道（告知进程无更多输入）
+            if self._process.stdin:
+                self._process.stdin.close()
+            # 2. 发送终止信号，等待退出（超时5秒）
+            self._process.terminate()
+            self._process.wait(timeout=5)
+            logger.info(f"✅ 终端进程（PID: {pid}）优雅关闭成功")
+
+        except subprocess.TimeoutExpired:
+            # 3. 超时未退出，强制杀死进程
+            self._process.kill()
+            raise RuntimeError(
+                f"终端进程（PID: {pid}）超时未退出，已强制杀死"
+            ) from None
+
+        except Exception as e:
+            raise RuntimeError(
+                f"关闭终端进程失败：{str(e)}（PID: {pid}）"
+            ) from e
+
+        finally:
+            # 释放锁（如果之前获取了）
+            try:
+                if lock_acquired:
+                    self._lock.release()
+            except (RuntimeError, AttributeError):
+                # 如果锁已经被释放或进程不存在，忽略错误
+                pass
+            finally:
+                # 重置状态
+                self._process = None
+                self._current_dir = ""

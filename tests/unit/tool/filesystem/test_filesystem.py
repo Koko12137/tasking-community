@@ -248,7 +248,7 @@ class TestLocalFileSystem:
             f.write("Hello")
 
         # Run a command to list files
-        result = await filesystem.run_command("ls")
+        result = await filesystem.get_terminal().run_command("ls")
 
         assert result is not None
         assert len(result) > 0
@@ -318,7 +318,7 @@ class TestLocalFileSystem:
         """Test terminal show_prompt setting affects filesystem operations."""
         # This test verifies that LocalFileSystem inherits terminal's show_prompt setting
         # The actual behavior is delegated to the terminal
-        result = await filesystem.run_command("pwd")
+        result = await filesystem.get_terminal().run_command("pwd")
         assert result is not None
         assert temp_workspace in result or any(temp_workspace.split('/')[-1] in line for line in result.split('\n') if line.strip())
 
@@ -328,7 +328,7 @@ class TestLocalFileSystem:
         terminal = LocalTerminal(root_dir=temp_workspace, workspace=temp_workspace, allowed_commands=["pwd", "ls"])
         fs = LocalFileSystem(terminal_instance=terminal)
 
-        result = await fs.run_command("pwd")
+        result = await fs.get_terminal().run_command("pwd", show_prompt=True)
         assert result is not None
 
     @pytest.mark.asyncio
@@ -337,14 +337,14 @@ class TestLocalFileSystem:
         terminal = LocalTerminal(root_dir=temp_workspace, workspace=temp_workspace, allowed_commands=["pwd", "ls"])
         fs = LocalFileSystem(terminal_instance=terminal)
 
-        result = await fs.run_command("pwd")
+        result = await fs.get_terminal().run_command("pwd", show_prompt=False)
         assert result is not None
 
     @pytest.mark.asyncio
     async def test_terminal_show_prompt_no_output_command(self, filesystem):
         """Test filesystem with commands that produce no output."""
         # Commands that don't produce output should still return something
-        result = await filesystem.run_command("echo -n")  # Echo without newline
+        result = await filesystem.get_terminal().run_command("echo -n")  # Echo without newline
         assert result is not None
 
     @pytest.mark.asyncio
@@ -355,7 +355,7 @@ class TestLocalFileSystem:
             with open(os.path.join(temp_workspace, f"file_{i}.txt"), 'w') as f:
                 f.write(f"Content {i}")
 
-        result = await filesystem.run_command("ls -la")
+        result = await filesystem.get_terminal().run_command("ls -la")
         lines = result.strip().split('\n')
         assert len(lines) >= 3  # Should have multiple lines
 
@@ -366,7 +366,7 @@ class TestLocalFileSystem:
         fs = LocalFileSystem(terminal_instance=terminal)
 
         # Get initial directory
-        initial_result = await fs.run_command("pwd")
+        initial_result = await fs.get_terminal().run_command("pwd", show_prompt=False)
         initial_path = initial_result.strip()
 
         # Terminal should maintain working directory
@@ -377,7 +377,7 @@ class TestLocalFileSystem:
     async def test_terminal_show_prompt_with_whitespace_command(self, filesystem, temp_workspace):
         """Test filesystem handles commands with whitespace correctly."""
         # Command with trailing whitespace
-        result = await filesystem.run_command("pwd ")
+        result = await filesystem.get_terminal().run_command("pwd ")
         assert result is not None
         assert temp_workspace in result
 
@@ -385,7 +385,7 @@ class TestLocalFileSystem:
     async def test_terminal_show_prompt_error_handling(self, filesystem):
         """Test filesystem properly handles command errors."""
         # Invalid command should produce error output
-        result = await filesystem.run_command("nonexistent_command_12345")
+        result = await filesystem.get_terminal().run_command("nonexistent_command_12345")
         assert result is not None
         # Error message may vary but should be present
 

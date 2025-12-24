@@ -41,13 +41,12 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
         task_type: str,
         max_depth: int,
         context_cls: type[IContext] = BaseContext,
-        parent: ITreeTaskNode[StateT, EventT] | None = None,
-        sub_tasks: OrderedDict[str, ITreeTaskNode[StateT, EventT]] | None = None,
         **kwargs: Any,
     ) -> None:
         # 树形结构属性初始化
         self._parent = None  # 初始化为None，将通过set_parent设置
-        self._sub_tasks = sub_tasks if sub_tasks else OrderedDict()
+        # 创建空的子任务有序字典
+        self._sub_tasks = OrderedDict()
 
         # 初始化深度（延迟计算）
         self._current_depth = 0  # 将在父子关系建立后重新计算
@@ -77,17 +76,6 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
             context_cls=context_cls,
             **kwargs,
         )
-
-        # 建立父子关系
-        if sub_tasks:
-            # 为每个子任务设置父节点
-            for child in sub_tasks.values():
-                child.set_parent(self)
-
-        if parent is not None:
-            # 通知父节点添加这个子节点（避免循环调用）
-            if self not in parent.get_sub_tasks():
-                parent.add_sub_task(self)
 
     # ********** 基础信息 **********
 
@@ -203,15 +191,26 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
             KeyError: 如果子任务已存在且replace为False
         """
         # 避免重复添加
-        if sub_task.get_title() not in self._sub_tasks:
-            self._sub_tasks[sub_task.get_title()] = sub_task
+        task_title = sub_task.get_title()
+        task_key = task_title
+
+        # 处理空标题的情况，生成唯一键
+        if not task_key:
+            # 生成唯一键的逻辑：sub_task_0, sub_task_1, ...
+            i = 0
+            while f"sub_task_{i}" in self._sub_tasks:
+                i += 1
+            task_key = f"sub_task_{i}"
+
+        if task_key not in self._sub_tasks:
+            self._sub_tasks[task_key] = sub_task
 
             # 设置子任务的父节点（避免循环调用）
             if sub_task.get_parent() is not self:
                 sub_task.set_parent(self)
         else:
             if replace:
-                self._sub_tasks[sub_task.get_title()] = sub_task
+                self._sub_tasks[task_key] = sub_task
                 # 设置子任务的父节点（避免循环调用）
                 if sub_task.get_parent() is not self:
                     sub_task.set_parent(self)
@@ -228,11 +227,15 @@ class BaseTreeTaskNode(ITreeTaskNode[StateT, EventT], BaseTask[StateT, EventT]):
         Returns:
             被移除的子任务节点对象
         """
-        try:
-            self._sub_tasks.pop(node.get_title())
-        except ValueError as e:
-            # 重新抛出带有更清晰信息的错误
-            raise ValueError(f"Sub task node not found in the list") from e
+        # 查找节点对应的键
+        for key, value in self._sub_tasks.items():
+            if value == node:
+                # 移除节点
+                self._sub_tasks.pop(key)
+                break
+        else:
+            # 未找到节点
+            raise ValueError(f"Sub task node not found in the list")
 
         # 清除被移除子节点的父节点引用
         node.remove_parent()

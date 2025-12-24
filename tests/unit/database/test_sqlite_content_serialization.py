@@ -66,14 +66,14 @@ class TestSQLiteContentSerialization(unittest.TestCase):
 
         # Serialize
         memory_dict = memory.to_dict()
-        serialized = self.sqlite_db._serialize_content(memory_dict)
+        self.sqlite_db._serialize_content(memory_dict)  # This modifies the dictionary in place
 
         # Verify
-        self.assertIn("content", serialized)
-        self.assertIsInstance(serialized["content"], str)
+        self.assertIn("content", memory_dict)
+        self.assertIsInstance(memory_dict["content"], str)
 
         # Verify JSON format
-        parsed = json.loads(serialized["content"])
+        parsed = json.loads(memory_dict["content"])
         self.assertEqual(parsed[0]["type"], "text")
         self.assertEqual(parsed[0]["text"], "测试文本内容")
 
@@ -106,10 +106,10 @@ class TestSQLiteContentSerialization(unittest.TestCase):
 
         # Serialize
         memory_dict = memory.to_dict()
-        serialized = self.sqlite_db._serialize_content(memory_dict)
+        self.sqlite_db._serialize_content(memory_dict)
 
         # Verify
-        parsed = json.loads(serialized["content"])
+        parsed = json.loads(memory_dict["content"])
         self.assertEqual(len(parsed), 3)
         self.assertEqual(parsed[0]["text"], "第一行文本")
         self.assertEqual(parsed[1]["text"], "第二行文本")
@@ -143,10 +143,10 @@ class TestSQLiteContentSerialization(unittest.TestCase):
 
         # Serialize
         memory_dict = memory.to_dict()
-        serialized = self.sqlite_db._serialize_content(memory_dict)
+        self.sqlite_db._serialize_content(memory_dict)
 
         # Verify
-        parsed = json.loads(serialized["content"])
+        parsed = json.loads(memory_dict["content"])
         self.assertEqual(parsed[0]["text"], "")
 
     def test_deserialize_empty_json(self) -> None:
@@ -169,10 +169,10 @@ class TestSQLiteContentSerialization(unittest.TestCase):
 
         # Serialize
         memory_dict = memory.to_dict()
-        serialized = self.sqlite_db._serialize_content(memory_dict)
+        self.sqlite_db._serialize_content(memory_dict)
 
         # Deserialize and verify roundtrip
-        result = self.sqlite_db._deserialize_content(serialized["content"])
+        result = self.sqlite_db._deserialize_content(memory_dict["content"])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].text, special_text)
 
@@ -188,10 +188,10 @@ class TestSQLiteContentSerialization(unittest.TestCase):
 
         # Roundtrip
         memory_dict = memory.to_dict()
-        serialized = self.sqlite_db._serialize_content(memory_dict)
+        self.sqlite_db._serialize_content(memory_dict)
 
         # Create row dict and deserialize
-        row_dict = {"id": "test_id", "content": serialized["content"]}
+        row_dict = {"id": "test_id", "content": memory_dict["content"]}
         restored = self.sqlite_db._process_row(row_dict)
 
         # Verify

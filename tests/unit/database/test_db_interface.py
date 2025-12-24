@@ -185,13 +185,13 @@ class TestInterfaceMethodSignatures(unittest.TestCase):
         # 检查 delete 方法签名
         delete_sig = inspect.signature(IDatabase.delete)
         params = list(delete_sig.parameters.keys())
-        expected_params = ['self', 'context', 'memory_id']
+        expected_params = ['self', 'context', 'memory_id', 'timeout']
         self.assertEqual(params, expected_params)
 
         # 检查 update 方法签名
         update_sig = inspect.signature(IDatabase.update)
         params = list(update_sig.parameters.keys())
-        expected_params = ['self', 'context', 'memory']
+        expected_params = ['self', 'context', 'memory', 'timeout']
         self.assertEqual(params, expected_params)
 
     def test_ivector_database_method_signatures(self) -> None:
@@ -207,13 +207,13 @@ class TestInterfaceMethodSignatures(unittest.TestCase):
         # 检查 search 方法签名
         search_sig = inspect.signature(IVectorDatabase.search)
         params = list(search_sig.parameters.keys())
-        expected_params = ['self', 'context', 'query', 'top_k', 'threshold', 'filter_expr']
+        expected_params = ['self', 'context', 'query', 'top_k', 'threshold', 'filter_expr', 'output_fields', 'timeout']
         self.assertEqual(params, expected_params)
 
         # 检查 query 方法签名
         query_sig = inspect.signature(IVectorDatabase.query)
         params = list(query_sig.parameters.keys())
-        expected_params = ['self', 'context', 'filter_expr', 'output_fields', 'limit']
+        expected_params = ['self', 'context', 'filter_expr', 'output_fields', 'limit', 'timeout']
         self.assertEqual(params, expected_params)
 
     def test_isql_database_method_signatures(self) -> None:

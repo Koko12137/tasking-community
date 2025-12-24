@@ -228,10 +228,6 @@ class LocalFileSystem(IFileSystem):
         """获取关联的终端实例"""
         return self._terminal
 
-    async def run_command(self, command: str) -> str:
-        """在终端中执行命令"""
-        return await self._terminal.run_command(command)
-
     async def open_file(self, file_path: str, file_type: str, encoding: str) -> str | bytes:
         """打开并读取文件内容（异步IO）
         
