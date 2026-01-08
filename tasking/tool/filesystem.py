@@ -7,7 +7,9 @@ import shlex
 import base64
 import mimetypes
 import time
+from pathlib import Path
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 
 import aiofiles
 from asyncer import asyncify
@@ -15,7 +17,11 @@ from loguru import logger
 
 from .terminal import ITerminal
 from ..model.filesystem import (
-    SearchParams, SearchResult, MatchInfo
+    FileInfo,
+    FileType,
+    SearchParams,
+    SearchResult,
+    MatchInfo,
 )
 
 
@@ -28,6 +34,18 @@ class IFileSystem(ABC):
 
         Returns:
             ITerminal: 关联的终端实例。
+        """
+        
+    @abstractmethod
+    async def list_files(self, directory_path: str, recursive: bool = False) -> list[FileInfo]:
+        """列出目录下的所有文件/子目录（可选递归）并返回结构化信息。
+
+        Args:
+            directory_path: 目标目录路径。
+            recursive: 是否递归列出子目录下的文件（默认 False）。
+
+        Returns:
+            list[FileInfo]: 文件/目录元数据列表。
         """
 
     @abstractmethod
@@ -52,6 +70,22 @@ class IFileSystem(ABC):
 
         Returns:
             文件的base64编码/文本内容。
+        """
+
+    @abstractmethod
+    async def open_file_stream(self, file_path: str, chunk_size: int = 8192) -> AsyncIterator[bytes]:
+        """以流式方式读取文件，按块返回bytes。
+
+        Args:
+            file_path: 目标文件路径。
+            chunk_size: 每次读取的字节数，默认8192。
+
+        Returns:
+            AsyncIterator[bytes]: 异步字节流，适合大文件或下游流式传输。
+            
+        Raises:
+            FileNotFoundError: 文件不存在。
+            RuntimeError: 路径越界或IO错误。
         """
 
     @abstractmethod
@@ -204,6 +238,192 @@ class LocalFileSystem(IFileSystem):
                     f"  终端：{terminal_allowed}"
                 )
             self._allow_commands = allow_commands
+            
+    async def list_files(self, directory_path: str, recursive: bool = False) -> list[FileInfo]:
+        """列出目录下的所有文件和子目录，返回结构化的文件信息。
+
+        Args:
+            directory_path: 目标目录路径。
+            recursive: 是否递归列出子目录内容。
+
+        Returns:
+            list[FileInfo]: 目录下的文件和子目录信息列表。
+
+        Raises:
+            RuntimeError: 目录路径超出workspace范围或读取失败。
+            FileNotFoundError: 目录不存在。
+        """
+        dir_abs, _ = self._terminal.check_path(directory_path)
+
+        if not os.path.exists(dir_abs):
+            raise FileNotFoundError(f"目录不存在：{dir_abs}")
+
+        if not os.path.isdir(dir_abs):
+            raise RuntimeError(f"指定路径不是目录：{dir_abs}")
+
+        workspace_path = Path(self._workspace).resolve()
+        target_path = Path(dir_abs).resolve()
+
+        try:
+            iterator = target_path.rglob("*") if recursive else target_path.iterdir()
+            file_infos: list[FileInfo] = []
+
+            for entry in iterator:
+                rel_path = entry.relative_to(workspace_path)
+                parent_rel = (
+                    entry.parent.relative_to(workspace_path)
+                    if entry.parent != workspace_path
+                    else Path("")
+                )
+
+                file_infos.append(
+                    FileInfo(
+                        name=entry.name,
+                        path=str(rel_path),
+                        full_path=str(entry),
+                        parent=str(parent_rel),
+                        size=entry.stat().st_size if entry.is_file() else None,
+                        file_type=self._infer_file_type(entry),
+                        extension=entry.suffix if entry.is_file() else "",
+                    )
+                )
+
+            logger.info(
+                f"📁 列出目录内容成功：{dir_abs}，共 {len(file_infos)} 项（递归={recursive}）"
+            )
+            return file_infos
+        except (OSError, IOError) as e:
+            raise RuntimeError(
+                f"读取目录内容失败：{dir_abs}，错误：{str(e)}"
+            ) from e
+
+    async def open_file_stream(self, file_path: str, chunk_size: int = 8192) -> AsyncIterator[bytes]: # pyright: ignore[reportIncompatibleMethodOverride]
+        """流式读取文件为bytes块。
+
+        Args:
+            file_path: 目标文件路径。
+            chunk_size: 每次读取的字节数。
+
+        Yields:
+            bytes: 文件内容分块。
+
+        Raises:
+            FileNotFoundError: 文件不存在。
+            RuntimeError: 路径越界或IO错误。
+        """
+        file_abs, _ = self._terminal.check_path(file_path)
+
+        if not os.path.exists(file_abs):
+            raise FileNotFoundError(f"文件不存在：{file_abs}")
+        if not os.path.isfile(file_abs):
+            raise RuntimeError(f"指定路径不是文件：{file_abs}")
+
+        try:
+            async with aiofiles.open(file_abs, "rb") as f:
+                while True:
+                    chunk = await f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+        except FileNotFoundError:
+            raise
+        except (OSError, IOError) as e:
+            raise RuntimeError(
+                f"流式读取文件失败：{file_abs}，错误：{str(e)}"
+            ) from e
+
+    def _infer_file_type(self, path: Path) -> FileType:
+        """根据路径推断文件类型。"""
+
+        if path.is_dir():
+            return FileType.FOLDER
+
+        suffix = path.suffix.lower()
+
+        code_like_exts = {
+            ".py",
+            ".js",
+            ".ts",
+            ".tsx",
+            ".jsx",
+            ".java",
+            ".c",
+            ".cc",
+            ".cpp",
+            ".cxx",
+            ".h",
+            ".hh",
+            ".hpp",
+            ".cs",
+            ".go",
+            ".rs",
+            ".rb",
+            ".php",
+            ".swift",
+            ".kt",
+            ".kts",
+            ".scala",
+            ".sh",
+            ".bash",
+            ".zsh",
+            ".fish",
+            ".ps1",
+            ".bat",
+            ".cmd",
+            ".lua",
+            ".pl",
+            ".pm",
+            ".r",
+            ".jl",
+            ".m",
+            ".sql",
+            ".graphql",
+            ".gql",
+            ".hs",
+            ".erl",
+            ".ex",
+            ".exs",
+            ".clj",
+            ".cljs",
+            ".coffee",
+            ".dart",
+        }
+
+        text_like_exts = {
+            ".txt",
+            ".md",
+            ".json",
+            ".yaml",
+            ".yml",
+            ".csv",
+            ".tsv",
+            ".toml",
+            ".ini",
+            ".cfg",
+            ".log",
+        }
+
+        mime_type, _ = mimetypes.guess_type(path.name)
+        if mime_type:
+            if mime_type.startswith("text/"):
+                # 优先使用扩展名判断是否为代码文件
+                if suffix in code_like_exts:
+                    return FileType.CODE
+                return FileType.TEXT
+            if mime_type.startswith("image/"):
+                return FileType.IMAGE
+            if mime_type.startswith("audio/"):
+                return FileType.AUDIO
+            if mime_type.startswith("video/"):
+                return FileType.VIDEO
+
+        if suffix in code_like_exts:
+            return FileType.CODE
+
+        if suffix in text_like_exts:
+            return FileType.TEXT
+
+        return FileType.OTHER
 
     def file_exists(self, file_path: str) -> bool:
         """检查文件是否存在。
@@ -223,7 +443,7 @@ class LocalFileSystem(IFileSystem):
             return os.path.exists(file_abs)
         except (RuntimeError, ValueError):
             return False
-  
+
     def get_terminal(self) -> ITerminal:
         """获取关联的终端实例"""
         return self._terminal
@@ -289,48 +509,8 @@ class LocalFileSystem(IFileSystem):
         if os.path.exists(file_abs):
             raise FileExistsError(f"文件已存在：{file_abs}")
 
-        try:
-            # 确保目录存在
-            os.makedirs(os.path.dirname(file_abs), exist_ok=True)
-
-            if encoding == "base64":
-                # 如果内容是字符串，先解码为bytes
-                if isinstance(content, str):
-                    file_bytes = base64.b64decode(content)
-                else:
-                    file_bytes = content
-            elif encoding == "utf-8":
-                # 明确指定utf-8编码
-                if isinstance(content, str):
-                    # 如果是字符串，编码为UTF-8字节
-                    file_bytes = content.encode('utf-8')
-                else:
-                    # 如果已经是bytes，验证是否为有效的UTF-8
-                    try:
-                        content.decode('utf-8')  # 验证是否为有效的UTF-8
-                        file_bytes = content
-                    except UnicodeDecodeError:
-                        raise ValueError(f"传入的bytes内容不是有效的UTF-8编码")
-            else:
-                # 其他编码方式，按字符串处理
-                if isinstance(content, str):
-                    file_bytes = content.encode('utf-8')
-                else:
-                    # 如果是bytes，假设已经正确编码
-                    file_bytes = content
-
-            # 使用aiofiles进行异步文件写入
-            async with aiofiles.open(file_abs, 'wb') as f:
-                await f.write(file_bytes)
-
-            file_size = len(file_bytes)
-            logger.info(f"📄 文件创建成功：{file_abs}，类型：{file_type}，大小：{file_size} 字节")
-            return f"文件创建成功：{file_abs}，类型：{file_type}，大小：{file_size} 字节"
-
-        except (OSError, IOError, ValueError) as e:
-            raise RuntimeError(
-                f"创建文件失败：{file_abs}，错误：{str(e)}"
-            ) from e
+        # 调用 save_file 方法保存文件
+        return await self.save_file(file_path, content, encoding, replace=True)
 
     async def save_file(self, file_path: str, content: str | bytes, encoding: str, replace: bool = False) -> str:
         """保存文件（使用aiofiles异步IO）
@@ -751,5 +931,3 @@ class LocalFileSystem(IFileSystem):
         separator = "-" * 60
 
         return f"{header}\n{separator}\n{raw_output}"
-
-

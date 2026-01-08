@@ -1,11 +1,11 @@
 from abc import abstractmethod, ABC
 from typing import Any, cast
 
-from ...model import Message, Role, IAsyncQueue, AsyncQueue, TextBlock, MultimodalContent
-from ...core.state_machine.task import ITask, TaskState, TaskEvent
-from ...utils.io import read_markdown
-from ...utils.string.xml import extract_by_label
-from ...utils.string.message import extract_text_from_message
+from ..model import Message, Role, IAsyncQueue, AsyncQueue, TextBlock, MultimodalContent
+from ..core.state_machine.task import ITask, TaskState, TaskEvent
+from ..utils.io import read_markdown
+from ..utils.string.xml import extract_by_label
+from ..utils.string.message import extract_text_from_message
 
 
 class HumanInterfere(Exception):

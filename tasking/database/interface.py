@@ -76,9 +76,9 @@ class IVectorDatabase(IDatabase[MemoryT]):
         self,
         context: dict[str, Any],
         query: list[MultimodalContent],
-        top_k: int,
-        threshold: list[float],
-        filter_expr: str,
+        top_k: int = 100,
+        threshold: list[float] | None = None,
+        filter_expr: str| None = None,
         output_fields: list[str] | None = None,
         timeout: float = 1800.0,
     ) -> list[tuple[MemoryT, float]]:

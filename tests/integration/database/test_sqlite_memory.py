@@ -5,12 +5,12 @@ SQLite 记忆实现测试套件
 """
 
 import unittest
-from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
 import pytest
 import aiosqlite
+from pydantic import BaseModel, Field
 
 # pylint: disable=import-error
 # NOTE: E0401 import-error is a pylint configuration issue.
@@ -34,12 +34,11 @@ class SimpleSqliteManager(ISqlDBManager[aiosqlite.Connection]):
         await self._connection.close()
 
 
-@dataclass
-class MemoryData:
+class MemoryData(BaseModel):
     """测试用记忆数据类，实现 MemoryProtocol"""
     content: str
     category: str = "test"
-    id: str = field(default_factory=lambda: str(uuid4()))
+    id: str = Field(default_factory=lambda: str(uuid4()))
 
     def to_dict(self) -> dict[str, Any]:
         """将记忆对象转为字典形式"""

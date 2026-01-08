@@ -10,7 +10,6 @@ from ..state_machine.const import StateT, EventT
 from ..state_machine.workflow import IWorkflow, WorkflowStageT, WorkflowEventT
 from ..state_machine.task import ITask
 from ...model import CompletionConfig, Message, ToolCallRequest, IAsyncQueue
-from ...llm import ILLM
 
 
 class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTransportT]):
@@ -33,26 +32,6 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         """获取Agent的类型"""
         pass
 
-    # ********** 语言模型信息 **********
-
-    @abstractmethod
-    def get_llm(self) -> ILLM:
-        """获取智能体工作流当前状态的语言模型
-
-        返回:
-            ILLM: 智能体的语言模型
-        """
-        pass
-
-    @abstractmethod
-    def get_llms(self) -> dict[WorkflowStageT, ILLM]:
-        """获取智能体的语言模型
-
-        返回:
-            dict[WorkflowStageT, ILLM]: 智能体的语言模型
-        """
-        pass
-
     # ********** 工作流与工具管理 **********
 
     @abstractmethod
@@ -62,16 +41,24 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         Returns:
             IWorkflow:
                 Agent关联的工作流
+                
+        Raises:
+            RuntimeError: 如果工作流工厂函数未设置
         """
         pass
-
+    
     @abstractmethod
-    def set_workflow(self, workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]) -> None:
+    def set_workflow(
+        self,
+        workflow_factory: Callable[[], IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]],
+    ) -> None:
         """设置Agent关联的工作流
 
         Args:
-            workflow (IWorkflow):
-                要设置的工作流实例
+            workflow_factory (Callable[[], IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]]): 工作流构造函数
+
+        Raises:
+            RuntimeError: 如果工作流工厂函数已设置
         """
         pass
 
@@ -84,7 +71,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
                 工具服务客户端实例，如果未设置则返回 None
         """
         pass
-    
+
     @abstractmethod
     async def get_tools_with_tags(self, tags: set[str]) -> dict[str, McpTool]:
         """获取工具服务中注册的所有工具及其标签
@@ -103,19 +90,19 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     async def call_tool(
         self,
         context: dict[str, Any],
-        name: str,
+        tool_call: ToolCallRequest,
+        workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT],
         task: ITask[StateT, EventT],
-        inject: dict[str, Any],
-        kwargs: dict[str, Any],
+        **inject: Any, # 注入工具的额外依赖参数
     ) -> Message:
         """调用指定名称的工具
 
         Args:
             context (dict[str, Any]): 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
-            name (str): 工具名称
+            tool_call (ToolCallRequest): 工具调用请求
+            workflow (IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]): 要调用工具的工作流实例
             task (ITask[StateT, EventT]): 任务实例
-            inject (dict[str, Any]): 注入工具的额外依赖参数
-            kwargs (dict[str, Any]): 工具调用的参数
+            **inject: Any: 注入工具的额外依赖参数
 
         Returns:
             Message: 工具调用结果
@@ -247,6 +234,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     async def think(
         self,
         context: dict[str, Any],
+        workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT],
         queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
         valid_tools: dict[str, McpTool],
@@ -258,6 +246,8 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         参数:
             context (dict[str, Any]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
+            workflow (IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]):
+                要思考的工作流实例
             queue (IQueue[Message]):
                 数据队列，用于输出任务运行过程中产生的数据
             task (ITask[StateT, EventT]):
@@ -318,6 +308,7 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
     async def act(
         self,
         context: dict[str, Any],
+        workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT],
         queue: IAsyncQueue[Message],
         tool_call: ToolCallRequest,
         task: ITask[StateT, EventT],
@@ -328,6 +319,8 @@ class IAgent(ABC, Generic[WorkflowStageT, WorkflowEventT, StateT, EventT, Client
         参数:
             context (dict[str, Any]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
+            workflow (IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]):
+                要采取行动的工作流实例
             queue (IQueue[Message]):
                 数据队列，用于输出任务运行过程中产生的数据
             tool_call (ToolCallRequest):

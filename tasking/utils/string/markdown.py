@@ -1,12 +1,10 @@
 """Markdown 标题提取工具模块，提供从 Markdown 文件中按照标题提取对应内容的功能。"""
 
 import re
-from typing import List, Dict, Optional
-from dataclasses import dataclass
+from pydantic import BaseModel
 
 
-@dataclass
-class MarkdownHeader:
+class MarkdownHeader(BaseModel):
     """Markdown 标题数据类"""
     level: int  # 标题级别 (1-6)
     title: str  # 标题文本
@@ -15,24 +13,23 @@ class MarkdownHeader:
     content_end: int  # 内容在文件中的结束位置
 
 
-@dataclass
-class MarkdownSection:
+class MarkdownSection(BaseModel):
     """Markdown 章节数据类"""
     header: MarkdownHeader  # 章节标题
     content: str  # 章节内容（包含子章节）
-    subsections: List['MarkdownSection']  # 子章节列表
+    subsections: list['MarkdownSection']  # 子章节列表
 
 
-def extract_all_headers(content: str) -> List[MarkdownHeader]:
+def extract_all_headers(content: str) -> list[MarkdownHeader]:
     """提取 Markdown 文件中的所有标题。
 
     Args:
         content (str): Markdown 文件内容
 
     Returns:
-        List[MarkdownHeader]: 标题列表，按出现顺序排列
+        list[MarkdownHeader]: 标题列表，按出现顺序排列
     """
-    headers: List[MarkdownHeader] = []
+    headers: list[MarkdownHeader] = []
     lines = content.split('\n')
 
     # Markdown 标题正则表达式，支持 ATX 风格 (# ## ###) 和 Setext 风格 (=== ---)
@@ -92,17 +89,17 @@ def extract_all_headers(content: str) -> List[MarkdownHeader]:
     return headers
 
 
-def find_header_by_title(headers: List[MarkdownHeader], title: str,
-                       case_sensitive: bool = False) -> Optional[MarkdownHeader]:
+def find_header_by_title(headers: list[MarkdownHeader], title: str,
+                       case_sensitive: bool = False) -> MarkdownHeader | None:
     """根据标题文本查找匹配的标题。
 
     Args:
-        headers (List[MarkdownHeader]): 标题列表
+        headers (list[MarkdownHeader]): 标题列表
         title (str): 要查找的标题文本
         case_sensitive (bool): 是否区分大小写，默认为 False
 
     Returns:
-        Optional[MarkdownHeader]: 匹配的标题，如果没找到则返回 None
+        MarkdownHeader | None: 匹配的标题，如果没找到则返回 None
     """
     for header in headers:
         if case_sensitive:
@@ -114,15 +111,15 @@ def find_header_by_title(headers: List[MarkdownHeader], title: str,
     return None
 
 
-def find_headers_by_level(headers: List[MarkdownHeader], level: int) -> List[MarkdownHeader]:
+def find_headers_by_level(headers: list[MarkdownHeader], level: int) -> list[MarkdownHeader]:
     """根据标题级别查找所有匹配的标题。
 
     Args:
-        headers (List[MarkdownHeader]): 标题列表
+        headers (list[MarkdownHeader]): 标题列表
         level (int): 标题级别 (1-6)
 
     Returns:
-        List[MarkdownHeader]: 匹配的标题列表
+        list[MarkdownHeader]: 匹配的标题列表
     """
     return [header for header in headers if header.level == level]
 
@@ -147,13 +144,13 @@ def extract_content_by_header(content: str, header: MarkdownHeader) -> str:
 
 
 def extract_section_with_subsections(content: str, target_header: MarkdownHeader,
-                                   all_headers: List[MarkdownHeader]) -> MarkdownSection:
+                                   all_headers: list[MarkdownHeader]) -> MarkdownSection:
     """提取指定标题及其所有子章节的内容。
 
     Args:
         content (str): Markdown 文件的完整内容
         target_header (MarkdownHeader): 目标标题
-        all_headers (List[MarkdownHeader]): 文件中的所有标题
+        all_headers (list[MarkdownHeader]): 文件中的所有标题
 
     Returns:
         MarkdownSection: 包含目标标题及其子章节的章节对象
@@ -162,7 +159,7 @@ def extract_section_with_subsections(content: str, target_header: MarkdownHeader
     main_content = extract_content_by_header(content, target_header)
 
     # 查找所有子章节
-    subsections: List[MarkdownSection] = []
+    subsections: list[MarkdownSection] = []
     target_index = all_headers.index(target_header)
 
     # 找到目标标题后的所有同级或更深层级的标题，直到遇到同级或更高级的标题
@@ -190,7 +187,7 @@ def extract_section_with_subsections(content: str, target_header: MarkdownHeader
 
 def extract_by_header_title(content: str, title: str,
                           include_subsections: bool = True,
-                          case_sensitive: bool = False) -> Optional[str]:
+                          case_sensitive: bool = False) -> str | None:
     """根据标题文本提取对应的内容。
 
     Args:
@@ -200,7 +197,7 @@ def extract_by_header_title(content: str, title: str,
         case_sensitive (bool): 是否区分大小写，默认为 False
 
     Returns:
-        Optional[str]: 提取的内容，如果没找到标题则返回 None
+        str | None: 提取的内容，如果没找到标题则返回 None
     """
     headers = extract_all_headers(content)
     target_header = find_header_by_title(headers, title, case_sensitive)
@@ -226,7 +223,7 @@ def extract_by_header_title(content: str, title: str,
     return extract_content_by_header(content, target_header)
 
 
-def extract_by_header_level(content: str, level: int) -> Dict[str, str]:
+def extract_by_header_level(content: str, level: int) -> dict[str, str]:
     """根据标题级别提取所有对应级别的内容。
 
     Args:
@@ -234,12 +231,12 @@ def extract_by_header_level(content: str, level: int) -> Dict[str, str]:
         level (int): 标题级别 (1-6)
 
     Returns:
-        Dict[str, str]: 标题到内容的映射字典
+        dict[str, str]: 标题到内容的映射字典
     """
     headers = extract_all_headers(content)
     target_headers = find_headers_by_level(headers, level)
 
-    result = {}
+    result: dict[str, str] = {}
     for header in target_headers:
         section = extract_section_with_subsections(content, header, headers)
 
@@ -255,16 +252,16 @@ def extract_by_header_level(content: str, level: int) -> Dict[str, str]:
     return result
 
 
-def get_header_hierarchy(headers: List[MarkdownHeader]) -> Dict[str, List[str]]:
+def get_header_hierarchy(headers: list[MarkdownHeader]) -> dict[str, list[str]]:
     """获取标题的层级结构。
 
     Args:
-        headers (List[MarkdownHeader]): 标题列表
+        headers (list[MarkdownHeader]): 标题列表
 
     Returns:
-        Dict[str, List[str]]: 标题层级结构，key 为父标题，value 为子标题列表
+        dict[str, list[str]]: 标题层级结构，key 为父标题，value 为子标题列表
     """
-    hierarchy: Dict[str, List[str]] = {}
+    hierarchy: dict[str, list[str]] = {}
 
     for i, header in enumerate(headers):
         # 查找父标题

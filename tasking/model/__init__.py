@@ -12,7 +12,14 @@ from .message import (
 from .llm import CompletionConfig
 from .queue import IAsyncQueue, T, AsyncQueue
 from .setting import Settings, get_settings, reload_settings
-from .memory import MemoryProtocol, MemoryT, EpisodeMemory, ProcedureMemory, SemanticMemory, StateMemory
+from .memory import (
+    MemoryProtocol, 
+    MemoryT,
+    MemoryItem,
+    StateMemory,
+    EpisodeMemory, 
+    ProcedureMemory, 
+)
 from .filesystem import (
     EditOperation,
     SearchPattern,
@@ -20,7 +27,9 @@ from .filesystem import (
     OutputFormat,
     SearchParams,
     MatchInfo,
-    SearchResult
+    SearchResult,
+    FileType,
+    FileInfo,
 )
 
 __all__ = [
@@ -35,7 +44,9 @@ __all__ = [
     # Queue
     "IAsyncQueue", "T", "AsyncQueue",
     # Memory
-    "MemoryProtocol", "MemoryT", "EpisodeMemory", "ProcedureMemory", "SemanticMemory", "StateMemory",
+    "MemoryProtocol", "MemoryT", "MemoryItem", "StateMemory", "EpisodeMemory", "ProcedureMemory",
     # File System
     "EditOperation", "SearchPattern", "FileFilter", "OutputFormat", "SearchParams", "MatchInfo", "SearchResult",
+    # File
+    "FileType", "FileInfo",
 ]

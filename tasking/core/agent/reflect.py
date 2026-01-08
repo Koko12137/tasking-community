@@ -11,9 +11,9 @@ from fastmcp.tools import Tool as FastMcpTool
 from .interface import IAgent
 from .base import BaseAgent
 from .react import end_workflow, END_WORKFLOW_DOC
-from ..middleware import HumanInterfere
 from ..state_machine.workflow import IWorkflow, BaseWorkflow
 from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView
+from ...hook.human import HumanInterfere
 from ...llm import ILLM, build_llm
 from ...model import Message, StopReason, Role, IAsyncQueue, CompletionConfig, get_settings
 from ...model.message import TextBlock
@@ -220,6 +220,7 @@ def get_reflect_actions(
             # 开始 LLM 推理
             message = await agent.think(
                 context=context,
+                workflow=workflow,
                 queue=queue,
                 task=task,
                 valid_tools=service_tools,
@@ -339,6 +340,7 @@ def get_reflect_actions(
         # 开始 LLM 推理
         message = await agent.think(
             context=context,
+            workflow=workflow,
             queue=queue,
             task=task,
             valid_tools=tools,
@@ -447,20 +449,10 @@ def build_reflect_agent(
     if agent_cfg is None:
         raise ValueError(f"未找到名为 '{name}' 的智能体配置")
 
-    llms: dict[ReflectStage, ILLM] = {}
-    for stage in ReflectStage:
-        if stage == ReflectStage.FINISHED:
-            continue  # FINISHED 阶段不需要 LLM
-        # LLM 配置
-        llm_cfg = agent_cfg.get_llm_config(stage.value)
-        # 连接 LLM 服务端
-        llms[stage] = build_llm(llm_cfg)
-
     # 构建基础 Agent 实例
     agent = BaseAgent[ReflectStage, ReflectEvent, TaskState, TaskEvent, ClientTransportT](
         name=name,
         agent_type=agent_cfg.agent_type,
-        llms=llms,
         tool_service=tool_service,
     )
     # 获取 event chain
@@ -497,6 +489,15 @@ def build_reflect_agent(
         exclude_args=["kwargs"],
     )
 
+    llms: dict[ReflectStage, ILLM] = {}
+    for stage in ReflectStage:
+        if stage == ReflectStage.FINISHED:
+            continue  # FINISHED 阶段不需要 LLM
+        # LLM 配置
+        llm_cfg = agent_cfg.get_llm_config(stage.value)
+        # 连接 LLM 服务端
+        llms[stage] = build_llm(llm_cfg)
+
     # 构建 CompletionConfig 映射
     completion_configs: dict[ReflectStage, CompletionConfig] = {}
     for stage in ReflectStage:
@@ -507,19 +508,22 @@ def build_reflect_agent(
             stream=llm_cfg.stream,
         )
 
-    # 构建工作流实例
-    workflow = BaseWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent](
-        valid_states=valid_states,
-        init_state=init_state,
-        transitions=transitions,
-        name="reflectWorkflow",
-        completion_configs=completion_configs,
-        actions=actions,
-        prompts=prompts,
-        observe_funcs=observe_funcs,
-        event_chain=event_chain,
-        tools={end_workflow_tool.name: (end_workflow_tool, set())},
-    )
+    def workflow_factory() -> IWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent]:
+        # 构建工作流实例
+        workflow = BaseWorkflow[ReflectStage, ReflectEvent, TaskState, TaskEvent](
+            valid_states=valid_states,
+            init_state=init_state,
+            transitions=transitions,
+            name="reflect_workflow",
+            completion_configs=completion_configs,
+            llms=llms,
+            actions=actions,
+            prompts=prompts,
+            observe_funcs=observe_funcs,
+            event_chain=event_chain,
+            tools={end_workflow_tool.name: (end_workflow_tool, set())},
+        )
+        return workflow
     # 关联工作流到智能体
-    agent.set_workflow(workflow)
+    agent.set_workflow(workflow_factory)
     return agent

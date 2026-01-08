@@ -5,9 +5,10 @@ from collections.abc import Callable, Awaitable
 from fastmcp.tools import Tool as FastMcpTool
 from mcp.types import CallToolResult
 
+from .const import WorkflowStageT, WorkflowEventT
 from ..interface import IStateMachine
 from ..task.interface import ITask, StateT, EventT
-from .const import WorkflowStageT, WorkflowEventT
+from ....llm.interface import ILLM
 from ....model import Message, IAsyncQueue, CompletionConfig
 
 
@@ -27,7 +28,27 @@ class IWorkflow(IStateMachine[WorkflowStageT, WorkflowEventT], Generic[WorkflowS
         获取工作流当前阶段的LLM推理配置信息
 
         Returns:
-            LLM推理配置信息实例
+            CompletionConfig: LLM推理配置信息实例
+        """
+        pass
+
+    # ********** 语言模型信息 **********
+
+    @abstractmethod
+    def get_llm(self) -> ILLM:
+        """获取工作流当前阶段使用的语言模型
+
+        返回:
+            ILLM: 工作流当前阶段使用的语言模型
+        """
+        pass
+
+    @abstractmethod
+    def get_llms(self) -> dict[WorkflowStageT, ILLM]:
+        """获取工作流所有阶段使用的语言模型
+
+        返回:
+            dict[WorkflowStageT, ILLM]: 工作流所有阶段使用的语言模型
         """
         pass
 
@@ -173,7 +194,7 @@ class IWorkflow(IStateMachine[WorkflowStageT, WorkflowEventT], Generic[WorkflowS
         name: str,
         task: ITask[StateT, EventT],
         inject: dict[str, Any],
-        kwargs: dict[str, Any]
+        arguments: dict[str, Any]
     ) -> CallToolResult:
         """调用指定名称的工具
 
@@ -181,7 +202,7 @@ class IWorkflow(IStateMachine[WorkflowStageT, WorkflowEventT], Generic[WorkflowS
             name (str): 工具名称
             task (ITask[StateT, EventT]): 任务实例
             inject (dict[str, Any]): 注入工具的额外依赖参数
-            kwargs (dict[str, Any]): 工具调用的参数
+            arguments (dict[str, Any]): 工具调用的参数
 
         Returns:
             CallToolResult: 工具调用结果

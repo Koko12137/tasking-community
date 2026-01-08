@@ -5,11 +5,12 @@ from loguru import logger
 from fastmcp.tools import Tool as FastMcpTool
 from mcp.types import CallToolResult, TextContent
 
+from .interface import IWorkflow
+from .const import WorkflowStageT, WorkflowEventT
 from ..interface import IStateMachine
 from ..base import BaseStateMachine
 from ..task.interface import ITask, StateT, EventT
-from .interface import IWorkflow
-from .const import WorkflowStageT, WorkflowEventT
+from ....llm.interface import ILLM
 from ....model import Message, IAsyncQueue, CompletionConfig
 
 
@@ -17,6 +18,8 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
     """基础工作流实现类"""
     _name: str
     _completion_configs: dict[WorkflowStageT, CompletionConfig]
+    # 语言模型
+    _llms: dict[WorkflowStageT, ILLM]
     # 基础能力
     _actions: dict[WorkflowStageT, Callable[
         [
@@ -45,6 +48,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         # Workflow 基本属性
         name: str,
         completion_configs: dict[WorkflowStageT, CompletionConfig],
+        llms: dict[WorkflowStageT, ILLM],
         actions: dict[
             WorkflowStageT,
             Callable[
@@ -71,6 +75,8 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
             transitions: 工作流转换规则
             name: 工作流名称
             labels: 工作流标签字典
+            completion_configs: 工作流LLM推理配置定义
+            llms: 工作流语言模型定义
             actions: 工作流动作定义
             prompts: 工作流提示词定义
             observe_funcs: 工作流观察格式定义
@@ -82,6 +88,8 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         # 初始化基本属性
         self._name = name
         self._completion_configs = completion_configs
+        # 语言模型
+        self._llms = llms
         # 初始化基础能力
         self._actions = actions
         self._prompts = prompts
@@ -126,6 +134,26 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         # 获取当前状态
         stage = self.get_current_state()
         return self._completion_configs[stage]
+
+    # ********** 语言模型信息 **********
+
+    def get_llm(self) -> ILLM:
+        """获取工作流当前阶段使用的语言模型
+
+        返回:
+            ILLM: 工作流当前阶段使用的语言模型
+        """
+        # 获取工作流当前状态
+        stage = self.get_current_state()
+        return self._llms[stage]
+
+    def get_llms(self) -> dict[WorkflowStageT, ILLM]:
+        """获取工作流所有阶段使用的语言模型
+
+        返回:
+            dict[WorkflowStageT, ILLM]: 工作流所有阶段使用的语言模型
+        """
+        return self._llms.copy()
 
     # ********** 基础能力信息 **********
 
@@ -271,7 +299,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         name: str,
         task: ITask[StateT, EventT],
         inject: dict[str, Any],
-        kwargs: dict[str, Any]
+        arguments: dict[str, Any]
     ) -> CallToolResult:
         """调用指定名称的工具
 
@@ -279,7 +307,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
             name (str): 工具名称
             task (ITask[StateT, EventT]): 任务实例
             inject (dict[str, Any]): 注入工具的额外依赖参数
-            kwargs (dict[str, Any]): 工具调用参数
+            arguments (dict[str, Any]): 工具调用参数
 
         Returns:
             CallToolResult: 工具调用结果
@@ -294,7 +322,7 @@ class BaseWorkflow(IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT], Ba
         tool, _ = tool_entry
         # 调用工具
         try:
-            tool_call_result = await tool.run({**kwargs, "kwargs": {"workflow": self, "task": task, **inject}})
+            tool_call_result = await tool.run({**arguments, "kwargs": {"workflow": self, "task": task, **inject}})
             result = CallToolResult(
                 content=tool_call_result.content,
                 structuredContent=tool_call_result.structured_content,

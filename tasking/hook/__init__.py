@@ -1,7 +1,8 @@
 """Middleware components for tasking system"""
 from .human import IHumanClient, BaseHumanClient, HumanInterfere, BaseHumanInterfereHooks
 from .step_counter import IStepCounter, BaseStepCounter, MaxStepCounter, TokenStepCounter, MaxStepsError
-from .memory import EpisodeMemoryHooks, StateMemoryHooks, register_memory_fold_hooks
+from .memory.state import StateMemoryHooks
+from .memory.episode import EpisodeMemoryHooks
 from .stream import stream_output_hook
 
 
@@ -11,7 +12,7 @@ __all__ = [
     # Step counter interfaces and classes
     "IStepCounter", "BaseStepCounter", "MaxStepCounter", "TokenStepCounter", "MaxStepsError",
     # Memory hooks
-    "EpisodeMemoryHooks", "StateMemoryHooks", "register_memory_fold_hooks",
+    "StateMemoryHooks", "EpisodeMemoryHooks",
     # Stream output hook
     "stream_output_hook",
 ]

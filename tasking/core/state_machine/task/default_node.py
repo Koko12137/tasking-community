@@ -35,10 +35,11 @@ def get_base_transition() -> dict[
     - 转换规则：
         1. CREATED → CREATED（事件：INIT）
         2. CREATED → RUNNING（事件：PLANED）
-        3. RUNNING → FINISHED（事件：DONE）
-        4. RUNNING → RUNNING（事件：PLANED，错误重试）
-        5. RUNNING → CREATED（事件：INIT，子任务取消重置）
-        6. RUNNING → CANCELED（事件：CANCEL）
+        3. CREATED → CANCELED（事件：CANCEL）
+        4. RUNNING → FINISHED（事件：DONE）
+        5. RUNNING → RUNNING（事件：PLANED，错误重试）
+        6. RUNNING → CREATED（事件：INIT，子任务取消重置）
+        7. RUNNING → CANCELED（事件：CANCEL）
 
     Args:
         protocol: 任务协议定义
@@ -64,26 +65,32 @@ def get_base_transition() -> dict[
         assert isinstance(task, BaseTask)
         logger.info(f"[{task.get_title()}] 任务规划完成，进入执行阶段")
     transitions[(TaskState.CREATED, TaskEvent.PLANED)] = (TaskState.RUNNING, on_created_planed)
+    
+    # 3. CREATED → CANCELED（事件：CANCEL）
+    def on_created_cancel(task: ITreeTaskNode[TaskState, TaskEvent]):
+        assert isinstance(task, BaseTask)
+        logger.info(f"[{task.get_title()}] 任务被取消")
+    transitions[(TaskState.CREATED, TaskEvent.CANCEL)] = (TaskState.CANCELED, on_created_cancel)
 
-    # 3. RUNNING → FINISHED（事件：DONE）
+    # 4. RUNNING → FINISHED（事件：DONE）
     def on_running_done(task: ITreeTaskNode[TaskState, TaskEvent]):
         assert isinstance(task, BaseTask)
         logger.info(f"[{task.get_title()}] 任务执行完成")
     transitions[(TaskState.RUNNING, TaskEvent.DONE)] = (TaskState.FINISHED, on_running_done)
 
-    # 4. RUNNING → RUNNING（事件：PLANED，错误重试）
+    # 5. RUNNING → RUNNING（事件：PLANED，错误重试）
     def on_running_planed(task: ITreeTaskNode[TaskState, TaskEvent]):
         assert isinstance(task, BaseTask)
         logger.info(f"[{task.get_title()}] 任务执行出错，准备重试")
     transitions[(TaskState.RUNNING, TaskEvent.PLANED)] = (TaskState.RUNNING, on_running_planed)
 
-    # 5. RUNNING → CREATED（事件：INIT，子任务取消重置）
+    # 6. RUNNING → CREATED（事件：INIT，子任务取消重置）
     def on_running_init(task: ITreeTaskNode[TaskState, TaskEvent]):
         assert isinstance(task, BaseTask)
         logger.info(f"[{task.get_title()}] 子任务被取消，重置任务状态")
     transitions[(TaskState.RUNNING, TaskEvent.INIT)] = (TaskState.CREATED, on_running_init)
 
-    # 6. RUNNING → CANCELED（事件：CANCEL）
+    # 7. RUNNING → CANCELED（事件：CANCEL）
     def on_running_cancel(task: ITreeTaskNode[TaskState, TaskEvent]):
         assert isinstance(task, BaseTask)
         logger.info(f"[{task.get_title()}] 任务被取消")

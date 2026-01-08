@@ -30,7 +30,18 @@ class TestLocalFileSystem:
     @pytest.fixture
     def file_path(self, temp_workspace):
         """Create a test file path."""
-        return os.path.join(temp_workspace, "test_file.txt")
+        asset_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "assets", "ai_intro_v1.txt")
+        )
+        target_path = os.path.join(temp_workspace, "test_file.txt")
+        with open(asset_path, "r", encoding="utf-8") as src, open(target_path, "w", encoding="utf-8") as dst:
+            dst.write(src.read())
+        return target_path
+
+    @pytest.fixture
+    def new_file_path(self, temp_workspace):
+        """Return a fresh file path that does not yet exist."""
+        return os.path.join(temp_workspace, "new_test_file.txt")
 
     @pytest.fixture
     def terminal(self, temp_workspace):
@@ -90,9 +101,9 @@ class TestLocalFileSystem:
 
         assert filesystem.file_exists(file_path) is True
 
-    def test_file_exists_false(self, filesystem, file_path):
+    def test_file_exists_false(self, filesystem, new_file_path):
         """Test file_exists returns False for non-existing files."""
-        assert filesystem.file_exists(file_path) is False
+        assert filesystem.file_exists(new_file_path) is False
 
     def test_get_terminal(self, filesystem, terminal):
         """Test get_terminal returns the terminal instance."""
@@ -124,39 +135,52 @@ class TestLocalFileSystem:
         assert result == base64.b64encode(test_content.encode('utf-8')).decode('utf-8')
 
     @pytest.mark.asyncio
-    async def test_open_file_nonexistent(self, filesystem, file_path):
-        """Test opening a non-existent file raises FileNotFoundError."""
-        with pytest.raises(FileNotFoundError):
-            await filesystem.open_file(file_path, "text", "utf-8")
+    async def test_open_file_stream(self, filesystem, file_path):
+        """Test streaming read returns bytes chunks in order."""
+        content = "Streaming content line 1\nline2" * 10
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        chunks = []
+        async for chunk in filesystem.open_file_stream(file_path, chunk_size=16):
+            chunks.append(chunk)
+
+        assert b"".join(chunks) == content.encode("utf-8")
 
     @pytest.mark.asyncio
-    async def test_new_file_text(self, filesystem, file_path):
+    async def test_open_file_nonexistent(self, filesystem, new_file_path):
+        """Test opening a non-existent file raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
+            await filesystem.open_file(new_file_path, "text", "utf-8")
+
+    @pytest.mark.asyncio
+    async def test_new_file_text(self, filesystem, new_file_path):
         """Test creating a new text file."""
         content = "This is a new file content."
 
-        result = await filesystem.new_file(file_path, "text", content, "utf-8")
+        result = await filesystem.new_file(new_file_path, "text", content, "utf-8")
 
         assert "文件创建成功" in result
-        assert os.path.exists(file_path)
+        assert os.path.exists(new_file_path)
 
         # Verify content
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(new_file_path, 'r', encoding='utf-8') as f:
             assert f.read() == content
 
     @pytest.mark.asyncio
-    async def test_new_file_base64(self, filesystem, file_path):
+    async def test_new_file_base64(self, filesystem, new_file_path):
         """Test creating a new file with base64 content."""
         content = "Hello, Base64!"
         import base64
         base64_content = base64.b64encode(content.encode('utf-8')).decode('utf-8')
 
-        result = await filesystem.new_file(file_path, "text", base64_content, "base64")
+        result = await filesystem.new_file(new_file_path, "text", base64_content, "base64")
 
         assert "文件创建成功" in result
-        assert os.path.exists(file_path)
+        assert os.path.exists(new_file_path)
 
         # Verify content
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(new_file_path, 'r', encoding='utf-8') as f:
             assert f.read() == content
 
     @pytest.mark.asyncio
@@ -185,11 +209,11 @@ class TestLocalFileSystem:
             assert f.read() == content
 
     @pytest.mark.asyncio
-    async def test_new_file_utf8_validation(self, filesystem, file_path):
+    async def test_new_file_utf8_validation(self, filesystem, new_file_path):
         """Test new_file validates UTF-8 content."""
         # Valid UTF-8 content should work
         valid_content = "Hello 世界 🌍"
-        result = await filesystem.new_file(file_path, "text", valid_content, "utf-8")
+        result = await filesystem.new_file(new_file_path, "text", valid_content, "utf-8")
         assert "文件创建成功" in result
 
     @pytest.mark.asyncio

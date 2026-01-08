@@ -1,17 +1,16 @@
 """SQLite记忆存储实现模块"""
 import asyncio
 import json
-from dataclasses import dataclass
 from typing import Any, cast
 
 import aiosqlite
+from pydantic import BaseModel
 
 from .interface import ISqlDatabase, ISqlDBManager
 from ..model import MemoryT, TextBlock
 
 
-@dataclass
-class SearchParams:
+class SearchParams(BaseModel):
     """搜索参数封装类"""
     fields: list[str] | None = None
     where: list[str] | None = None
@@ -64,7 +63,7 @@ class SqliteDatabase(ISqlDatabase[MemoryT]):
         query = f"INSERT INTO {self._table_name} ({columns}) VALUES ({placeholders})"
         # 获取SQLite连接
         connection = await self._manager.get_sql_database(context)
-        
+
         # 创建一个任务来执行插入操作
         async def insert_task() -> None:
             await connection.execute(query, values)
@@ -82,7 +81,7 @@ class SqliteDatabase(ISqlDatabase[MemoryT]):
         query = f"DELETE FROM {self._table_name} WHERE id = ?"
         # 获取SQLite连接
         connection = await self._manager.get_sql_database(context)
-        
+
         # 创建一个任务来执行删除操作
         async def delete_task() -> None:
             await connection.execute(query, (memory_id,))
@@ -105,7 +104,7 @@ class SqliteDatabase(ISqlDatabase[MemoryT]):
         query = f"UPDATE {self._table_name} SET {set_clause} WHERE id = ?"
         # 获取SQLite连接
         connection = await self._manager.get_sql_database(context)
-        
+
         # 创建一个任务来执行更新操作
         async def update_task() -> None:
             await connection.execute(query, values)
@@ -159,7 +158,7 @@ class SqliteDatabase(ISqlDatabase[MemoryT]):
 
         # 获取SQLite连接并执行查询
         connection = await self._manager.get_sql_database(context)
-        
+
         # 创建一个任务来执行搜索操作
         async def search_task() -> list[MemoryT]:
             async with connection.execute(query, values) as cursor:

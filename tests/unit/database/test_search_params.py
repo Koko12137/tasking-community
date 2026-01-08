@@ -5,7 +5,6 @@ SQLite SearchParams 类单元测试
 """
 
 import unittest
-from dataclasses import FrozenInstanceError
 from typing import Any
 
 from tasking.database.sqlite import SearchParams
@@ -99,22 +98,29 @@ class TestSearchParams(unittest.TestCase):
         self.assertEqual(params.limit, 20)
 
     def test_type_validation(self) -> None:
-        """测试参数类型验证（SearchParams 本身不进行类型验证）"""
-        # SearchParams 不强制类型检查，接受任何类型
-        params = SearchParams(
-            fields="not_a_list",  # 类型错误但不会立即报错
-            where=123,            # 类型错误但不会立即报错
-            order_by=None,
-            limit="not_a_number", # 类型错误但不会立即报错
-            filters="not_a_dict"  # 类型错误但不会立即报错
-        )
+        """测试参数类型验证（pydantic BaseModel 会进行类型验证）"""
+        from pydantic import ValidationError
 
-        # 验证参数被存储（类型检查会在使用时进行）
-        self.assertEqual(params.fields, "not_a_list")
-        self.assertEqual(params.where, 123)
-        self.assertEqual(params.order_by, None)
-        self.assertEqual(params.limit, "not_a_number")
-        self.assertEqual(params.filters, "not_a_dict")
+        # pydantic BaseModel 会进行严格的类型检查，错误类型会抛出 ValidationError
+        with self.assertRaises(ValidationError):
+            SearchParams(
+                fields="not_a_list",  # type: ignore[arg-type] # 故意传入错误类型测试验证
+                where=123,            # type: ignore[arg-type] # 故意传入错误类型测试验证
+                limit="not_a_number", # type: ignore[arg-type] # 故意传入错误类型测试验证
+                filters="not_a_dict"  # type: ignore[arg-type] # 故意传入错误类型测试验证
+            )
+
+        # 正确的类型应该可以正常工作
+        params = SearchParams(
+            fields=["id", "content"],
+            where=["status = 'active'"],
+            limit=10,
+            filters={"key": "value"}
+        )
+        self.assertEqual(params.fields, ["id", "content"])
+        self.assertEqual(params.where, ["status = 'active'"])
+        self.assertEqual(params.limit, 10)
+        self.assertEqual(params.filters, {"key": "value"})
 
     def test_equality(self) -> None:
         """测试 SearchParams 对象相等性比较"""

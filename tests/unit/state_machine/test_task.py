@@ -243,11 +243,12 @@ class TestBaseTask(unittest.IsolatedAsyncioTestCase):
         input_data = self.task.get_input()
         self.assertEqual(len(input_data), 1)
         self.assertEqual(input_data[0].text, "Test Input")  # 输入不会重置
-        self.assertEqual(self.task.get_output(), "Test Output")  # 输出不会重置
-        # 错误信息不会被reset清除，需要手动clean_error_info
-        self.assertTrue(self.task.is_error())
+        self.assertEqual(self.task.get_output(), "")  # 业务约定：重置会清空输出
+        self.assertFalse(self.task.is_completed())
+        # 错误信息已被reset清除
+        self.assertFalse(self.task.is_error())
 
-        # 手动清除错误信息
+        # 不需要手动清除错误信息，因为reset已经清除了
         self.task.clean_error_info()
         self.assertFalse(self.task.is_error())
 

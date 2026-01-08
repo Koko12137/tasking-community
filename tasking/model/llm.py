@@ -16,13 +16,19 @@ class CompletionConfig(BaseModel):
         temperature (float, optional, defaults to 0.9):
             The temperature to use for the agent.
         format_json (bool, optional, defaults to False):
-            Whether to format the response as JSON.
+            Whether to format the response as JSON. 
         allow_thinking (bool, optional, defaults to True):
             Whether to allow the agent to think.
         stop_words (list[str], optional, defaults to []):
             The words to stop the response.
         stream (bool, optional, defaults to False):
             Whether to stream the response.
+        extra_headers (dict[str, str], optional, defaults to {}):
+            Extra headers to add to the request.
+        extra_body (dict[str, Any], optional, defaults to {}):
+            Extra body to add to the request.
+        ignore_params (list[str], optional, defaults to []):
+            The parameters to ignore.
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -53,6 +59,15 @@ class CompletionConfig(BaseModel):
 
     stream: bool = Field(default=False)
     """Whether to stream the response."""
+    
+    extra_headers: dict[str, str] = Field(default={})
+    """Extra headers to add to the request."""
+    
+    extra_body: dict[str, Any] = Field(default={})
+    """Extra body to add to the request."""
+    
+    ignore_params: list[str] = Field(default=[])
+    """The parameters to ignore."""
 
     def update(self, **kwargs: Any) -> None:
         """Update the completion config.

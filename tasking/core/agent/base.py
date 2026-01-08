@@ -1,6 +1,5 @@
 import asyncio
 import inspect
-from copy import deepcopy
 from collections.abc import Callable, Awaitable
 from typing import Any
 from traceback import format_exc
@@ -18,7 +17,6 @@ from ..state_machine.workflow import WorkflowEventT, WorkflowStageT, IWorkflow
 from ...model import CompletionConfig, Message, Role, ToolCallRequest
 from ...model.queue import IAsyncQueue, AsyncQueue
 from ...model.message import TextBlock, ImageBlock, VideoBlock
-from ...llm import ILLM
 
 
 class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTransportT]):
@@ -26,10 +24,8 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
     _id: str
     _name: str
     _type: str
-    # Large Language Models
-    _llms: dict[WorkflowStageT, ILLM]
     # Workflow
-    _workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT] | None
+    _workflow_factory: Callable[[], IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]] | None
     # Tool Service
     _tool_service: Client[ClientTransportT] | None
 
@@ -134,7 +130,6 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         self,
         name: str,
         agent_type: str,
-        llms: dict[WorkflowStageT, ILLM],
         tool_service: Client[ClientTransportT] | None = None,
     ) -> None:
         """初始化基础Agent实例，钩子函数列表为空，等待后续注册
@@ -142,14 +137,12 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         Args:
             name (str): Agent的名称
             agent_type (str): Agent的类型
-            llms (dict[WorkflowStageT, ILLM]): 智能体的语言模型集合，按工作流阶段映射
             tool_service (Client[ClientTransportT] | None): 工具服务客户端实例，默认为None
         """
         self._id = f"agent_{id(self)}"
         self._name = name
         self._type = agent_type
-        self._llms = llms
-        self._workflow = None
+        self._workflow_factory = None
         self._tool_service = tool_service
         # Hooks container
         self._pre_run_once_hooks = []
@@ -175,48 +168,38 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         """获取Agent的类型"""
         return self._type
 
-    # ********** 语言模型信息 **********
-
-    def get_llm(self) -> ILLM:
-        """获取智能体的语言模型
-
-        返回:
-            ILLM: 智能体的语言模型
-        """
-        # 获取智能体工作流当前状态
-        stage = self.get_workflow().get_current_state()
-        return self._llms[stage]
-
-    def get_llms(self) -> dict[WorkflowStageT, ILLM]:
-        """获取智能体的语言模型
-
-        返回:
-            dict[WorkflowStageT, ILLM]: 智能体的语言模型
-        """
-        return self._llms.copy()
-
     # ********** 工作流管理 **********
 
     def get_workflow(self) -> IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]:
         """获取Agent关联的工作流
 
         Returns:
-            IWorkflow:
-                Agent关联的工作流
-        """
-        if self._workflow is None:
-            raise RuntimeError("Workflow is not set for this agent.")
-        return self._workflow
+            IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]:
+                Agent关联的工作流实例
 
-    def set_workflow(self, workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]) -> None:
-        """设置Agent关联的工作流
+        Raises:
+            RuntimeError: 如果工作流工厂函数未设置
+        """
+        if self._workflow_factory is None:
+            raise RuntimeError("Workflow factory is not set for this agent.")
+        return self._workflow_factory()
+
+    def set_workflow(
+        self,
+        workflow_factory: Callable[[], IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]],
+    ) -> None:
+        """设置Agent关联的工作流工厂函数
 
         Args:
-            workflow (IWorkflow):
-                要设置的工作流实例
-        """
-        self._workflow = workflow
+            workflow_factory:
+                工作流工厂函数，用于创建工作流实例
 
+        Raises:
+            RuntimeError: 如果工作流工厂函数已设置
+        """
+        if self._workflow_factory is not None:
+            raise RuntimeError("Workflow factory is already set for this agent.")
+        self._workflow_factory = workflow_factory
 
     def get_tool_service(self) -> Client[ClientTransportT] | None:
         """获取Agent关联的工具服务
@@ -258,35 +241,36 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
     async def call_tool(
         self,
         context: dict[str, Any],
-        name: str,
+        tool_call: ToolCallRequest,
+        workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT],
         task: ITask[StateT, EventT],
-        inject: dict[str, Any],
-        kwargs: dict[str, Any]
+        **inject: Any, # 注入工具的额外依赖参数
     ) -> Message:
         """调用指定名称的工具。如果是工作流的工具，则会注入 Task 和 Workflow 实例，如果是工具服务的工具，则不会主动注入。
 
         Args:
             context (dict[str, Any]): 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
-            name (str): 工具名称
+            workflow (IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]):
+                要调用工具的工作流实例
             task (ITask[StateT, EventT]): 任务实例
-            inject (dict[str, Any]): 注入工具的额外依赖参数
-            kwargs (dict[str, Any]): 工具调用的参数
+            tool_call (ToolCallRequest): 工具调用请求
+            **inject: Any: 注入工具的额外依赖参数
 
         Returns:
             Message: 工具调用结果
 
         Raises:
-            RuntimeError: 如果工作流未设置，或者工具标签错误
+            RuntimeError: 如果工具标签错误
         """
-        if self._workflow is None:
-            raise RuntimeError("Workflow is not set for this agent.")
-
+        name = tool_call.name
+        arguments = tool_call.args
+        
         # 1. 优先从工作流获取工具（遵循"工作流优先"原则）
-        workflow_tool_info = self._workflow.get_tool(name)
+        workflow_tool_info = workflow.get_tool(name)
 
         if workflow_tool_info is not None:
             # 1.1 解析工作流返回的工具和标签集合
-            tool, required_tags = workflow_tool_info
+            _, required_tags = workflow_tool_info
 
             # 1.2 检查任务标签是否满足工具的标签要求（任务标签需包含所有工具必需标签）
             # 假设ITask接口有get_tags()方法获取任务标签集合，若实际接口名不同需调整
@@ -295,11 +279,11 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
 
             if is_tags_valid:
                 # 1.3 标签符合要求：直接调用工作流中的工具
-                result = await self._workflow.call_tool(
+                result = await workflow.call_tool(
                     name=name,
                     task=task,
                     inject=inject,
-                    kwargs=kwargs
+                    arguments=arguments
                 )
 
                 # 1.4 准备最终结果
@@ -314,25 +298,29 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
                 # 1.5 转换最终结果为 Message 并返回
                 return Message(
                     role=Role.TOOL,
+                    tool_call_id=tool_call.id,
                     content=content_blocks,
                     is_error=result.isError,
                     metadata=metadata,
                 )
             else:
                 # 标签不满足要求
-                raise RuntimeError(f"Tool `{tool.name}` requires tags `{required_tags}`, but task has tags `{task_tags}`.", format_exc())
+                raise RuntimeError(
+                    f"Tool `{name}` requires tags `{required_tags}`, but task has tags `{task_tags}`.",
+                    format_exc(),
+                )
 
         # 2. 工作流无该工具 或 标签不满足：从工具服务调用
         elif self._tool_service is not None:
             # 2.1 构造工具服务调用参数
-            kwargs.update(context=context)  # 注入上下文信息，如用户ID/TraceID等
+            arguments.update(context=context)  # 注入上下文信息，如用户ID/TraceID等
 
             try:
                 async with self._tool_service as client:
                     # 2.2 调用工具服务（假设Client有async_request方法，参数为工具名+参数，若实际接口不同需调整）
                     tool_call_result = await client.call_tool(
                         name=name,
-                        arguments=kwargs,
+                        arguments=arguments,
                     )
                     # 2.3. 转换最终结果
                     result = CallToolResult(
@@ -344,7 +332,10 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
                 # 遇到 FastMcp 客户端抛出的运行时错误，继续向外抛出
                 raise e
             except Exception as e:
-                result = CallToolResult(content=[TextContent(type="text", text=str(e))], isError=True)
+                result = CallToolResult(
+                    content=[TextContent(type="text", text=str(e))],
+                    isError=True,
+                )
 
             # 2.4 准备最终结果
             # Convert CallToolResult content to Message content blocks
@@ -358,6 +349,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
             # 2.5. 转换最终结果为 Message 并返回
             return Message(
                 role=Role.TOOL,
+                tool_call_id=tool_call.id,
                 content=content_blocks,
                 is_error=result.isError,
                 metadata=metadata,
@@ -388,10 +380,8 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
             ITask:
                 包含任务运行结果的任务
         """
-        if self._workflow is None:
-            raise RuntimeError("Workflow is not set for this agent.")
-        # 深度复制一份工作流，避免并发时工作流状态干扰
-        workflow = deepcopy(self._workflow)
+        # 获取新的工作流实例
+        workflow = self.get_workflow()
 
         # 获取第一个事件
         event_chain = workflow.get_event_chain()
@@ -550,6 +540,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
     async def think(
         self,
         context: dict[str, Any],
+        workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT],
         queue: IAsyncQueue[Message],
         task: ITask[StateT, EventT],
         valid_tools: dict[str, McpTool],
@@ -561,6 +552,8 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         参数:
             context (dict[str, Any]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
+            workflow (IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]):
+                要思考的工作流实例
             queue (IQueue[Message]):
                 数据队列，用于输出任务运行过程中产生的数据
             task (ITask[StateT, EventT]):
@@ -583,7 +576,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
             else:
                 await asyncify(hook)(context, queue, task)
                 
-        llm = self.get_llm()
+        llm = workflow.get_llm()
         if not completion_config.stream:
             # 非流式思考，输出按同步方式处理
             think_result = await llm.completion(
@@ -685,6 +678,7 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
     async def act(
         self,
         context: dict[str, Any],
+        workflow: IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT],
         queue: IAsyncQueue[Message],
         tool_call: ToolCallRequest,
         task: ITask[StateT, EventT],
@@ -695,6 +689,8 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         参数:
             context (dict[str, Any]):
                 任务运行时的上下文信息，包括用户ID/AccessToken/TraceID等
+            workflow (IWorkflow[WorkflowStageT, WorkflowEventT, StateT, EventT]):
+                要采取行动的工作流实例
             queue (IQueue[Message]):
                 数据队列，用于输出任务运行过程中产生的数据
             tool_call (ToolCallRequest):
@@ -722,10 +718,10 @@ class BaseAgent(IAgent[WorkflowStageT, WorkflowEventT, StateT, EventT, ClientTra
         # 执行工具调用
         act_result = await self.call_tool(
             context=context,
-            name=tool_call.name,
+            workflow=workflow,
+            tool_call=tool_call,
             task=task,
-            inject=kwargs,
-            kwargs=tool_call.args,
+            **kwargs, # 注入工具的额外依赖参数
         )
         # 更新到任务上下文中
         task.append_context(act_result)

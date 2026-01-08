@@ -66,31 +66,42 @@ def to_openai(config: CompletionConfig, tools: list[McpTool] | None = None) -> d
         dict:
             The completion config in the OpenAI format.
     """
-    kwargs: dict[str, Any] = {
-        "top_p": config.top_p,
-        "max_tokens": config.max_tokens,
-        "frequency_penalty": config.frequency_penalty,
-        "temperature": config.temperature,
-    }
+    # 需要忽略的配置字段（通过 CompletionConfig.ignore_params 传入）
+    ignored: set[str] = set(config.ignore_params or [])
 
-    # Process format_json
-    if config.format_json:
+    kwargs: dict[str, Any] = {}
+
+    # 基础采样相关参数
+    if "top_p" not in ignored:
+        kwargs["top_p"] = config.top_p
+    if "max_tokens" not in ignored:
+        kwargs["max_tokens"] = config.max_tokens
+    if "frequency_penalty" not in ignored:
+        kwargs["frequency_penalty"] = config.frequency_penalty
+    if "temperature" not in ignored:
+        kwargs["temperature"] = config.temperature
+    # JSON 输出控制
+    if "format_json" not in ignored and config.format_json:
         kwargs["response_format"] = {
             "type": "json_object",
         }
-
-        # Truncate all the other parameters processing
+        # JSON 模式下，保持原有行为：不再处理其它配置项
         return kwargs
 
-    # Add thinking control
-    if config.allow_thinking:
-        kwargs["extra_body"] = {
-            "enable_thinking": True,
-        }
-    else:
-        kwargs["extra_body"] = {
-            "enable_thinking": False,
-        }
+    # 额外 body 参数（优先合并 CompletionConfig.extra_body）
+    if "extra_body" not in ignored:
+        extra_body: dict[str, Any] = dict(config.extra_body or {})
+
+        # 思考模式控制，允许通过 ignore_params 屏蔽
+        if "allow_thinking" not in ignored and "enable_thinking" not in extra_body:
+            extra_body["enable_thinking"] = bool(config.allow_thinking)
+
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
+    # 额外请求头
+    if "extra_headers" not in ignored and config.extra_headers:
+        kwargs["extra_headers"] = dict(config.extra_headers)
 
     # Add tools
     if tools:
@@ -164,39 +175,66 @@ def to_openai_dict(messages: list[Message]) -> list[ChatCompletionMessageParam]:
     # Create the generation history
     history: list[ChatCompletionMessageParam] = []
     for message in messages:
+        # Get last message sender
+        last_role = history[-1]['role'] if len(history) > 0 else None
+        
+        # Check if we should merge with the last message (only for SYSTEM and USER)
+        should_merge = (
+            last_role is not None 
+            and last_role == message.role.value 
+            and message.role in {Role.SYSTEM, Role.USER}
+        )
+        
+        if should_merge and len(history) > 0:
+            # Merge with the last message: append current content wrapped in <block>
+            last_message = cast(dict[str, Any], history[-1])
+            if message.content:
+                # Convert current message content to OpenAI format
+                current_content = _convert_content_to_openai_format(message.content)
+                # Wrap in <block> tags and append to last message's content
+                if 'content' in last_message:
+                    if isinstance(last_message['content'], list):
+                        # Merge content by extending the list
+                        block_wrapped = [
+                            {'type': 'text', 'text': '<block>'},
+                            *current_content,
+                            {'type': 'text', 'text': '</block>'},
+                        ]
+                        last_message['content'].extend(block_wrapped)  # type: ignore[arg-type]
+                    else:
+                        # If content was a string, convert to list format
+                        last_message['content'] = cast(Any, [
+                            {'type': 'text', 'text': str(last_message['content'])},
+                            {'type': 'text', 'text': '<block>'},
+                            *current_content,
+                            {'type': 'text', 'text': '</block>'},
+                        ])
+            # Skip creating a new message entry
+            continue
+        
+        # Create a new message entry
         message_dict: dict[str, Any] = {}
-
-      # Process Role and Content
+        
+        # Process Role and Content
         message_dict['role'] = message.role.value
 
         # Handle empty content
         if not message.content:
             message_dict['content'] = ""
         else:
-            # Extract text for block wrapping
-            text_content = _extract_text_from_content(message.content)
-
-            # Convert to OpenAI format with block wrappers
-            if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
-                # Pure text message
-                message_dict['content'] = [{'type': 'text', 'text': f"<block>{text_content}</block>"}]
-            else:
-                # Multimodal message
+            # Only wrap SYSTEM and USER messages with <block> tags
+            if message.role in {Role.SYSTEM, Role.USER}:
+                # Convert to OpenAI format with block wrappers
                 message_dict['content'] = [
-                    {'type': 'text', 'text': f"<block>"},
+                    {'type': 'text', 'text': '<block>'},
                     *_convert_content_to_openai_format(message.content),
-                    {'type': 'text', 'text': f"</block>"},
+                    {'type': 'text', 'text': '</block>'},
                 ]
+            else:
+                # For ASSISTANT and TOOL, convert without block wrappers
+                message_dict['content'] = _convert_content_to_openai_format(message.content)
 
-        # Get last message sender
-        last_role = history[-1]['role'] if len(history) > 0 else None
-        # Same sender and not Tool/Assistant, concatenate content
-        if last_role == message.role.value and message.role not in {Role.TOOL, Role.ASSISTANT}:
-            # For simplicity, just append the message as a new entry
-            # This avoids type complexity with concatenating mixed content types
-            pass
-
-         # 处理不同角色的消息逻辑
+        # 处理不同角色的消息逻辑
         if message.role == Role.SYSTEM:
             if len(history) > 0:
                 # 修改 message_dict 的 role 为 user
@@ -327,6 +365,7 @@ class OpenAiLLM(ILLM):
         """
         logger.info(f"[OpenAI] Starting completion with model {self._model}, messages: {len(messages)}, max_tokens: {completion_config.max_tokens}, streaming: {stream_queue is not None}")
 
+        # 构造和过滤 provider 级参数（包含 extra_body / extra_headers / ignore_params）
         kwargs = to_openai(completion_config, tools)
 
         # Create the generation history

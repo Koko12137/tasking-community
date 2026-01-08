@@ -315,13 +315,13 @@ class TestDiffContext:
         
         # 应该包含修改的行
         assert "line2_modified" in text or "-" in text
-        # 应该包含上下文行（以空格开头）
-        assert " | line1" in text or " | line3" in text
+        # 应该包含上下文行（以空格开头，保留行号对齐格式）
+        assert "    1  line1" in text or "    3  line3" in text
 
     def test_diff_files_with_context(self):
         """测试文件差异比较的上下文保留"""
-        # 获取测试资源文件路径
-        test_dir = Path(__file__).parent / "assets"
+        # 获取测试资源文件路径（tests/assets）
+        test_dir = Path(__file__).resolve().parents[2] / "assets"
         old_file = str(test_dir / "ai_intro_v1.txt")
         new_file = str(test_dir / "ai_intro_v2.txt")
         
@@ -379,7 +379,7 @@ class TestDiffContext:
 
     def test_ai_intro_files_diff(self):
         """测试AI介绍文本文件的完整diff功能"""
-        test_dir = Path(__file__).parent / "assets"
+        test_dir = Path(__file__).resolve().parents[2] / "assets"
         old_file = str(test_dir / "ai_intro_v1.txt")
         new_file = str(test_dir / "ai_intro_v2.txt")
         

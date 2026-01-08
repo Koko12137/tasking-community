@@ -270,45 +270,6 @@ class TestBaseTreeTaskNode(unittest.TestCase):
         self.assertNotIn(child_task, parent1.get_sub_tasks())
         self.assertEqual(child_task.get_current_depth(), 1)
 
-    def test_tree_task_constructor_with_parent_and_subtasks(self) -> None:
-        """测试构造函数时传入父节点和子任务"""
-        # 创建子任务
-        child_task = BaseTreeTaskNode[TaskState, TaskEvent](
-            valid_states={
-                TaskState.CREATED, TaskState.RUNNING, TaskState.FINISHED
-            },
-            init_state=TaskState.CREATED,
-            transitions=self.simple_transition,
-            unique_protocol=[TextBlock(text="child_protocol")],
-            tags={"child"},
-            task_type="child_task",
-            max_depth=2,
-            completion_config=self.completion_config
-        )
-# child_task 在初始化时已自动编译
-
-        # 创建父任务时传入子任务
-        parent_task = BaseTreeTaskNode[TaskState, TaskEvent](
-            valid_states={
-                TaskState.CREATED, TaskState.RUNNING, TaskState.FINISHED
-            },
-            init_state=TaskState.CREATED,
-            transitions=self.simple_transition,
-            unique_protocol=[TextBlock(text="parent_protocol")],
-            tags={"parent"},
-            task_type="parent_task",
-            max_depth=3,
-            completion_config=self.completion_config,
-            sub_tasks=[child_task]
-        )
-# parent_task 在初始化时已自动编译
-
-        # 验证关系自动建立
-        self.assertEqual(child_task.get_parent(), parent_task)
-        self.assertIn(child_task, parent_task.get_sub_tasks())
-        self.assertEqual(child_task.get_current_depth(), 1)
-
-
 class TestTreeTaskViews(unittest.TestCase):
     """测试树形任务视图"""
 

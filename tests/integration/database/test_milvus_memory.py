@@ -7,10 +7,10 @@ MilvusVectorMemory 真实数据库测试套件
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass, field
 from collections.abc import Generator, AsyncGenerator
 from typing import Any, cast
 from uuid import uuid4
+from pydantic import BaseModel, Field
 
 import csv
 import numpy as np
@@ -44,12 +44,11 @@ class MockVectorDBManager(IVectorDBManager[AsyncMilvusClient]):
         pass
 
 
-@dataclass
-class VectorMemoryData:
+class VectorMemoryData(BaseModel):
     """测试用记忆数据类，实现 MemoryProtocol"""
     content: list[TextBlock]  # 使用 TextBlock 类型与 MemoryProtocol 兼容
     metadata: dict[str, Any] | None = None  # 添加 metadata 字段
-    id: str = field(default_factory=lambda: str(uuid4()))
+    id: str = Field(default_factory=lambda: str(uuid4()))
 
     def to_dict(self) -> dict[str, Any]:
         """将记忆对象转为字典形式"""

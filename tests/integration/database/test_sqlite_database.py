@@ -6,26 +6,25 @@ SQLite 数据库模块测试套件
 
 import asyncio
 import unittest
-from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 import aiosqlite
+from pydantic import BaseModel, Field
 
 from tasking.database.interface import ISqlDBManager
 from tasking.database.sqlite import SqliteDatabase, SearchParams
 from tasking.model import MemoryT, MultimodalContent, TextBlock
 
 
-@dataclass
-class TestMemory:
+class TestMemory(BaseModel):
     """测试用记忆数据类"""
     content: Any  # 接受任意类型，因为会被序列化/反序列化为多模态内容
     category: str = "test"
     priority: int = 1
-    id: str = field(default_factory=lambda: str(uuid4()))
+    id: str = Field(default_factory=lambda: str(uuid4()))
 
     def to_dict(self) -> dict[str, Any]:
         """将记忆对象转为字典形式"""

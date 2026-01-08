@@ -82,20 +82,38 @@ def to_zhipu(config: CompletionConfig, tools: list[McpTool] | None = None) -> di
         dict:
             The completion config in the Zhipu AI format.
     """
-    kwargs: dict[str, Any] = {
-        "top_p": config.top_p,
-        "max_tokens": config.max_tokens,
-        "temperature": config.temperature,
-        "frequency_penalty": config.frequency_penalty,
-    }
+    ignored: set[str] = set(config.ignore_params or [])
 
+    kwargs: dict[str, Any] = {}
+
+    if "top_p" not in ignored:
+        kwargs["top_p"] = config.top_p
+    if "max_tokens" not in ignored:
+        kwargs["max_tokens"] = config.max_tokens
+    if "temperature" not in ignored:
+        kwargs["temperature"] = config.temperature
+    if "frequency_penalty" not in ignored:
+        kwargs["frequency_penalty"] = config.frequency_penalty
     # stop words
-    if config.stop_words:
+    if "stop_words" not in ignored and config.stop_words:
         kwargs["stop"] = config.stop_words
-
     # response_format (Zhipu AI supports json_object)
-    if config.format_json:
+    if "format_json" not in ignored and config.format_json:
         kwargs["response_format"] = {"type": "json_object"}
+    # thinking control (Zhipu AI specific - 作为顶层参数传递)
+    if "allow_thinking" not in ignored:
+        if config.allow_thinking:
+            kwargs["thinking"] = {"type": "enabled"}
+        else:
+            kwargs["thinking"] = {"type": "disabled"}
+
+    # 透传 extra_body 到 SDK（遵循 OpenAI 风格）
+    if "extra_body" not in ignored and config.extra_body:
+        kwargs["extra_body"] = dict(config.extra_body)
+
+    # 额外请求头
+    if "extra_headers" not in ignored and config.extra_headers:
+        kwargs["extra_headers"] = dict(config.extra_headers)
 
     # tools (Zhipu AI uses OpenAI-like format)
     if tools:
@@ -179,9 +197,47 @@ def to_zhipu_messages(messages: list[Message]) -> list[dict[str, Any]]:
     history: list[dict[str, str | list[dict[str, Any]]]] = []
 
     for message in messages:
+        # Get last message sender
+        last_role: str | None = None
+        if history:
+            role_val = history[-1].get('role')
+            if isinstance(role_val, str):
+                last_role = role_val
+
+        # Check if we should merge with the last message (only for SYSTEM and USER)
+        should_merge = (
+            last_role is not None
+            and last_role == message.role.value
+            and message.role in {Role.SYSTEM, Role.USER}
+        )
+
+        if should_merge and len(history) > 0:
+            # Merge with the last message: append current content wrapped in <block>
+            last_message = history[-1]
+            if message.content:
+                # Convert current message content to Zhipu format
+                current_content = _convert_content_to_zhipu_format(message.content)
+                # Wrap in <block> tags and append to last message's content
+                if 'content' in last_message:
+                    last_content = last_message['content']
+                    if isinstance(last_content, str):
+                        # Last content is string, convert to list format
+                        text_content = _extract_text_from_content(message.content)
+                        last_message['content'] = last_content + f"<block>{text_content}</block>"
+                    elif isinstance(last_content, list):  # pyright: ignore[reportUnnecessaryIsInstance]
+                        # Merge content by extending the list
+                        block_wrapped = [
+                            {'type': 'text', 'text': '<block>'},
+                            *current_content,
+                            {'type': 'text', 'text': '</block>'},
+                        ]
+                        last_content.extend(block_wrapped)  # type: ignore[arg-type]
+            # Skip creating a new message entry
+            continue
+
+        # Create a new message entry
         message_dict: dict[str, str | list[dict[str, Any]]] = {}
 
-    
         # Process Role and Content
         message_dict['role'] = message.role.value
 
@@ -189,16 +245,8 @@ def to_zhipu_messages(messages: list[Message]) -> list[dict[str, Any]]:
         if not message.content:
             message_dict['content'] = ""
         else:
-            # Handle different role logic
-            if message.role == Role.SYSTEM:
-                if len(history) > 0:
-                    # Modify message_dict role to user for system messages after first
-                    message_dict['role'] = Role.USER.value
-                # For system messages, use text content with block wrapper
-                text_content = _extract_text_from_content(message.content)
-                message_dict['content'] = f"<block>{text_content}</block>"
-
-            elif message.role == Role.USER:
+            # Only wrap SYSTEM and USER messages with <block> tags
+            if message.role in {Role.SYSTEM, Role.USER}:
                 # Extract text for block wrapping
                 text_content = _extract_text_from_content(message.content)
 
@@ -211,71 +259,60 @@ def to_zhipu_messages(messages: list[Message]) -> list[dict[str, Any]]:
                     zhipu_blocks = _convert_content_to_zhipu_format(message.content)
                     # Add block markers
                     message_dict['content'] = [
-                        {'type': 'text', 'text': "<block>"},
+                        {'type': 'text', 'text': '<block>'},
                         *zhipu_blocks,
-                        {'type': 'text', 'text': "</block>"},
+                        {'type': 'text', 'text': '</block>'},
                     ]
-
-            elif message.role == Role.ASSISTANT:
-                if len(history) > 0 and history[-1]['role'] != Role.USER.value:
-                    raise ValueError("Assistant message must be followed by a user message.")
-
-                # Extract text content for assistant message with block wrapper
-                text_content = _extract_text_from_content(message.content)
-                message_dict['content'] = f"<block>{text_content}</block>"
-
-                # If the message is a tool call, add the tool call to the history
-                if message.tool_calls:
-                    tool_calls: list[dict[str, Any]] = []
-                    message_dict["tool_calls"] = tool_calls
-
-                    for tool_call in message.tool_calls:
-                        tool_calls.append({
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {
-                                "name": tool_call.name,
-                                "arguments": json.dumps(tool_call.args, ensure_ascii=False),
-                            }
-                        })
-
-            elif message.role == Role.TOOL:
-                message_dict['role'] = message.role.value
-                # Extract text from content for tool result
-                tool_result_text = _extract_text_from_content(message.content)
-                message_dict['content'] = tool_result_text
-                message_dict['tool_call_id'] = message.tool_call_id
-
             else:
-                raise ValueError(f"Unsupported message role: {message.role}")
+                # For ASSISTANT and TOOL, convert without block wrappers
+                if message.role == Role.ASSISTANT:
+                    text_content = _extract_text_from_content(message.content)
+                    message_dict['content'] = text_content
+                else:
+                    # TOOL messages are handled below
+                    pass
 
-        # Check if we can merge with previous message (same role, not TOOL/ASSISTANT)
-        last_role: str | None = None
-        if history:
-            role_val = history[-1].get('role')
-            if isinstance(role_val, str):
-                last_role = role_val
+        # Handle different role logic
+        if message.role == Role.SYSTEM:
+            if len(history) > 0:
+                # Modify message_dict role to user for system messages after first
+                message_dict['role'] = Role.USER.value
 
-        if (
-            last_role == message.role.value and
-            message.role not in {Role.TOOL, Role.ASSISTANT} and
-            history[-1].get('content')
-        ):
-            # Merge with previous message by adding block wrapper
-            last_content = history[-1]['content']
-            text_content = _extract_text_from_content(message.content)
+        elif message.role == Role.USER:
+            # No additional operations needed
+            pass
 
-            if isinstance(last_content, str):
-                history[-1]['content'] = last_content + f"<block>{text_content}</block>"
-            elif isinstance(last_content, list): # pyright: ignore[reportUnnecessaryIsInstance]
-                # Last content is multimodal, create new list with block markers
-                updated_content = last_content + [
-                    {'type': 'text', 'text': f"<block>{text_content}</block>"}
-                ]
-                history[-1]['content'] = updated_content
+        elif message.role == Role.ASSISTANT:
+            if len(history) > 0 and history[-1]['role'] != Role.USER.value:
+                raise ValueError("Assistant message must be followed by a user message.")
+
+            # If the message is a tool call, add the tool call to the history
+            if message.tool_calls:
+                tool_calls: list[dict[str, Any]] = []
+                message_dict["tool_calls"] = tool_calls
+
+                for tool_call in message.tool_calls:
+                    tool_calls.append({
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.name,
+                            "arguments": json.dumps(tool_call.args, ensure_ascii=False),
+                        }
+                    })
+
+        elif message.role == Role.TOOL:
+            message_dict['role'] = message.role.value
+            # Extract text from content for tool result
+            tool_result_text = _extract_text_from_content(message.content)
+            message_dict['content'] = tool_result_text
+            message_dict['tool_call_id'] = message.tool_call_id
+
         else:
-            # Add message to history
-            history.append(message_dict)
+            raise ValueError(f"Unsupported message role: {message.role}")
+
+        # Add message to history
+        history.append(message_dict)
 
     return history
 
@@ -360,6 +397,7 @@ class ZhipuLLM(ILLM):
         logger.info(f"[Zhipu] Starting completion with model {self._model}, messages: {len(messages)}, max_tokens: {completion_config.max_tokens}, streaming: {stream_queue is not None}")
 
         # Convert completion config to Zhipu AI format using the conversion function
+        # 转换阶段统一处理 CompletionConfig（包含 extra_body / extra_headers / ignore_params）
         zhipu_kwargs = to_zhipu(completion_config, tools)
 
         # Add any extra kwargs while preserving defaults

@@ -99,7 +99,7 @@ class TestOpenAIStreaming(TestLLMStreaming):
         """Test successful OpenAI streaming."""
         # Setup mock streaming response
         mock_client = Mock()
-        mock_stream = self._create_mock_openai_stream([
+        mock_stream, final_completion = self._create_mock_openai_stream([
             {"content": "Hello"},
             {"content": " there"},
             {"content": "! How"},
@@ -108,7 +108,8 @@ class TestOpenAIStreaming(TestLLMStreaming):
             {"content": " help"},
             {"content": " you"},
         ])
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_stream)
+        # Return mock stream for first call (streaming), final completion for second call (non-streaming)
+        mock_client.chat.completions.create = AsyncMock(side_effect=[mock_stream, final_completion])
         mock_openai.return_value = mock_client
 
         # Create LLM instance
@@ -147,12 +148,13 @@ class TestOpenAIStreaming(TestLLMStreaming):
         tool_call_mock.id = "call_123"
         tool_call_mock.function = function_mock
 
-        mock_stream = self._create_mock_openai_stream_with_tool_calls([
+        mock_stream, final_completion = self._create_mock_openai_stream_with_tool_calls([
             {"content": "I'll", "tool_calls": None},
             {"content": " call", "tool_calls": None},
             {"content": " a function.", "tool_calls": [tool_call_mock]},
         ])
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_stream)
+        # Return mock stream for first call (streaming), final completion for second call (non-streaming)
+        mock_client.chat.completions.create = AsyncMock(side_effect=[mock_stream, final_completion])
         mock_openai.return_value = mock_client
 
         config = LLMConfig(provider="openai", model="gpt-4", api_key="test-key")
@@ -237,8 +239,8 @@ class TestOpenAIStreaming(TestLLMStreaming):
         assert result.content[0].text == "Hello! This is a non-streaming response."
         assert result.is_chunking is False
 
-    def _create_mock_openai_stream(self, content_chunks: list[dict[str, Any]]) -> Mock:
-        """Create a mock OpenAI streaming response."""
+    def _create_mock_openai_stream(self, content_chunks: list[dict[str, Any]]) -> tuple[Mock, Mock]:
+        """Create a mock OpenAI streaming response and final completion."""
         # Create the stream chunks
         stream_chunks = []
         for chunk_data in content_chunks:
@@ -251,7 +253,7 @@ class TestOpenAIStreaming(TestLLMStreaming):
                 )]
             ))
 
-        # Create a mock that supports both async iteration and get_final_completion
+        # Create a mock that supports async iteration
         mock_stream = Mock()
 
         # Create an async iterator
@@ -280,12 +282,10 @@ class TestOpenAIStreaming(TestLLMStreaming):
             )
         ]
 
-        mock_stream.get_final_completion = AsyncMock(return_value=final_completion)
+        return mock_stream, final_completion
 
-        return mock_stream
-
-    def _create_mock_openai_stream_with_tool_calls(self, chunks: list[dict[str, Any]]) -> Mock:
-        """Create a mock OpenAI stream with tool calls."""
+    def _create_mock_openai_stream_with_tool_calls(self, chunks: list[dict[str, Any]]) -> tuple[Mock, Mock]:
+        """Create a mock OpenAI stream with tool calls and final completion."""
         # Create the stream chunks
         stream_chunks = []
         for chunk_data in chunks:
@@ -300,7 +300,7 @@ class TestOpenAIStreaming(TestLLMStreaming):
                 )]
             ))
 
-        # Create a mock that supports both async iteration and get_final_completion
+        # Create a mock that supports async iteration
         mock_stream = Mock()
 
         # Create an async iterator
@@ -332,9 +332,8 @@ class TestOpenAIStreaming(TestLLMStreaming):
             )
         ]
 
-        mock_stream.get_final_completion = AsyncMock(return_value=final_completion)
 
-        return mock_stream
+        return mock_stream, final_completion
 
 
 class TestAnthropicStreaming(TestLLMStreaming):
@@ -353,25 +352,50 @@ class TestAnthropicStreaming(TestLLMStreaming):
             Mock(type="content_block_stop")
         ]
 
-        # Create a proper async iterator
-        async def mock_stream_iter():
-            for event in mock_stream_events:
-                yield event
+        # Create a proper async iterator and stream with get_final_message
+        class MockStream:
+            def __init__(self, events):
+                self._events = events
+                self._final_message = Mock()
+                self._final_message.usage = Mock()
+                self._final_message.usage.configure_mock(
+                    input_tokens=10,
+                    output_tokens=5
+                )
+                self._final_message.stop_reason = "end_of_message"
+
+            def __aiter__(self):
+                # This is needed for Python 3.10+ async for loops
+                return self
+
+            async def __anext__(self):
+                if not hasattr(self, '_current_idx'):
+                    self._current_idx = 0
+
+                if self._current_idx < len(self._events):
+                    event = self._events[self._current_idx]
+                    self._current_idx += 1
+                    return event
+                else:
+                    raise StopAsyncIteration
+
+            async def get_final_message(self):
+                return self._final_message
 
         # Create a custom async context manager class
         class MockAsyncContextManager:
-            def __init__(self, iterator):
-                self._iterator = iterator
+            def __init__(self, events):
+                self._stream = MockStream(events)
 
             async def __aenter__(self):
-                return self._iterator
+                return self._stream
 
             async def __aexit__(self, exc_type, exc_val, exc_tb):
                 return None
 
-        # Create a coroutine that returns our context manager
-        async def mock_stream_coro(**kwargs):
-            return MockAsyncContextManager(mock_stream_iter())
+        # Create a function that returns our async context manager
+        def mock_stream_coro(**kwargs):
+            return MockAsyncContextManager(mock_stream_events)
 
         mock_client.messages.stream = mock_stream_coro
         mock_anthropic.return_value = mock_client
@@ -398,10 +422,17 @@ class TestAnthropicStreaming(TestLLMStreaming):
         mock_client = Mock()
 
         # Create stream that fails immediately on entry
-        mock_stream = AsyncMock()
-        mock_stream.__aenter__ = AsyncMock(side_effect=Exception("Rate limit exceeded"))
-        mock_stream.__aexit__ = AsyncMock(return_value=None)
-        mock_client.messages.stream = AsyncMock(return_value=mock_stream)
+        class MockErrorContextManager:
+            async def __aenter__(self):
+                raise Exception("Rate limit exceeded")
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                return None
+
+        def mock_stream_coro(**kwargs):
+            return MockErrorContextManager()
+
+        mock_client.messages.stream = mock_stream_coro
         mock_anthropic.return_value = mock_client
 
         config = LLMConfig(provider="anthropic", model="claude-3-sonnet", api_key="test-key")
@@ -477,7 +508,7 @@ class TestZhipuStreaming(TestLLMStreaming):
                 )]
             ))
 
-        # Create a mock that supports both async iteration and get_final_completion
+        # Create a mock that supports async iteration
         mock_stream = Mock()
 
         # Create an async iterator
@@ -506,7 +537,6 @@ class TestZhipuStreaming(TestLLMStreaming):
             )
         ]
 
-        mock_stream.get_final_completion = AsyncMock(return_value=final_completion)
 
         return mock_stream
 
@@ -572,7 +602,7 @@ class TestArkStreaming(TestLLMStreaming):
                 )]
             ))
 
-        # Create a mock that supports both async iteration and get_final_completion
+        # Create a mock that supports async iteration
         mock_stream = Mock()
 
         # Create an async iterator
@@ -601,7 +631,6 @@ class TestArkStreaming(TestLLMStreaming):
             )
         ]
 
-        mock_stream.get_final_completion = AsyncMock(return_value=final_completion)
 
         return mock_stream
 

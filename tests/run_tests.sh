@@ -336,7 +336,13 @@ get_module_paths() {
             echo "tasking/core/state_machine/ tests/unit/state_machine/"
             ;;
         "filesystem")
-            echo "tasking/tool/filesystem.py tasking/tool/terminal.py tests/unit/terminal/"
+            echo "tasking/tool/filesystem.py tasking/tool/terminal.py tests/unit/tool/"
+            ;;
+        "tool")
+            echo "tasking/tool/ tests/unit/tool/"
+            ;;
+        "text_editor")
+            echo "tasking/tool/text_editor.py tests/unit/tool/text_editor/"
             ;;
         "middleware")
             echo "tasking/core/middleware/ tests/unit/core/middleware/"
@@ -489,7 +495,7 @@ main() {
                 local paths=$(get_module_paths "$module_name")
                 if [ -z "$paths" ]; then
                     print_error "未知模块: $subcommand"
-                    echo "支持的模块: agent, scheduler, state_machine, filesystem, middleware, database, llm, model"
+                    echo "支持的模块: agent, scheduler, state_machine, filesystem, tool, text_editor, middleware, database, llm, model"
                     exit 1
                 fi
                 
@@ -519,7 +525,7 @@ main() {
                 local paths=$(get_module_paths "$module_name")
                 if [ -z "$paths" ]; then
                     print_error "未知模块: $subcommand"
-                    echo "支持的模块: agent, scheduler, state_machine, filesystem, middleware, database, llm, model"
+                    echo "支持的模块: agent, scheduler, state_machine, filesystem, tool, text_editor, middleware, database, llm, model"
                     exit 1
                 fi
                 

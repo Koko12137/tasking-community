@@ -56,7 +56,6 @@ class TestITerminal:
             'get_current_dir',
             'get_allowed_commands',
             'is_script_execution_disabled',
-            'open',
             'run_command',
             'check_command',
             'close',
@@ -493,7 +492,7 @@ class TestLocalTerminal:
 
             # Attempting to start again should raise RuntimeError
             with pytest.raises(RuntimeError, match="终端进程已在运行"):
-                term.open()
+                term._open()
 
         finally:
             term.close()

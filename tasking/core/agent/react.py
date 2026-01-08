@@ -10,9 +10,9 @@ from fastmcp.tools import Tool as FastMcpTool
 
 from .interface import IAgent
 from .base import BaseAgent
-from ..middleware import HumanInterfere
 from ..state_machine.task import ITask, TaskState, TaskEvent, RequirementTaskView, DocumentTreeTaskView
 from ..state_machine.workflow import IWorkflow, BaseWorkflow
+from ...hook.human import HumanInterfere
 from ...llm import ILLM, build_llm
 from ...model import Message, StopReason, Role, IAsyncQueue, CompletionConfig, get_settings
 from ...model.message import TextBlock
@@ -217,6 +217,7 @@ def get_react_actions(
             # 开始 LLM 推理
             message = await agent.think(
                 context=context,
+                workflow=workflow,
                 queue=queue,
                 task=task,
                 valid_tools=tools,
@@ -257,6 +258,7 @@ def get_react_actions(
                     # 注入 Task 和 Workflow，并开始执行工具
                     result = await agent.act(
                         context=context,
+                        workflow=workflow,
                         queue=queue,
                         tool_call=tool_call,
                         task=task,
@@ -394,20 +396,10 @@ def build_react_agent(
     if agent_cfg is None:
         raise ValueError(f"未找到名为 '{name}' 的智能体配置")
 
-    llms: dict[ReActStage, ILLM] = {}
-    for stage in ReActStage:
-        if stage == ReActStage.COMPLETED:
-            continue  # COMPLETED 阶段不需要 LLM
-        # LLM 配置
-        llm_cfg = agent_cfg.get_llm_config(stage.value)
-        # 连接 LLM 服务端
-        llms[stage] = build_llm(llm_cfg)
-
     # 构建基础 Agent 实例
     agent = BaseAgent[ReActStage, ReActEvent, TaskState, TaskEvent, ClientTransportT](
         name=name,
         agent_type=agent_cfg.agent_type,
-        llms=llms,
         tool_service=tool_service,
     )
     # 获取 event chain
@@ -458,6 +450,15 @@ def build_react_agent(
         exclude_args=["kwargs"],
     )
 
+    llms: dict[ReActStage, ILLM] = {}
+    for stage in ReActStage:
+        if stage == ReActStage.COMPLETED:
+            continue  # COMPLETED 阶段不需要 LLM
+        # LLM 配置
+        llm_cfg = agent_cfg.get_llm_config(stage.value)
+        # 连接 LLM 服务端
+        llms[stage] = build_llm(llm_cfg)
+
     # 构建 CompletionConfig 映射
     completion_configs: dict[ReActStage, CompletionConfig] = {}
     for stage in ReActStage:
@@ -468,19 +469,21 @@ def build_react_agent(
             stream=llm_cfg.stream,
         )
 
-    # 构建工作流实例
-    workflow = BaseWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent](
-        valid_states=valid_states,
-        init_state=init_state,
-        transitions=transitions,
-        name="ReActWorkflow",
-        completion_configs=completion_configs,
-        actions=actions,
-        prompts=prompts,
-        observe_funcs=observe_funcs,
-        event_chain=event_chain,
-        tools={end_workflow_tool.name: (end_workflow_tool, set())},
-    )
+    def workflow_factory() -> IWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent]:
+        """构建工作流实例"""
+        return BaseWorkflow[ReActStage, ReActEvent, TaskState, TaskEvent](
+            valid_states=valid_states,
+            init_state=init_state,
+            transitions=transitions,
+            name="react_workflow",
+            completion_configs=completion_configs,
+            llms=llms,
+            actions=actions,
+            prompts=prompts,
+            observe_funcs=observe_funcs,
+            event_chain=event_chain,
+            tools={end_workflow_tool.name: (end_workflow_tool, set())},
+        )
     # 关联工作流到智能体
-    agent.set_workflow(workflow)
+    agent.set_workflow(workflow_factory)
     return agent

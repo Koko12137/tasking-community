@@ -4,9 +4,9 @@ import asyncio
 
 from loguru import logger
 
+from tasking.hook import stream_output_hook
 from tasking.core.agent import build_react_agent
 from tasking.core.scheduler import build_base_scheduler
-from tasking.core.middleware import stream_output_hook
 from tasking.core.state_machine.task import DefaultTreeNode
 from tasking.model import Message, IAsyncQueue, AsyncQueue, TextBlock
 

@@ -80,7 +80,7 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         vectors: dict[str, list[float | int]] = {}
         for name, info in self._embeddings.items():
             vector = await info.model.embed(
-                cast(list[MultimodalContent], memory.content), 
+                memory.content,
                 info.dimension
             )
             vectors[name] = vector
@@ -132,7 +132,7 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         vectors: dict[str, list[float | int]] = {}
         for name, info in self._embeddings.items():
             vector = await info.model.embed(
-                cast(list[MultimodalContent], memory.content),
+                memory.content,
                 info.dimension
             )
             vectors[name] = vector
@@ -196,9 +196,9 @@ class MilvusDatabase(IVectorDatabase[MemoryT]):
         self,
         context: dict[str, Any],
         query: list[MultimodalContent],
-        top_k: int,
-        threshold: list[float],
-        filter_expr: str = "",
+        top_k: int = 100,
+        threshold: list[float] | None = None,
+        filter_expr: str | None = None,
         output_fields: list[str] | None = None,
         timeout: float = 1800.0
     ) -> list[tuple[MemoryT, float]]:

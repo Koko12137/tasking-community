@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 # 步骤1：扫描 tasking 下所有子包（得到 ["core", "core.agent", "llm", "memory", ...]）
-src_sub_packages = find_packages(where="tasking")  # 无 prefix 参数！
+src_sub_packages = find_packages(where="tasking")
 
 # 步骤2：给每个子包名添加 "tasking." 前缀（变成 ["tasking.core", "tasking.core.agent", ...]）
 tasking_sub_packages = [f"tasking.{pkg}" for pkg in src_sub_packages]
@@ -24,9 +24,9 @@ setup(
             "prompt/tool/human_interfere.md",
         ]),
         ("share/tasking/prompt/memory", [
-            "prompt/memory/episode.md",
-            "prompt/memory/state_compress.md",
+            "prompt/memory/episode_search.md",
             "prompt/memory/episode_compress.md",
+            "prompt/memory/state_compress.md",
         ]),
         ("share/tasking/prompt/task", [
             "prompt/task/default.md",

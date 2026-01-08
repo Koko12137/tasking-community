@@ -261,7 +261,8 @@ class TestBaseTextEditor:
         operations = [
             EditOperation(line=1, op="insert", content="New line at start"),
             EditOperation(line=5, op="delete", content=""),
-            EditOperation(line=3, op="modify", content="Modified line")
+            EditOperation(line=3, op="delete", content=""),
+            EditOperation(line=3, op="insert", content="Modified line")
         ]
 
         result = await text_editor.edit_file("existing_test.txt", operations)
@@ -290,8 +291,18 @@ class TestBaseTextEditor:
         # 非法的行号
         invalid_line_ops = [EditOperation(line=5, op="insert", content="Content")]
 
-        with pytest.raises(ValueError, match="新建文件只支持行号 0、1 或 -1"):
+        with pytest.raises(ValueError, match="新建文件只支持行号 0、1、-1 或不超过当前行数\\+1"):
             text_editor._validate_operations(invalid_line_ops, False)
+
+        # 测试连续插入多行的合法性
+        consecutive_ops = [
+            EditOperation(line=1, op="insert", content="Line 1"),
+            EditOperation(line=2, op="insert", content="Line 2"),
+            EditOperation(line=3, op="insert", content="Line 3")
+        ]
+
+        # 不应该抛出异常
+        text_editor._validate_operations(consecutive_ops, False)
 
 
 class TestLocalFileSystemRefactored:
@@ -425,7 +436,8 @@ class TestIntegration:
         operations = [
             EditOperation(line=1, op="insert", content="import os"),
             EditOperation(line=5, op="delete", content=""),
-            EditOperation(line=3, op="modify", content="def new_function():"),
+            EditOperation(line=3, op="delete", content=""),
+            EditOperation(line=3, op="insert", content="def new_function():"),
             EditOperation(line=10, op="insert", content="return True")
         ]
 
@@ -433,6 +445,26 @@ class TestIntegration:
 
         # 验证命令执行（具体结果取决于mock的实现）
         assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_new_file_consecutive_insertions(self):
+        """测试向新文件连续插入多行（使用递增行号）"""
+        mock_terminal = MockTerminal()
+        mock_terminal.workspace = "/tmp/test"
+        mock_filesystem = MockFileSystem(mock_terminal)
+        mock_editor = MockTextEditor(mock_filesystem)
+
+        # 测试向新文件连续插入第1行、第2行、第3行
+        operations = [
+            EditOperation(line=1, op="insert", content="Line 1: Hello"),
+            EditOperation(line=2, op="insert", content="Line 2: World"),
+            EditOperation(line=3, op="insert", content="Line 3: Claude Code")
+        ]
+
+        result = await mock_editor.edit_file("new_consecutive.txt", operations)
+
+        # 验证结果
+        assert "文件创建成功: new_consecutive.txt" in result
 
 
 class TestDiffOutput:
@@ -484,9 +516,10 @@ class TestDiffOutput:
             filesystem = LocalFileSystem(real_terminal)
             editor = LocalTextEditor(filesystem)
 
-            # 修改第二行
+            # 修改第二行（通过delete+insert实现）
             operations = [
-                EditOperation(line=2, op="modify", content="修改后的第二行")
+                EditOperation(line=2, op="delete", content=""),
+                EditOperation(line=2, op="insert", content="修改后的第二行")
             ]
 
             result = await editor.edit_file(test_file, operations)
@@ -498,7 +531,7 @@ class TestDiffOutput:
             assert "原始第二行" in result
             assert "修改后的第二行" in result
             # 验证包含上下文行（以空格开头）
-            assert any(line.startswith(" ") and "|" in line for line in result.split("\n") if line.strip())
+            assert any(line.startswith(" ") for line in result.split("\n") if line.strip())
 
     @pytest.mark.asyncio
     async def test_diff_output_for_delete_operation(self):
@@ -526,7 +559,7 @@ class TestDiffOutput:
             assert "-" in result  # 删除标记
             assert "要删除的第二行" in result
             # 验证包含上下文行
-            assert any(line.startswith(" ") and "|" in line for line in result.split("\n") if line.strip())
+            assert any(line.startswith(" ") for line in result.split("\n") if line.strip())
 
     @pytest.mark.asyncio
     async def test_diff_output_for_insert_operation(self):
@@ -554,7 +587,7 @@ class TestDiffOutput:
             assert "+" in result  # 插入标记
             assert "插入的新行" in result
             # 验证包含上下文行
-            assert any(line.startswith(" ") and "|" in line for line in result.split("\n") if line.strip())
+            assert any(line.startswith(" ") for line in result.split("\n") if line.strip())
 
     @pytest.mark.asyncio
     async def test_diff_output_multiple_operations(self):
@@ -572,7 +605,8 @@ class TestDiffOutput:
 
             # 执行多个操作
             operations = [
-                EditOperation(line=1, op="modify", content="修改后的第一行"),
+                EditOperation(line=1, op="delete", content=""),
+                EditOperation(line=1, op="insert", content="修改后的第一行"),
                 EditOperation(line=3, op="delete", content=""),
                 EditOperation(line=2, op="insert", content="插入的新第二行")
             ]

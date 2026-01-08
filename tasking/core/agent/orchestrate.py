@@ -1,4 +1,5 @@
 import json
+from uuid import uuid4
 from enum import Enum, auto
 from typing import Any, cast
 from collections.abc import Callable, Awaitable
@@ -11,7 +12,6 @@ from fastmcp.client.transports import ClientTransportT
 
 from .interface import IAgent
 from .base import BaseAgent
-from ..middleware import HumanInterfere
 from ..state_machine.workflow import IWorkflow, BaseWorkflow
 from ..state_machine.task import (
     ITask,
@@ -21,11 +21,11 @@ from ..state_machine.task import (
     RequirementTaskView,
     ProtocolTaskView,
 )
+from ...hook.human import HumanInterfere
 from ...llm import ILLM, build_llm
 from ...model import (
     TextBlock, ToolCallRequest, Message, Role, StopReason, IAsyncQueue, CompletionConfig, get_settings
 )
-from ...model.message import TextBlock
 from ...utils.io import read_markdown
 from ...utils.string.xml import extract_by_label
 from ...utils.string.message import extract_text_from_message
@@ -226,6 +226,7 @@ def get_orch_actions(
             # 开始 LLM 推理
             message = await agent.think(
                 context=context,
+                workflow=workflow,
                 queue=queue,
                 task=task,
                 valid_tools=service_tools,
@@ -269,7 +270,7 @@ def get_orch_actions(
                 logger.warning(error_info)
                 # 任务进入错误状态
                 task.set_error(error_info)
-                
+
             if orchestration.strip() != "":
                 error_info = "警告：收到不需要编排任务的指令，但编排结果不为空，进入严重错误。"
                 # 记录警告信息到任务上下文
@@ -308,6 +309,7 @@ def get_orch_actions(
                     # 注入 Task 和 Workflow，并开始执行工具
                     result = await agent.act(
                         context=context,
+                        workflow=workflow,
                         queue=queue,
                         tool_call=tool_call,
                         task=task,
@@ -390,23 +392,26 @@ def get_orch_actions(
         # 开始 LLM 推理
         message = await agent.think(
             context=context,
+            workflow=workflow,
             queue=queue,
             task=task,
             valid_tools={},
             completion_config=completion_config,
         )
-
         # 构造 ToolCallRequest
         tool_call = ToolCallRequest(
-            id="auto_create_sub_tasks",
+            id=str(uuid4()),
             name="create_sub_tasks",
             args={
                 "json_str": extract_text_from_message(message),
             },
         )
+        # 将 tool_call 添加到消息中避免错误
+        message.tool_calls.append(tool_call)
         # 调用 act 执行子任务创建
         result = await agent.act(
             context=context, 
+            workflow=workflow,
             queue=queue, 
             task=task, 
             tool_call=tool_call,
@@ -532,27 +537,19 @@ def build_orch_agent(
     """
     # 获取全局设置
     settings = get_settings()
+
     # 获取智能体的配置
     agent_cfg = settings.get_agent_config(name)
     if agent_cfg is None:
         raise ValueError(f"未找到名为 '{name}' 的智能体配置")
 
-    llms: dict[OrchestrateStage, ILLM] = {}
-    for stage in OrchestrateStage:
-        if stage == OrchestrateStage.FINISHED:
-            continue  # FINISHED 阶段不需要 LLM
-        # LLM 配置
-        llm_cfg = agent_cfg.get_llm_config(stage.value)
-        # 连接 LLM 服务端
-        llms[stage] = build_llm(llm_cfg)
-
     # 构建基础 Agent 实例
     agent = BaseAgent[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent, ClientTransportT](
         name=name,
         agent_type=agent_cfg.agent_type,
-        llms=llms,
         tool_service=tool_service,
     )
+
     # 获取 event chain
     event_chain = get_orch_event_chain()
     # 获取 valid states
@@ -585,6 +582,15 @@ def build_orch_agent(
         OrchestrateStage.ORCHESTRATING: observe_task_view,
     }
 
+    llms: dict[OrchestrateStage, ILLM] = {}
+    for stage in OrchestrateStage:
+        if stage == OrchestrateStage.FINISHED:
+            continue  # FINISHED 阶段不需要 LLM
+        # LLM 配置
+        llm_cfg = agent_cfg.get_llm_config(stage.value)
+        # 连接 LLM 服务端
+        llms[stage] = build_llm(llm_cfg)
+
     # 构建 CompletionConfig 映射
     completion_configs: dict[OrchestrateStage, CompletionConfig] = {}
     for stage in OrchestrateStage:
@@ -594,7 +600,7 @@ def build_orch_agent(
             max_tokens=llm_cfg.max_tokens,
             stream=llm_cfg.stream,
         )
-        
+
     # 构建创建子任务工具
     tool = Tool.from_function(
         fn=create_sub_tasks,
@@ -603,19 +609,22 @@ def build_orch_agent(
         exclude_args=['kwargs'],
     )
 
-    # 构建工作流实例
-    workflow = BaseWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent](
-        valid_states=valid_states,
-        init_state=init_state,
-        transitions=transitions,
-        name="orchWorkflow",
-        completion_configs=completion_configs,
-        actions=actions,
-        prompts=prompts,
-        observe_funcs=observe_funcs,
-        event_chain=event_chain,
-        tools={"create_sub_tasks": (tool, set[str]())},
-    )
-    # 关联工作流到智能体
-    agent.set_workflow(workflow)
+    def workflow_factory() -> IWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent]:
+        """构建工作流实例"""
+        return BaseWorkflow[OrchestrateStage, OrchestrateEvent, TaskState, TaskEvent](
+            valid_states=valid_states,
+            init_state=init_state,
+            transitions=transitions,
+            name="orchestrate_workflow",
+            completion_configs=completion_configs,
+            llms=llms,
+            actions=actions,
+            prompts=prompts,
+            observe_funcs=observe_funcs,
+            event_chain=event_chain,
+            tools={"create_sub_tasks": (tool, set[str]())},
+        )
+    # 设置工作流工厂函数
+    agent.set_workflow(workflow_factory)
+    # 返回 Agent 实例
     return agent

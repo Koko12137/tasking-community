@@ -67,19 +67,28 @@ def to_anthropic(config: CompletionConfig, tools: list[McpTool] | None = None) -
         dict:
             The completion config in the Anthropic format.
     """
-    kwargs: dict[str, Any] = {
-        "top_p": config.top_p,
-        "max_tokens": config.max_tokens,
-        "temperature": config.temperature,
-    }
+    ignored: set[str] = set(config.ignore_params or [])
 
+    kwargs: dict[str, Any] = {}
+
+    if "top_p" not in ignored:
+        kwargs["top_p"] = config.top_p
+    if "max_tokens" not in ignored:
+        kwargs["max_tokens"] = config.max_tokens
+    if "temperature" not in ignored:
+        kwargs["temperature"] = config.temperature
     # stop words -> stop_sequences
-    if config.stop_words:
+    if "stop_words" not in ignored and config.stop_words:
         kwargs["stop_sequences"] = config.stop_words
-
     # response_format（Anthropic supports json_object）
-    if config.format_json:
+    if "format_json" not in ignored and config.format_json:
         kwargs["response_format"] = {"type": "json_object"}
+    # 透传 extra_body 到 SDK（如果需要）
+    if "extra_body" not in ignored and config.extra_body:
+        kwargs["extra_body"] = dict(config.extra_body)
+    # 额外请求头
+    if "extra_headers" not in ignored and config.extra_headers:
+        kwargs["extra_headers"] = dict(config.extra_headers)
 
     # tools（Anthropic: [{name, description, input_schema}]）
     if tools:
@@ -170,39 +179,68 @@ def to_anthropic_messages(messages: list[Message]) -> list[MessageParam]:
     history: list[MessageParam] = []
 
     for message in messages:
+        # Get last message sender
+        last_role: str | None = history[-1]["role"] if history else None
+
+        # Check if we should merge with the last message (only for SYSTEM and USER)
+        should_merge = (
+            last_role is not None
+            and last_role == message.role.value
+            and message.role in {Role.SYSTEM, Role.USER}
+        )
+
+        if should_merge and len(history) > 0:
+            # Merge with the last message: append current content wrapped in <block>
+            last_message = history[-1]
+            if message.content:
+                # Convert current message content to Anthropic format
+                current_content = _convert_content_to_anthropic_format(message.content)
+                # Wrap in <block> tags and append to last message's content
+                last_content = last_message["content"]
+                if isinstance(last_content, str):
+                    text_content = _extract_text_from_content(message.content)
+                    history[-1]["content"] = last_content + f"<block>{text_content}</block>"
+                elif isinstance(last_content, list):
+                    block_wrapped = [
+                        TextBlockParam(type="text", text="<block>"),
+                        *current_content,
+                        TextBlockParam(type="text", text="</block>"),
+                    ]
+                    cast(list[ContentBlockParam], last_content).extend(block_wrapped)
+            # Skip creating a new message entry
+            continue
+
+        # Create content for new message
         content: str | list[ContentBlockParam]
 
-  
         # Handle empty content
         if not message.content:
             content = ""
-            text_content = ""
         else:
-            # Extract text from content blocks
-            text_content = _extract_text_from_content(message.content)
+            # Only wrap SYSTEM and USER messages with <block> tags
+            if message.role in {Role.SYSTEM, Role.USER}:
+                # Extract text from content blocks
+                text_content = _extract_text_from_content(message.content)
 
-            # Convert to Anthropic format with block wrappers
-            if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
-                # Pure text message
-                content = f"<block>{text_content}</block>"
+                # Convert to Anthropic format with block wrappers
+                if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
+                    # Pure text message
+                    content = f"<block>{text_content}</block>"
+                else:
+                    # Multimodal message
+                    anthropic_blocks: list[ContentBlockParam] = [
+                        TextBlockParam(type="text", text="<block>"),
+                        *_convert_content_to_anthropic_format(message.content),
+                        TextBlockParam(type="text", text="</block>"),
+                    ]
+                    content = anthropic_blocks
             else:
-                # Multimodal message
-                anthropic_blocks: list[ContentBlockParam] = [
-                    TextBlockParam(type="text", text="<block>"),
-                    *_convert_content_to_anthropic_format(message.content),
-                    TextBlockParam(type="text", text="</block>"),
-                ]
-                content = anthropic_blocks
-
-        last_role: str | None = history[-1]["role"] if history else None
-
-        if last_role == message.role.value and message.role not in {Role.TOOL, Role.ASSISTANT}:
-            last_content = history[-1]["content"]
-            if isinstance(last_content, str):
-                history[-1]["content"] = last_content + f"<block>{text_content}</block>"
-            elif isinstance(content, list):
-                cast(list[ContentBlockParam], last_content).extend(content)
-            continue
+                # For ASSISTANT and TOOL, convert without block wrappers
+                if len(message.content) == 1 and isinstance(message.content[0], TextBlock):
+                    text_content = _extract_text_from_content(message.content)
+                    content = text_content
+                else:
+                    content = _convert_content_to_anthropic_format(message.content)
 
         _append_message_by_role(history, message, content)
 
@@ -334,6 +372,7 @@ class AnthropicLLM(ILLM):
         """
         logger.info(f"[Anthropic] Starting completion with model {self._model}, messages: {len(messages)}, max_tokens: {completion_config.max_tokens}, streaming: {stream_queue is not None}")
 
+        # 转换阶段统一处理 CompletionConfig（包含 extra_body / extra_headers / ignore_params）
         kwargs = to_anthropic(completion_config, tools)
         history = to_anthropic_messages(messages)
 
